@@ -11,10 +11,10 @@ pub struct AppState {
     pub manifest_path: Mutex<Option<String>>,
 }
 
-fn github_client() -> Result<GithubClient, String> {
+fn github_client() -> GithubClient {
     let settings = load_settings();
-    let token = resolve_github_token(&settings)?;
-    Ok(GithubClient::new(token))
+    let token = resolve_github_token(&settings);
+    GithubClient::new(token)
 }
 
 #[command]
@@ -52,7 +52,7 @@ pub async fn fetch_review_requests(
     cutoff_date: String,
     fetch_recent: bool,
 ) -> Result<Vec<ReviewRequestItem>, String> {
-    let github = github_client()?;
+    let github = github_client();
     let username = github.get_authenticated_user().await?;
     github
         .get_review_requests(&username, &cutoff_date, fetch_recent)
@@ -61,7 +61,7 @@ pub async fn fetch_review_requests(
 
 #[command]
 pub async fn fetch_review_comments(pr_url: String) -> Result<Vec<ReviewThread>, String> {
-    let github = github_client()?;
+    let github = github_client();
     let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
     github.get_review_threads(&parsed.owner, &parsed.repo, parsed.number).await
 }
@@ -72,7 +72,7 @@ pub async fn reply_to_thread(
     comment_id: String,
     body: String,
 ) -> Result<ReviewComment, String> {
-    let github = github_client()?;
+    let github = github_client();
     let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
     let pr_node_id = github.get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number).await?;
     github
@@ -90,7 +90,7 @@ pub async fn create_review_comment(
     start_line: Option<u64>,
     start_side: Option<String>,
 ) -> Result<ReviewThread, String> {
-    let github = github_client()?;
+    let github = github_client();
     let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
     let pr_node_id = github.get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number).await?;
     github
@@ -111,7 +111,7 @@ pub async fn update_review_comment(
     comment_id: String,
     body: String,
 ) -> Result<ReviewComment, String> {
-    let github = github_client()?;
+    let github = github_client();
     github.update_review_comment(&comment_id, &body).await
 }
 
@@ -121,7 +121,7 @@ pub async fn submit_review(
     event: String,
     body: String,
 ) -> Result<String, String> {
-    let github = github_client()?;
+    let github = github_client();
     let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
     github
         .submit_review(&parsed.owner, &parsed.repo, parsed.number, &event, &body)
@@ -165,6 +165,6 @@ pub async fn toggle_thread_resolved(
     thread_id: String,
     resolve: bool,
 ) -> Result<bool, String> {
-    let github = github_client()?;
+    let github = github_client();
     github.resolve_review_thread(&thread_id, resolve).await
 }

@@ -1,3 +1,4 @@
+mod ai;
 mod bedrock;
 mod commands;
 mod config;

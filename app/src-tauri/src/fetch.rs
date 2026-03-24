@@ -1,4 +1,4 @@
-use crate::bedrock::{extract_json_array, region_from_arn, BedrockClient};
+use crate::ai::{extract_json_array, AiBackend};
 use crate::config::resolve_github_token;
 use crate::github::GithubClient;
 use crate::pr_parser::parse_pr_ref;
@@ -31,10 +31,10 @@ fn emit_progress(
 
 pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHandle) -> Result<ReviewManifest, String> {
     if settings.model.is_empty() {
-        return Err("No model ARN configured. Set it in Settings.".to_string());
+        return Err("No model configured. Set a Bedrock ARN or Claude model name in Settings.".to_string());
     }
 
-    let token = resolve_github_token(settings)?;
+    let token = resolve_github_token(settings);
     let parsed = parse_pr_ref(pr_ref)?;
 
     let github = GithubClient::new(token);
@@ -78,15 +78,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
 
     // Step 3: AI classification
     emit_progress(app, 3, "Classifying files with AI", FetchStatus::Running, None, None);
-    let region = region_from_arn(&settings.model)?;
-    let bedrock = BedrockClient::new(&region, &settings.aws_profile).await?;
+    let ai = AiBackend::new(&settings.model, &settings.aws_profile).await?;
 
     let classification_prompt =
         build_classification_prompt(&pr_title, &file_list, &full_diff);
 
-    let classification_raw = bedrock
-        .invoke_model(&settings.model, &classification_prompt)
-        .await?;
+    let classification_raw = ai.invoke(&classification_prompt).await?;
 
     let classification_json = extract_json_array(&classification_raw)?;
     let classifications: Vec<FileClassification> = serde_json::from_value(classification_json)
@@ -123,9 +120,9 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
     let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
 
     let mut ai_stream: FuturesUnordered<_> = [
-        ("highlights", bedrock.invoke_model(&settings.model, &highlight_prompt)),
-        ("summary", bedrock.invoke_model(&settings.model, &summary_prompt)),
-        ("grouping", bedrock.invoke_model(&settings.model, &grouping_prompt)),
+        ("highlights", ai.invoke(&highlight_prompt)),
+        ("summary", ai.invoke(&summary_prompt)),
+        ("grouping", ai.invoke(&grouping_prompt)),
     ].into_iter().map(|(name, fut)| async move { (name, fut.await) }).collect();
 
     let mut highlights_raw = Err("not started".to_string());

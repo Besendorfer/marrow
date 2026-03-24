@@ -92,21 +92,56 @@ fn parse_review_thread(node: &serde_json::Value) -> ReviewThread {
 }
 
 impl GithubClient {
-    pub fn new(token: String) -> Self {
+    pub fn new(token: Option<String>) -> Self {
         Self {
             client: Client::new(),
-            token,
+            token: token.unwrap_or_default(),
         }
+    }
+
+    fn request(&self, url: &str, accept: &str) -> reqwest::RequestBuilder {
+        let mut req = self
+            .client
+            .get(url)
+            .header(USER_AGENT, "relevant-reviews")
+            .header(ACCEPT, accept);
+
+        if !self.token.is_empty() {
+            req = req.header(AUTHORIZATION, format!("Bearer {}", self.token));
+        }
+
+        req
+    }
+
+    async fn send_checked(&self, url: &str, accept: &str) -> Result<reqwest::Response, String> {
+        let resp = self
+            .request(url, accept)
+            .send()
+            .await
+            .map_err(|e| format!("GitHub API request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("GitHub API error ({}): {}", status, body));
+        }
+
+        Ok(resp)
     }
 
     /// Send a GraphQL request and return the parsed JSON response.
     /// Handles POST, headers, status check, and GraphQL-level error checking.
     async fn graphql_request(&self, body: serde_json::Value) -> Result<serde_json::Value, String> {
-        let resp = self
+        let mut req = self
             .client
             .post("https://api.github.com/graphql")
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "relevant-reviews")
+            .header(USER_AGENT, "relevant-reviews");
+
+        if !self.token.is_empty() {
+            req = req.header(AUTHORIZATION, format!("Bearer {}", self.token));
+        }
+
+        let resp = req
             .json(&body)
             .send()
             .await
@@ -141,21 +176,7 @@ impl GithubClient {
             owner, repo, pr_number
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "relevant-reviews")
-            .header(ACCEPT, "application/vnd.github.v3+json")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub API error ({}): {}", status, body));
-        }
+        let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
 
         resp.json::<PrMetadata>()
             .await
@@ -177,21 +198,7 @@ impl GithubClient {
                 owner, repo, pr_number, page
             );
 
-            let resp = self
-                .client
-                .get(&url)
-                .header(AUTHORIZATION, format!("Bearer {}", self.token))
-                .header(USER_AGENT, "relevant-reviews")
-                .header(ACCEPT, "application/vnd.github.v3+json")
-                .send()
-                .await
-                .map_err(|e| format!("GitHub API request failed: {}", e))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(format!("GitHub API error ({}): {}", status, body));
-            }
+            let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
 
             let files: Vec<PrFile> = resp
                 .json()
@@ -225,21 +232,7 @@ impl GithubClient {
             owner, repo, pr_number
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "relevant-reviews")
-            .header(ACCEPT, "application/vnd.github.v3.diff")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub API error ({}): {}", status, body));
-        }
+        let resp = self.send_checked(&url, "application/vnd.github.v3.diff").await?;
 
         resp.text()
             .await
@@ -259,11 +252,7 @@ impl GithubClient {
         );
 
         let resp = self
-            .client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "relevant-reviews")
-            .header(ACCEPT, "application/vnd.github.v3+json")
+            .request(&url, "application/vnd.github.v3+json")
             .send()
             .await
             .map_err(|e| format!("GitHub API request failed: {}", e))?;
