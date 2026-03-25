@@ -49,6 +49,8 @@ pub struct FileDiff {
     pub highlights: Vec<Highlight>,
     #[serde(default)]
     pub hunk_scores: Vec<String>,
+    #[serde(default)]
+    pub diff_hash: String,
 }
 
 fn default_risk_level() -> String {

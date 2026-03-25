@@ -12,7 +12,8 @@ import { SettingsModal } from "./components/SettingsModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
 import { SearchBar } from "./components/SearchBar";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState } from "./types";
+import { parsePrUrl } from "./utils";
 
 function App() {
   const nextTabId = useRef(1);
@@ -65,6 +66,7 @@ function App() {
       manifest,
       selectedFile: manifest.files.length > 0 ? manifest.files[0] : null,
       viewedFiles: new Set(),
+      staleViewedFiles: new Set(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
       sidebarView: hasGroups ? "groups" : "category",
@@ -96,6 +98,36 @@ function App() {
     setActiveTabId(tab.id);
     setShowOpener(false);
     setError(null);
+    loadPersistedViewedState(tab);
+  }
+
+  function reconcileViewedFiles(
+    savedFiles: Record<string, string>,
+    currentHashMap: Map<string, string>,
+  ): { viewed: Set<string>; stale: Set<string> } {
+    const viewed = new Set<string>();
+    const stale = new Set<string>();
+    for (const [path, savedHash] of Object.entries(savedFiles)) {
+      const currentHash = currentHashMap.get(path);
+      if (currentHash === undefined) continue;
+      if (currentHash === savedHash) viewed.add(path); else stale.add(path);
+    }
+    return { viewed, stale };
+  }
+
+  async function loadPersistedViewedState(tab: Tab) {
+    try {
+      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+      const saved = await invoke<ViewedFileState | null>("load_viewed_files", { owner, repo, prNumber: number });
+      if (!saved) return;
+
+      const currentHashMap = new Map(tab.manifest.files.map((f) => [f.path, f.diff_hash]));
+      const { viewed: viewedFiles, stale: staleViewedFiles } = reconcileViewedFiles(saved.files, currentHashMap);
+
+      updateTab(tab.id, (t) => ({ ...t, viewedFiles, staleViewedFiles }));
+    } catch {
+      // Graceful degradation: if loading fails, start with empty state
+    }
   }
 
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -178,21 +210,42 @@ function App() {
       if (added.length > 0) parts.push(`${added.length} file${added.length > 1 ? "s" : ""} added`);
       if (removed.length > 0) parts.push(`${removed.length} file${removed.length > 1 ? "s" : ""} removed`);
 
-      const preservedViewed = new Set(
-        [...tab.viewedFiles].filter((p) => newPaths.has(p))
-      );
+      const newFileHashMap = new Map(newManifest.files.map((f) => [f.path, f.diff_hash]));
+      const oldFileHashMap = new Map(tab.manifest.files.map((f) => [f.path, f.diff_hash]));
 
-      updateTab(tab.id, (t) => ({
-        ...t,
+      // Build saved-hash map from currently viewed files for reconciliation
+      const savedFiles: Record<string, string> = {};
+      for (const viewedPath of tab.viewedFiles) {
+        const hash = oldFileHashMap.get(viewedPath);
+        if (hash) savedFiles[viewedPath] = hash;
+      }
+      const { viewed: preservedViewed, stale: reconciledStale } = reconcileViewedFiles(savedFiles, newFileHashMap);
+
+      // Carry forward existing stale entries (minus files removed from PR)
+      const newStale = new Set<string>(tab.staleViewedFiles);
+      for (const path of reconciledStale) newStale.add(path);
+      for (const stalePath of newStale) {
+        if (!newFileHashMap.has(stalePath)) newStale.delete(stalePath);
+      }
+
+      const staleCount = newStale.size - tab.staleViewedFiles.size;
+      if (staleCount > 0) parts.push(`${staleCount} file${staleCount > 1 ? "s" : ""} changed since reviewed`);
+
+      const refreshedTab: Tab = {
+        ...tab,
         manifest: newManifest,
         isRefreshing: false,
         viewedFiles: preservedViewed,
+        staleViewedFiles: newStale,
         selectedFile:
-          t.selectedFile && newPaths.has(t.selectedFile.path)
-            ? newManifest.files.find((f) => f.path === t.selectedFile!.path) ?? newManifest.files[0] ?? null
+          tab.selectedFile && newPaths.has(tab.selectedFile.path)
+            ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? newManifest.files[0] ?? null
             : newManifest.files[0] ?? null,
         commentThreads: { status: "idle" },
-      }));
+      };
+
+      updateTab(tab.id, () => refreshedTab);
+      persistViewedState(refreshedTab);
 
       if (parts.length > 0) {
         addToast("success", `PR updated: ${parts.join(", ")}`);
@@ -240,15 +293,39 @@ function App() {
   }
 
   function toggleViewed(filePath: string) {
-    updateTab(activeTabId,(t) => {
-      const next = new Set(t.viewedFiles);
-      if (next.has(filePath)) {
-        next.delete(filePath);
-      } else {
-        next.add(filePath);
+    let tabToSave: Tab | null = null;
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabId) return t;
+        const nextViewed = new Set(t.viewedFiles);
+        const nextStale = new Set(t.staleViewedFiles);
+        if (nextViewed.has(filePath)) {
+          nextViewed.delete(filePath);
+        } else {
+          nextViewed.add(filePath);
+          nextStale.delete(filePath);
+        }
+        const updated = { ...t, viewedFiles: nextViewed, staleViewedFiles: nextStale };
+        tabToSave = updated;
+        return updated;
+      })
+    );
+    if (tabToSave) persistViewedState(tabToSave);
+  }
+
+  async function persistViewedState(tab: Tab) {
+    try {
+      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+      const fileHashMap = new Map(tab.manifest.files.map((f) => [f.path, f.diff_hash]));
+      const files: Record<string, string> = {};
+      for (const path of tab.viewedFiles) {
+        const hash = fileHashMap.get(path);
+        if (hash) files[path] = hash;
       }
-      return { ...t, viewedFiles: next };
-    });
+      await invoke("save_viewed_files", { owner, repo, prNumber: number, state: { files } });
+    } catch {
+      // Non-critical: persistence failure shouldn't block UI
+    }
   }
 
   function handleViewChange(view: SidebarView) {
@@ -620,6 +697,7 @@ function App() {
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         viewedCount={activeTab?.viewedFiles.size ?? 0}
+        staleCount={activeTab?.staleViewedFiles.size ?? 0}
         onSettingsClick={() => setSettingsOpen(true)}
         manifest={activeTab?.manifest ?? null}
         showHunkSignificance={showHunkSignificance}
@@ -651,6 +729,7 @@ function App() {
             selectedFile={activeTab.selectedFile}
             onSelectFile={setSelectedFile}
             viewedFiles={activeTab.viewedFiles}
+            staleViewedFiles={activeTab.staleViewedFiles}
             onToggleViewed={toggleViewed}
             showHunkSignificance={showHunkSignificance}
             hunkFilter={hunkFilter}

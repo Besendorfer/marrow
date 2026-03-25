@@ -2,6 +2,12 @@ export function getFileName(path: string): string {
   return path.split("/").pop() || path;
 }
 
+export function parsePrUrl(url: string): { owner: string; repo: string; number: number } {
+  const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (!match) throw new Error(`Invalid PR URL: ${url}`);
+  return { owner: match[1], repo: match[2], number: parseInt(match[3], 10) };
+}
+
 export function timeAgo(dateStr: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();

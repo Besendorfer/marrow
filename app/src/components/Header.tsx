@@ -13,6 +13,7 @@ interface HeaderProps {
   viewMode: DiffViewMode;
   onViewModeChange: (mode: DiffViewMode) => void;
   viewedCount: number;
+  staleCount: number;
   onSettingsClick: () => void;
   manifest: ReviewManifest | null;
   showHunkSignificance: boolean;
@@ -34,6 +35,7 @@ export function Header({
   viewMode,
   onViewModeChange,
   viewedCount,
+  staleCount,
   onSettingsClick,
   manifest,
   showHunkSignificance,
@@ -84,6 +86,9 @@ export function Header({
           <div className="header-left">
             <span className="file-count">
               {viewedCount}/{totalCount} reviewed
+              {staleCount > 0 && (
+                <span className="stale-badge">{staleCount} changed</span>
+              )}
             </span>
             <div className="progress-bar">
               <div className="progress-fill" style={{ width: `${progress}%` }} />
