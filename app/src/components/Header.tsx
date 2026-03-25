@@ -21,6 +21,8 @@ interface HeaderProps {
   onToggleAiNotes: () => void;
   commentThreads?: CommentThreadsState;
   onSubmitReview?: (event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) => Promise<void>;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
 }
 
 export function Header({
@@ -40,6 +42,8 @@ export function Header({
   onToggleAiNotes,
   commentThreads,
   onSubmitReview,
+  onRefresh,
+  isRefreshing,
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
@@ -84,6 +88,17 @@ export function Header({
             <div className="progress-bar">
               <div className="progress-fill" style={{ width: `${progress}%` }} />
             </div>
+            {onRefresh && (
+              <button
+                className={`refresh-button${isRefreshing ? " refreshing" : ""}`}
+                onClick={onRefresh}
+                disabled={isRefreshing}
+                title={isRefreshing ? "Refreshing..." : "Refresh PR data"}
+              >
+                <span className="refresh-icon">&#x21bb;</span>
+                {isRefreshing ? "Refreshing" : "Refresh"}
+              </button>
+            )}
             {hasSummary && (
               <button
                 className="summary-toggle"

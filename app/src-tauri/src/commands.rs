@@ -2,7 +2,7 @@ use crate::bedrock::{region_from_arn, BedrockClient};
 use crate::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use crate::fetch::fetch_pr_impl;
 use crate::github::GithubClient;
-use crate::types::{ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use crate::types::{PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
 use std::fs;
 use std::sync::Mutex;
 use tauri::{command, State};
@@ -45,6 +45,30 @@ pub fn get_initial_manifest_path(state: State<AppState>) -> Option<String> {
 pub async fn fetch_pr(app: tauri::AppHandle, pr_ref: String) -> Result<ReviewManifest, String> {
     let settings = load_settings();
     fetch_pr_impl(&pr_ref, &settings, &app).await
+}
+
+#[command]
+pub async fn check_pr_updates(
+    pr_url: String,
+    current_head_sha: String,
+    current_comment_count: u32,
+) -> Result<PrUpdateStatus, String> {
+    let github = github_client()?;
+    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let (new_head_sha, new_comment_count) = github
+        .get_pr_status(&parsed.owner, &parsed.repo, parsed.number)
+        .await?;
+
+    let head_sha_changed = new_head_sha != current_head_sha;
+    let comment_count_changed = new_comment_count != current_comment_count;
+
+    Ok(PrUpdateStatus {
+        has_changes: head_sha_changed || comment_count_changed,
+        head_sha_changed,
+        comment_count_changed,
+        new_head_sha: if head_sha_changed { Some(new_head_sha) } else { None },
+        new_comment_count: if comment_count_changed { Some(new_comment_count) } else { None },
+    })
 }
 
 #[command]
