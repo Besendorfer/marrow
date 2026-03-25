@@ -543,6 +543,29 @@ body {
   text-decoration-color: var(--text-muted);
 }
 
+/* ─── Stale (changed since reviewed) ──────────────────────────────────── */
+.file-item.stale {
+  border-left: 2px solid var(--risk-medium);
+}
+
+.stale-indicator {
+  color: var(--risk-medium);
+  font-size: 12px;
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+
+.stale-count {
+  color: var(--risk-medium);
+  font-size: 11px;
+}
+
+.stale-badge {
+  color: var(--risk-medium);
+  font-size: 11px;
+  margin-left: 8px;
+}
+
 .file-summary {
   padding: 0 16px 6px 46px;
   font-size: 11px;

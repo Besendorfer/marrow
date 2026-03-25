@@ -8,6 +8,7 @@ interface FileSidebarProps {
   selectedFile: FileDiff | null;
   onSelectFile: (file: FileDiff) => void;
   viewedFiles: Set<string>;
+  staleViewedFiles: Set<string>;
   onToggleViewed: (filePath: string) => void;
   showHunkSignificance: boolean;
   hunkFilter: HunkSignificanceFilter;
@@ -160,6 +161,7 @@ function FileItem({
   file,
   selectedFile,
   isViewed,
+  isStale,
   onSelectFile,
   onToggleViewed,
   showPathHint,
@@ -167,6 +169,7 @@ function FileItem({
   file: FileDiff;
   selectedFile: FileDiff | null;
   isViewed: boolean;
+  isStale?: boolean;
   onSelectFile: (f: FileDiff) => void;
   onToggleViewed: (path: string) => void;
   showPathHint?: boolean;
@@ -176,7 +179,7 @@ function FileItem({
   return (
     <div className={`file-item-wrapper ${isCritical ? "file-critical" : ""}`}>
       <button
-        className={`file-item ${selectedFile?.path === file.path ? "selected" : ""} ${isViewed ? "viewed" : ""}`}
+        className={`file-item ${selectedFile?.path === file.path ? "selected" : ""} ${isViewed ? "viewed" : ""} ${isStale ? "stale" : ""}`}
         onClick={() => onSelectFile(file)}
         title={file.path}
       >
@@ -190,6 +193,9 @@ function FileItem({
             onChange={() => onToggleViewed(file.path)}
           />
         </span>
+        {isStale && (
+          <span className="stale-indicator" title="Changed since you last reviewed">&#x26A0;</span>
+        )}
         <span
           className={`diff-type-badge ${getDiffTypeClass(file.diff_type)}`}
         >
@@ -228,6 +234,7 @@ function TreeFolder({
   toggleCollapsed,
   selectedFile,
   viewedFiles,
+  staleViewedFiles,
   onSelectFile,
   onToggleViewed,
 }: {
@@ -237,6 +244,7 @@ function TreeFolder({
   toggleCollapsed: (key: string) => void;
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
+  staleViewedFiles: Set<string>;
   onSelectFile: (f: FileDiff) => void;
   onToggleViewed: (path: string) => void;
 }) {
@@ -251,6 +259,7 @@ function TreeFolder({
                 file={child.file}
                 selectedFile={selectedFile}
                 isViewed={viewedFiles.has(child.file.path)}
+                isStale={staleViewedFiles.has(child.file.path)}
                 onSelectFile={onSelectFile}
                 onToggleViewed={onToggleViewed}
               />
@@ -282,6 +291,7 @@ function TreeFolder({
                 toggleCollapsed={toggleCollapsed}
                 selectedFile={selectedFile}
                 viewedFiles={viewedFiles}
+                staleViewedFiles={staleViewedFiles}
                 onSelectFile={onSelectFile}
                 onToggleViewed={onToggleViewed}
               />
@@ -367,6 +377,7 @@ export function FileSidebar({
   selectedFile,
   onSelectFile,
   viewedFiles,
+  staleViewedFiles,
   onToggleViewed,
   showHunkSignificance,
   hunkFilter,
@@ -477,6 +488,7 @@ export function FileSidebar({
   }, [visibleGrouped]);
 
   const viewedCount = viewedFiles.size;
+  const staleCount = staleViewedFiles.size;
   const totalCount = files.length;
 
   return (
@@ -519,6 +531,11 @@ export function FileSidebar({
         </div>
         <span className="sidebar-file-count">
           {viewedCount}/{totalCount} viewed
+          {staleCount > 0 && (
+            <span className="stale-count" title={`${staleCount} file(s) changed since reviewed`}>
+              {" "}({staleCount} changed)
+            </span>
+          )}
         </span>
       </div>
       {viewedCount > 0 && (
@@ -579,6 +596,7 @@ export function FileSidebar({
                       file={file}
                       selectedFile={selectedFile}
                       isViewed={viewedFiles.has(file.path)}
+                      isStale={staleViewedFiles.has(file.path)}
                       onSelectFile={onSelectFile}
                       onToggleViewed={onToggleViewed}
                       showPathHint
@@ -607,6 +625,7 @@ export function FileSidebar({
                     file={file}
                     selectedFile={selectedFile}
                     isViewed={viewedFiles.has(file.path)}
+                    isStale={staleViewedFiles.has(file.path)}
                     onSelectFile={onSelectFile}
                     onToggleViewed={onToggleViewed}
                     showPathHint
@@ -630,6 +649,7 @@ export function FileSidebar({
                     file={file}
                     selectedFile={selectedFile}
                     isViewed={viewedFiles.has(file.path)}
+                    isStale={staleViewedFiles.has(file.path)}
                     onSelectFile={onSelectFile}
                     onToggleViewed={onToggleViewed}
                     showPathHint
@@ -647,6 +667,7 @@ export function FileSidebar({
               toggleCollapsed={toggleCollapsed}
               selectedFile={selectedFile}
               viewedFiles={viewedFiles}
+              staleViewedFiles={staleViewedFiles}
               onSelectFile={onSelectFile}
               onToggleViewed={onToggleViewed}
             />

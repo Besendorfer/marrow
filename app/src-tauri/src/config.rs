@@ -3,12 +3,15 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-pub fn config_path() -> PathBuf {
+pub fn app_config_dir() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(home)
         .join(".config")
         .join("relevant-reviews")
-        .join("config")
+}
+
+pub fn config_path() -> PathBuf {
+    app_config_dir().join("config")
 }
 
 fn default_settings() -> Settings {

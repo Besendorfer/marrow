@@ -7,6 +7,7 @@ use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest, Settings,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
+use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use tauri::Emitter;
 
@@ -248,6 +249,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
             .map(|lines| heuristic_significance(lines, path))
             .collect();
 
+        let diff_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(unified_diff.as_bytes());
+            format!("{:x}", hasher.finalize())[..16].to_string()
+        };
+
         file_diffs.push(FileDiff {
             path: path.clone(),
             classification: classification.classification.clone(),
@@ -262,6 +269,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
             deletions,
             highlights: highlights_by_path.remove(path.as_str()).unwrap_or_default(),
             hunk_scores,
+            diff_hash,
         });
     }
 

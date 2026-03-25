@@ -3,6 +3,7 @@ use crate::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use crate::fetch::fetch_pr_impl;
 use crate::github::GithubClient;
 use crate::types::{PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use crate::viewed_state::{self, ViewedFileState};
 use std::fs;
 use std::sync::Mutex;
 use tauri::{command, State};
@@ -191,4 +192,19 @@ pub async fn toggle_thread_resolved(
 ) -> Result<bool, String> {
     let github = github_client();
     github.resolve_review_thread(&thread_id, resolve).await
+}
+
+#[command]
+pub fn load_viewed_files(owner: String, repo: String, pr_number: u64) -> Option<ViewedFileState> {
+    viewed_state::load_viewed_state(&owner, &repo, pr_number)
+}
+
+#[command]
+pub fn save_viewed_files(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    state: ViewedFileState,
+) -> Result<(), String> {
+    viewed_state::save_viewed_state(&owner, &repo, pr_number, &state)
 }
