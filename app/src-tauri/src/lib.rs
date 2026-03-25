@@ -26,6 +26,7 @@ pub fn run() {
             commands::load_manifest,
             commands::get_initial_manifest_path,
             commands::fetch_pr,
+            commands::check_pr_updates,
             commands::fetch_review_requests,
             commands::fetch_review_comments,
             commands::reply_to_thread,

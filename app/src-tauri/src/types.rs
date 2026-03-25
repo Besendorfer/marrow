@@ -177,6 +177,15 @@ pub struct ReviewThread {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PrUpdateStatus {
+    pub has_changes: bool,
+    pub head_sha_changed: bool,
+    pub comment_count_changed: bool,
+    pub new_head_sha: Option<String>,
+    pub new_comment_count: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewRequestItem {
     pub owner: String,
     pub repo: String,
