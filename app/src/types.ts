@@ -99,6 +99,16 @@ export interface Tab {
   commentThreads: CommentThreadsState;
   selectedCommentFile: string | null;
   sidebarView: SidebarView;
+  isRefreshing?: boolean;
+  lastCommentCount?: number;
+}
+
+export interface PrUpdateStatus {
+  has_changes: boolean;
+  head_sha_changed: boolean;
+  comment_count_changed: boolean;
+  new_head_sha: string | null;
+  new_comment_count: number | null;
 }
 
 export interface SearchMatch {

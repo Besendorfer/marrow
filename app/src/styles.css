@@ -3026,3 +3026,116 @@ mark.search-highlight-current {
   outline-offset: 0;
   font-weight: 600;
 }
+
+/* ─── Toast Notifications ─────────────────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+  animation: toast-slide-in 0.25s ease-out;
+  max-width: 400px;
+}
+
+.toast-success {
+  border-left: 3px solid var(--diff-add-text);
+}
+
+.toast-error {
+  border-left: 3px solid var(--diff-remove-text);
+}
+
+.toast-info {
+  border-left: 3px solid var(--accent);
+}
+
+.toast-message {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.toast-dismiss:hover {
+  color: var(--text-primary);
+}
+
+@keyframes toast-slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* ─── Refresh Button ──────────────────────────────────────────────────── */
+.refresh-button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.refresh-button:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.refresh-icon {
+  display: inline-block;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.refresh-button.refreshing .refresh-icon {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

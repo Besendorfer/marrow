@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileSidebar } from "./components/FileSidebar";
@@ -11,7 +11,8 @@ import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
 import { SearchBar } from "./components/SearchBar";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch } from "./types";
+import { ToastContainer, createToast, type ToastData } from "./components/Toast";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus } from "./types";
 
 function App() {
   const nextTabId = useRef(1);
@@ -32,6 +33,15 @@ function App() {
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
+  const [toasts, setToasts] = useState<ToastData[]>([]);
+
+  const addToast = useCallback((type: ToastData["type"], message: string) => {
+    setToasts((prev) => [...prev, createToast(type, message)]);
+  }, []);
+
+  const removeToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
@@ -58,6 +68,8 @@ function App() {
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
       sidebarView: hasGroups ? "groups" : "category",
+      isRefreshing: false,
+      lastCommentCount: 0,
     };
   }
 
@@ -134,18 +146,101 @@ function App() {
     setProgress(null);
   }
 
-  function updateActiveTab(updater: (tab: Tab) => Tab) {
-    setTabs((prev) =>
-      prev.map((t) => (t.id === activeTabId ? updater(t) : t))
-    );
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
+
+  function updateTab(tabId: string | null, updater: (tab: Tab) => Tab) {
+    setTabs((prev) => prev.map((t) => (t.id === tabId ? updater(t) : t)));
+  }
+
+  async function handleRefreshPr(tabId?: string) {
+    const targetId = tabId ?? activeTabId;
+    const tab = tabsRef.current.find((t) => t.id === targetId);
+    if (!tab || tab.isRefreshing || loadingRef.current) return;
+
+    updateTab(tab.id, (t) => ({ ...t, isRefreshing: true }));
+
+    try {
+      const newManifest = await invoke<ReviewManifest>("fetch_pr", {
+        prRef: tab.manifest.pr_url,
+      });
+
+      const parts: string[] = [];
+      if (newManifest.head_sha !== tab.manifest.head_sha) {
+        parts.push("new commits");
+      }
+      const oldPaths = new Set(tab.manifest.files.map((f) => f.path));
+      const newPaths = new Set(newManifest.files.map((f) => f.path));
+      const added = newManifest.files.filter((f) => !oldPaths.has(f.path));
+      const removed = tab.manifest.files.filter((f) => !newPaths.has(f.path));
+      if (added.length > 0) parts.push(`${added.length} file${added.length > 1 ? "s" : ""} added`);
+      if (removed.length > 0) parts.push(`${removed.length} file${removed.length > 1 ? "s" : ""} removed`);
+
+      const preservedViewed = new Set(
+        [...tab.viewedFiles].filter((p) => newPaths.has(p))
+      );
+
+      updateTab(tab.id, (t) => ({
+        ...t,
+        manifest: newManifest,
+        isRefreshing: false,
+        viewedFiles: preservedViewed,
+        selectedFile:
+          t.selectedFile && newPaths.has(t.selectedFile.path)
+            ? newManifest.files.find((f) => f.path === t.selectedFile!.path) ?? newManifest.files[0] ?? null
+            : newManifest.files[0] ?? null,
+        commentThreads: { status: "idle" },
+      }));
+
+      if (parts.length > 0) {
+        addToast("success", `PR updated: ${parts.join(", ")}`);
+      } else {
+        addToast("info", "PR refreshed — no changes detected");
+      }
+    } catch (err) {
+      updateTab(tab.id, (t) => ({ ...t, isRefreshing: false }));
+      addToast("error", `Refresh failed: ${String(err)}`);
+    }
+  }
+
+  async function handleRefreshComments(tabId: string) {
+    const tab = tabsRef.current.find((t) => t.id === tabId);
+    if (!tab || tab.isRefreshing) return;
+
+    try {
+      const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
+        prUrl: tab.manifest.pr_url,
+      });
+
+      const oldCount =
+        tab.commentThreads.status === "loaded"
+          ? tab.commentThreads.threads.reduce((n, t) => n + t.comments.length, 0)
+          : 0;
+      const newCount = threads.reduce((n, t) => n + t.comments.length, 0);
+      const diff = newCount - oldCount;
+
+      updateTab(tabId, (t) => ({
+        ...t,
+        commentThreads: { status: "loaded", threads },
+        lastCommentCount: newCount,
+      }));
+
+      if (diff > 0) {
+        addToast("info", `${diff} new comment${diff > 1 ? "s" : ""} on PR #${tab.manifest.pr_number}`);
+      }
+    } catch {
+      // Poll will retry
+    }
   }
 
   function setSelectedFile(file: FileDiff) {
-    updateActiveTab((t) => ({ ...t, selectedFile: file }));
+    updateTab(activeTabId,(t) => ({ ...t, selectedFile: file }));
   }
 
   function toggleViewed(filePath: string) {
-    updateActiveTab((t) => {
+    updateTab(activeTabId,(t) => {
       const next = new Set(t.viewedFiles);
       if (next.has(filePath)) {
         next.delete(filePath);
@@ -157,7 +252,7 @@ function App() {
   }
 
   function handleViewChange(view: SidebarView) {
-    updateActiveTab((t) => ({ ...t, sidebarView: view }));
+    updateTab(activeTabId,(t) => ({ ...t, sidebarView: view }));
     if (view === "comments") {
       handleRequestComments();
     }
@@ -167,7 +262,7 @@ function App() {
     const tab = tabs.find((t) => t.id === activeTabId);
     if (!tab || tab.commentThreads.status === "loading" || tab.commentThreads.status === "loaded") return;
 
-    updateActiveTab((t) => ({ ...t, commentThreads: { status: "loading" } }));
+    updateTab(activeTabId,(t) => ({ ...t, commentThreads: { status: "loading" } }));
     try {
       const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
         prUrl: tab.manifest.pr_url,
@@ -186,7 +281,7 @@ function App() {
         )
       );
     } catch (err) {
-      updateActiveTab((t) => ({
+      updateTab(activeTabId,(t) => ({
         ...t,
         commentThreads: { status: "error", message: String(err) },
       }));
@@ -194,7 +289,7 @@ function App() {
   }
 
   function handleSelectCommentFile(path: string) {
-    updateActiveTab((t) => ({ ...t, selectedCommentFile: path }));
+    updateTab(activeTabId,(t) => ({ ...t, selectedCommentFile: path }));
   }
 
   async function handleReply(threadId: string, commentId: string, body: string) {
@@ -217,7 +312,7 @@ function App() {
         ? { ...t, comments: [...t.comments, optimisticComment] }
         : t
     );
-    updateActiveTab((t) => ({
+    updateTab(activeTabId,(t) => ({
       ...t,
       commentThreads: { status: "loaded", threads: optimisticThreads },
     }));
@@ -253,7 +348,7 @@ function App() {
       );
     } catch {
       // Revert on error
-      updateActiveTab((t) => ({
+      updateTab(activeTabId,(t) => ({
         ...t,
         commentThreads: { status: "loaded", threads: prevThreads },
       }));
@@ -270,7 +365,7 @@ function App() {
     const optimisticThreads = prevThreads.map((t) =>
       t.id === threadId ? { ...t, is_resolved: resolve } : t
     );
-    updateActiveTab((t) => ({
+    updateTab(activeTabId,(t) => ({
       ...t,
       commentThreads: { status: "loaded", threads: optimisticThreads },
     }));
@@ -279,7 +374,7 @@ function App() {
       await invoke<boolean>("toggle_thread_resolved", { threadId, resolve });
     } catch {
       // Revert on error
-      updateActiveTab((t) => ({
+      updateTab(activeTabId,(t) => ({
         ...t,
         commentThreads: { status: "loaded", threads: prevThreads },
       }));
@@ -299,7 +394,7 @@ function App() {
         c.id === commentId ? { ...c, body } : c
       ),
     }));
-    updateActiveTab((t) => ({
+    updateTab(activeTabId,(t) => ({
       ...t,
       commentThreads: { status: "loaded" as const, threads: optimisticThreads },
     }));
@@ -328,7 +423,7 @@ function App() {
         })
       );
     } catch {
-      updateActiveTab((t) => ({
+      updateTab(activeTabId,(t) => ({
         ...t,
         commentThreads: { status: "loaded" as const, threads: prevThreads },
       }));
@@ -350,7 +445,7 @@ function App() {
         const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
           prUrl: tab.manifest.pr_url,
         });
-        updateActiveTab((t) => ({
+        updateTab(activeTabId,(t) => ({
           ...t,
           commentThreads: { status: "loaded" as const, threads },
         }));
@@ -376,7 +471,7 @@ function App() {
       });
 
       // Add the new thread to the comment threads state
-      updateActiveTab((t) => {
+      updateTab(activeTabId,(t) => {
         if (t.commentThreads.status === "loaded") {
           return {
             ...t,
@@ -409,6 +504,34 @@ function App() {
       }
     }
   }
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const currentTabs = tabsRef.current;
+      if (loadingRef.current || currentTabs.length === 0) return;
+
+      const pollableTabs = currentTabs.filter((t) => !t.isRefreshing);
+      await Promise.allSettled(
+        pollableTabs.map(async (tab) => {
+          const status = await invoke<PrUpdateStatus>("check_pr_updates", {
+            prUrl: tab.manifest.pr_url,
+            currentHeadSha: tab.manifest.head_sha,
+            currentCommentCount: tab.lastCommentCount ?? 0,
+          });
+
+          if (!status.has_changes) return;
+
+          if (status.head_sha_changed) {
+            handleRefreshPr(tab.id);
+          } else if (status.comment_count_changed) {
+            handleRefreshComments(tab.id);
+          }
+        })
+      );
+    }, 60_000);
+
+    return () => clearInterval(interval);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleFileDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -505,6 +628,8 @@ function App() {
         onToggleAiNotes={() => setShowAiNotes((v) => !v)}
         commentThreads={activeTab?.commentThreads}
         onSubmitReview={activeTab ? handleSubmitReview : undefined}
+        onRefresh={activeTab ? () => handleRefreshPr() : undefined}
+        isRefreshing={activeTab?.isRefreshing}
       />
       <SettingsModal
         open={settingsOpen}
@@ -570,6 +695,7 @@ function App() {
         </div>
         </>
       )}
+      <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </div>
   );
 }
