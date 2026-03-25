@@ -93,7 +93,6 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
 
 /// Resolve a GitHub token: config file > GH_TOKEN env > GITHUB_TOKEN env.
 /// Returns None if no token is configured (fine for public repos).
-/// Adding a test comment to see if it syncs to Relevant Reviews properly.
 pub fn resolve_github_token(settings: &Settings) -> Option<String> {
     if !settings.github_token.is_empty() {
         return Some(settings.github_token.clone());
