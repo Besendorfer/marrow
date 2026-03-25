@@ -53,7 +53,7 @@ pub async fn check_pr_updates(
     current_head_sha: String,
     current_comment_count: u32,
 ) -> Result<PrUpdateStatus, String> {
-    let github = github_client()?;
+    let github = github_client();
     let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
     let (new_head_sha, new_comment_count) = github
         .get_pr_status(&parsed.owner, &parsed.repo, parsed.number)

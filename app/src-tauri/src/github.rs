@@ -177,21 +177,7 @@ impl GithubClient {
             owner, repo, pr_number
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "relevant-reviews")
-            .header(ACCEPT, "application/vnd.github.v3+json")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub API error ({}): {}", status, body));
-        }
+        let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
 
         let json: serde_json::Value = resp
             .json()
