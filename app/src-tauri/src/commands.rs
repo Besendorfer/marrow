@@ -3,6 +3,7 @@ use crate::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use crate::fetch::fetch_pr_impl;
 use crate::github::GithubClient;
 use crate::types::{PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use crate::manifest_cache::{self, CachedPrInfo};
 use crate::viewed_state::{self, ViewedFileState};
 use std::fs;
 use std::sync::Mutex;
@@ -207,4 +208,25 @@ pub fn save_viewed_files(
     state: ViewedFileState,
 ) -> Result<(), String> {
     viewed_state::save_viewed_state(&owner, &repo, pr_number, &state)
+}
+
+#[command]
+pub async fn list_cached_prs() -> Vec<CachedPrInfo> {
+    let all = manifest_cache::list_cached_manifests();
+    let github = match github_client() {
+        Ok(g) => g,
+        Err(_) => return all,
+    };
+
+    let mut open_prs = Vec::new();
+    for pr in all {
+        match github.is_pr_open(&pr.owner, &pr.repo, pr.pr_number).await {
+            Ok(true) => open_prs.push(pr),
+            Ok(false) => {
+                manifest_cache::delete_cached_manifest(&pr.owner, &pr.repo, pr.pr_number);
+            }
+            Err(_) => open_prs.push(pr), // keep on API failure
+        }
+    }
+    open_prs
 }

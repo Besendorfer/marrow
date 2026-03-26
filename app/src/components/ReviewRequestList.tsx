@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ReviewRequestItem, ReviewStatus, Settings } from "../types";
+import type { ReviewRequestItem, ReviewStatus, Settings, CachedPrInfo } from "../types";
 
 interface ReviewRequestListProps {
   onSelectPr: (prRef: string) => void;
+  openPrUrls: Set<string>;
 }
 
 function formatTimeAgo(dateStr: string): string {
@@ -42,7 +43,8 @@ const STATUS_CLASSES: Record<ReviewStatus, string> = {
   pending: "",
 };
 
-export function ReviewRequestList({ onSelectPr }: ReviewRequestListProps) {
+export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListProps) {
+  const [cachedPrs, setCachedPrs] = useState<CachedPrInfo[]>([]);
   const [recentItems, setRecentItems] = useState<ReviewRequestItem[]>([]);
   const [olderItems, setOlderItems] = useState<ReviewRequestItem[]>([]);
   const [recentLoading, setRecentLoading] = useState(false);
@@ -59,6 +61,10 @@ export function ReviewRequestList({ onSelectPr }: ReviewRequestListProps) {
   const cutoff = cutoffDateStr();
 
   useEffect(() => {
+    invoke<CachedPrInfo[]>("list_cached_prs")
+      .then(setCachedPrs)
+      .catch(() => {});
+
     invoke<Settings>("get_settings").then((s) => {
       settingsRef.current = s;
       setShowOlder(s.filter_older);
@@ -163,6 +169,10 @@ export function ReviewRequestList({ onSelectPr }: ReviewRequestListProps) {
     });
   }, [olderItems, showOlder, showTeam]);
 
+  const filteredCached = useMemo(() => {
+    return cachedPrs.filter((pr) => !openPrUrls.has(pr.pr_url));
+  }, [cachedPrs, openPrUrls]);
+
   const hasRecent = recentItems.length > 0;
   const hasOlder = olderItems.length > 0;
   const hasTeam = recentItems.some((i) => !i.direct_request) || olderItems.some((i) => !i.direct_request);
@@ -241,6 +251,9 @@ export function ReviewRequestList({ onSelectPr }: ReviewRequestListProps) {
         <button className="review-requests-refresh" onClick={refreshAll}>Refresh</button>
       </div>
       <div className="review-requests-list">
+        {filteredCached.length > 0 && (
+          <CachedPrSection items={filteredCached} onSelectPr={onSelectPr} />
+        )}
         {noFilterResults ? (
           <div className="review-requests-empty">No results match current filters</div>
         ) : (
@@ -364,5 +377,53 @@ function ReviewRequestRow({
         <span className="review-request-time">{formatTimeAgo(item.created_at)}</span>
       </div>
     </button>
+  );
+}
+
+function CachedPrSection({
+  items,
+  onSelectPr,
+}: {
+  items: CachedPrInfo[];
+  onSelectPr: (prRef: string) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <div className="review-requests-section cached-prs-section">
+      <button
+        className="review-requests-section-header cached-prs-header"
+        onClick={() => setCollapsed((v) => !v)}
+      >
+        <span className={`collapse-chevron ${collapsed ? "collapsed" : ""}`}>&#9662;</span>
+        <span className="review-requests-section-label">Recently Analyzed</span>
+        <span className="review-requests-group-count">{items.length}</span>
+      </button>
+      {!collapsed && (
+        <div className="review-requests-group">
+          {items.map((pr) => {
+            const prRef = `${pr.owner}/${pr.repo}#${pr.pr_number}`;
+            return (
+              <button
+                key={pr.pr_url}
+                className="review-request-item cached-pr-item"
+                onClick={() => onSelectPr(prRef)}
+              >
+                <div className="review-request-item-top">
+                  <span className="review-request-repo">{pr.owner}/{pr.repo}</span>
+                  <span className="review-request-number">#{pr.pr_number}</span>
+                  <span className="cached-badge" title="Loads instantly from cache">&#9889;</span>
+                </div>
+                <div className="review-request-title">{pr.pr_title}</div>
+                <div className="review-request-meta">
+                  <span className="review-request-author">{pr.file_count} file{pr.file_count !== 1 ? "s" : ""}</span>
+                  <span className="review-request-time">{formatTimeAgo(pr.cached_at)}</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
