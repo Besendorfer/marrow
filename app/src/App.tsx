@@ -45,6 +45,7 @@ function App() {
   }, []);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const openPrUrls = useMemo(() => new Set(tabs.map((t) => t.manifest.pr_url)), [tabs]);
 
   const selectedFilePath = activeTab?.selectedFile?.path ?? null;
   const fileSearchMatches = useMemo(
@@ -665,7 +666,7 @@ function App() {
                 a review.
               </p>
               <PrOpener onFetchStart={handleFetchStart} onSettingsClick={() => setSettingsOpen(true)} />
-              <ReviewRequestList onSelectPr={handleFetchStart} />
+              <ReviewRequestList onSelectPr={handleFetchStart} openPrUrls={openPrUrls} />
             </>
           )}
           {tabs.length > 0 && !loading && (

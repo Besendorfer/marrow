@@ -3,6 +3,7 @@ use crate::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use crate::fetch::fetch_pr_impl;
 use crate::github::GithubClient;
 use crate::types::{PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use crate::manifest_cache::{self, CachedPrInfo};
 use crate::viewed_state::{self, ViewedFileState};
 use std::fs;
 use std::sync::Mutex;
@@ -207,4 +208,9 @@ pub fn save_viewed_files(
     state: ViewedFileState,
 ) -> Result<(), String> {
     viewed_state::save_viewed_state(&owner, &repo, pr_number, &state)
+}
+
+#[command]
+pub fn list_cached_prs() -> Vec<CachedPrInfo> {
+    manifest_cache::list_cached_manifests()
 }
