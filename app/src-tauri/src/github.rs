@@ -177,6 +177,46 @@ impl GithubClient {
         Ok((head_sha, comment_count))
     }
 
+    pub async fn is_pr_open(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<bool, String> {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/pulls/{}",
+            owner, repo, pr_number
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(USER_AGENT, "relevant-reviews")
+            .header(ACCEPT, "application/vnd.github.v3+json")
+            .send()
+            .await
+            .map_err(|e| format!("GitHub API request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("GitHub API error ({}): {}", status, body));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse PR state: {}", e))?;
+
+        let state = json
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        Ok(state == "open")
+    }
+
     pub async fn get_pr_metadata(
         &self,
         owner: &str,
