@@ -213,10 +213,7 @@ pub fn save_viewed_files(
 #[command]
 pub async fn list_cached_prs() -> Vec<CachedPrInfo> {
     let all = manifest_cache::list_cached_manifests();
-    let github = match github_client() {
-        Ok(g) => g,
-        Err(_) => return all,
-    };
+    let github = github_client();
 
     let mut open_prs = Vec::new();
     for pr in all {
