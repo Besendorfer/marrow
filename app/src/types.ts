@@ -23,6 +23,7 @@ export interface FileDiff {
   deletions: number;
   highlights: Highlight[];
   hunk_scores: string[];
+  diff_hash: string;
 }
 
 export interface ChangeGroup {
@@ -96,6 +97,7 @@ export interface Tab {
   manifest: ReviewManifest;
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
+  staleViewedFiles: Set<string>;
   commentThreads: CommentThreadsState;
   selectedCommentFile: string | null;
   sidebarView: SidebarView;
@@ -128,6 +130,21 @@ export interface Settings {
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
+
+export interface ViewedFileState {
+  files: Record<string, string>; // path -> diff_hash
+}
+
+export interface CachedPrInfo {
+  owner: string;
+  repo: string;
+  pr_number: number;
+  pr_title: string;
+  pr_url: string;
+  head_sha: string;
+  file_count: number;
+  cached_at: string;
+}
 
 export interface ReviewRequestItem {
   owner: string;

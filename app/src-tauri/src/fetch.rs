@@ -1,12 +1,14 @@
 use crate::bedrock::{extract_json_array, region_from_arn, BedrockClient};
 use crate::config::resolve_github_token;
 use crate::github::GithubClient;
+use crate::manifest_cache;
 use crate::pr_parser::parse_pr_ref;
 use crate::prompts::{build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_summary_prompt};
 use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest, Settings,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
+use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use tauri::Emitter;
 
@@ -52,6 +54,13 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
     let head_ref = metadata.head.ref_name;
     let base_sha = metadata.base.sha;
     let head_sha = metadata.head.sha;
+
+    if let Some(cached) = manifest_cache::load_cached_manifest(&parsed.owner, &parsed.repo, parsed.number) {
+        if cached.head_sha == head_sha {
+            emit_progress(app, 6, "Loaded from cache", FetchStatus::Done, Some(&pr_title), None);
+            return Ok(cached);
+        }
+    }
 
     // Step 2: Fetch PR file list and diff in parallel
     emit_progress(app, 2, "Fetching files and diff", FetchStatus::Running, None, None);
@@ -251,6 +260,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
             .map(|lines| heuristic_significance(lines, path))
             .collect();
 
+        let diff_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(unified_diff.as_bytes());
+            format!("{:x}", hasher.finalize())[..16].to_string()
+        };
+
         file_diffs.push(FileDiff {
             path: path.clone(),
             classification: classification.classification.clone(),
@@ -265,12 +280,13 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
             deletions,
             highlights: highlights_by_path.remove(path.as_str()).unwrap_or_default(),
             hunk_scores,
+            diff_hash,
         });
     }
 
     emit_progress(app, 6, "Building review manifest", FetchStatus::Done, None, None);
 
-    Ok(ReviewManifest {
+    let manifest = ReviewManifest {
         pr_title,
         pr_url,
         pr_number,
@@ -281,7 +297,11 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
         summary,
         change_groups,
         files: file_diffs,
-    })
+    };
+
+    let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
+
+    Ok(manifest)
 }
 
 /// Extract per-file diffs for the relevant files from a pre-built diff map.
