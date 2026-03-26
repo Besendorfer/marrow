@@ -94,26 +94,24 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve a GitHub token: config file > GH_TOKEN env > GITHUB_TOKEN env
-pub fn resolve_github_token(settings: &Settings) -> Result<String, String> {
+/// Resolve a GitHub token: config file > GH_TOKEN env > GITHUB_TOKEN env.
+/// Returns None if no token is configured (fine for public repos).
+pub fn resolve_github_token(settings: &Settings) -> Option<String> {
     if !settings.github_token.is_empty() {
-        return Ok(settings.github_token.clone());
+        return Some(settings.github_token.clone());
     }
 
     if let Ok(token) = env::var("GH_TOKEN") {
         if !token.is_empty() {
-            return Ok(token);
+            return Some(token);
         }
     }
 
     if let Ok(token) = env::var("GITHUB_TOKEN") {
         if !token.is_empty() {
-            return Ok(token);
+            return Some(token);
         }
     }
 
-    Err(
-        "No GitHub token configured. Set it in Settings, or set GH_TOKEN or GITHUB_TOKEN env var."
-            .to_string(),
-    )
+    None
 }

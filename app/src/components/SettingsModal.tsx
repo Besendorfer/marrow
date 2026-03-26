@@ -59,14 +59,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           </button>
         </div>
         <form onSubmit={handleSave}>
-          <label className="settings-label" htmlFor="model-arn">
-            Claude Model ARN
+          <label className="settings-label" htmlFor="model">
+            Claude Model
           </label>
           <p className="settings-hint">
-            The Bedrock inference profile ARN used for AI classification.
+            A Claude model name (e.g. <code>claude-sonnet-4-6</code>) to use
+            via the <code>claude</code> CLI, or a Bedrock ARN for AWS.
           </p>
           <input
-            id="model-arn"
+            id="model"
             className="settings-input"
             type="text"
             value={model}
@@ -74,31 +75,36 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               setModel(e.target.value);
               setSaved(false);
             }}
-            placeholder="arn:aws:bedrock:us-east-2:123456:application-inference-profile/..."
+            placeholder="claude-sonnet-4-6 or arn:aws:bedrock:..."
             spellCheck={false}
           />
 
-          <label className="settings-label" htmlFor="aws-profile">
-            AWS Profile
-          </label>
-          <p className="settings-hint">
-            The AWS profile name from <code>~/.aws/config</code> to use for
-            Bedrock authentication (e.g. <code>claude-code-bedrock</code>).
-            Run <code>aws sso login --profile &lt;name&gt;</code> to refresh
-            credentials.
-          </p>
-          <input
-            id="aws-profile"
-            className="settings-input"
-            type="text"
-            value={awsProfile}
-            onChange={(e) => {
-              setAwsProfile(e.target.value);
-              setSaved(false);
-            }}
-            placeholder="default"
-            spellCheck={false}
-          />
+          {model.trim().startsWith("arn:") && (
+            <>
+              <label className="settings-label" htmlFor="aws-profile">
+                AWS Profile
+              </label>
+              <p className="settings-hint">
+                The AWS profile name from <code>~/.aws/config</code> to use
+                for Bedrock authentication (e.g.{" "}
+                <code>claude-code-bedrock</code>). Run{" "}
+                <code>aws sso login --profile &lt;name&gt;</code> to refresh
+                credentials.
+              </p>
+              <input
+                id="aws-profile"
+                className="settings-input"
+                type="text"
+                value={awsProfile}
+                onChange={(e) => {
+                  setAwsProfile(e.target.value);
+                  setSaved(false);
+                }}
+                placeholder="default"
+                spellCheck={false}
+              />
+            </>
+          )}
 
           <label className="settings-label" htmlFor="github-token">
             GitHub Token

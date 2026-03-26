@@ -66,45 +66,6 @@ impl BedrockClient {
     }
 }
 
-/// Extract a JSON array from text that may contain markdown fences or preamble.
-pub fn extract_json_array(text: &str) -> Result<serde_json::Value, String> {
-    // Try direct parse
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text.trim()) {
-        if val.is_array() {
-            return Ok(val);
-        }
-    }
-
-    // Try to find JSON array in the text
-    if let Some(start) = text.find('[') {
-        if let Some(end) = text.rfind(']') {
-            if end > start {
-                let candidate = &text[start..=end];
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
-                    if val.is_array() {
-                        return Ok(val);
-                    }
-                }
-            }
-        }
-    }
-
-    // Try stripping markdown code fences
-    let stripped = text
-        .replace("```json", "")
-        .replace("```", "");
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(stripped.trim()) {
-        if val.is_array() {
-            return Ok(val);
-        }
-    }
-
-    Err(format!(
-        "Could not extract JSON array from AI response. Raw response:\n{}",
-        &text[..text.len().min(500)]
-    ))
-}
-
 /// Extract the AWS region from a Bedrock model ARN.
 /// ARN format: arn:aws:bedrock:REGION:ACCOUNT:...
 pub fn region_from_arn(arn: &str) -> Result<String, String> {

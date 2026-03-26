@@ -8,6 +8,7 @@ app/src-tauri/gen/
 
 # Lock files (Cargo.lock is checked in for binary crates)
 # app/src-tauri/Cargo.lock  — intentionally tracked
+app/bun.lockb
 
 # OS files
 .DS_Store
