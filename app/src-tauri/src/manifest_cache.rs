@@ -18,6 +18,11 @@ fn meta_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
     cache_dir().join(format!("{}_{}_{}.meta.json", owner, repo, pr_number))
 }
 
+pub fn delete_cached_manifest(owner: &str, repo: &str, pr_number: u64) {
+    let _ = fs::remove_file(cache_path(owner, repo, pr_number));
+    let _ = fs::remove_file(meta_path(owner, repo, pr_number));
+}
+
 pub fn load_cached_manifest(owner: &str, repo: &str, pr_number: u64) -> Option<ReviewManifest> {
     let path = cache_path(owner, repo, pr_number);
     let content = fs::read_to_string(&path).ok()?;
