@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { SummaryParagraphs } from "./SummaryParagraphs";
@@ -115,6 +115,75 @@ export function Header({
             )}
           </div>
           <div className="header-right">
+            {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} />}
+            <ToolbarMenu
+              viewMode={viewMode}
+              onViewModeChange={onViewModeChange}
+              showHunkSignificance={showHunkSignificance}
+              onToggleHunkSignificance={onToggleHunkSignificance}
+              showAiNotes={showAiNotes}
+              onToggleAiNotes={onToggleAiNotes}
+              prUrl={manifest.pr_url}
+              onSettingsClick={onSettingsClick}
+            />
+          </div>
+        </div>
+      )}
+      {hasSummary && summaryExpanded && (
+        <div className="header-summary">
+          <SummaryParagraphs text={manifest!.summary} />
+        </div>
+      )}
+    </header>
+  );
+}
+
+function ToolbarMenu({
+  viewMode,
+  onViewModeChange,
+  showHunkSignificance,
+  onToggleHunkSignificance,
+  showAiNotes,
+  onToggleAiNotes,
+  prUrl,
+  onSettingsClick,
+}: {
+  viewMode: DiffViewMode;
+  onViewModeChange: (mode: DiffViewMode) => void;
+  showHunkSignificance: boolean;
+  onToggleHunkSignificance: () => void;
+  showAiNotes: boolean;
+  onToggleAiNotes: () => void;
+  prUrl: string;
+  onSettingsClick: () => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [isOpen]);
+
+  return (
+    <div className="toolbar-menu-wrapper" ref={menuRef}>
+      <button
+        className="toolbar-menu-button"
+        onClick={() => setIsOpen((v) => !v)}
+        title="Menu"
+      >
+        ⋯
+      </button>
+      {isOpen && (
+        <div className="toolbar-menu-dropdown">
+          <div className="toolbar-menu-section">
+            <span className="toolbar-menu-label">View Mode</span>
             <div className="view-toggle">
               <button
                 className={viewMode === "split" ? "active" : ""}
@@ -129,43 +198,47 @@ export function Header({
                 Unified
               </button>
             </div>
-            <button
-              className={`significance-toggle ${showHunkSignificance ? "active" : ""}`}
-              onClick={onToggleHunkSignificance}
-              title={showHunkSignificance ? "Hide hunk significance scoring" : "Show hunk significance scoring"}
-            >
-              Significance {showHunkSignificance ? "ON" : "OFF"}
-            </button>
-            <button
-              className={`significance-toggle ${showAiNotes ? "active" : ""}`}
-              onClick={onToggleAiNotes}
-              title={showAiNotes ? "Hide AI highlight notes" : "Show AI highlight notes"}
-            >
-              AI Notes {showAiNotes ? "ON" : "OFF"}
-            </button>
-            <a
-              className="github-link"
-              href={manifest.pr_url}
-              onClick={(e) => {
-                e.preventDefault();
-                open(manifest.pr_url);
-              }}
-            >
-              View on GitHub
-            </a>
-            <button className="settings-button" onClick={onSettingsClick}>
-              Settings
-            </button>
-            {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} />}
           </div>
+          <div className="toolbar-menu-divider" />
+          <button
+            className="toolbar-menu-item"
+            onClick={onToggleHunkSignificance}
+          >
+            <span className={`toolbar-menu-check ${showHunkSignificance ? "visible" : ""}`}>✓</span>
+            Significance
+          </button>
+          <button
+            className="toolbar-menu-item"
+            onClick={onToggleAiNotes}
+          >
+            <span className={`toolbar-menu-check ${showAiNotes ? "visible" : ""}`}>✓</span>
+            AI Notes
+          </button>
+          <div className="toolbar-menu-divider" />
+          <button
+            className="toolbar-menu-item"
+            onClick={(e) => {
+              e.preventDefault();
+              open(prUrl);
+              setIsOpen(false);
+            }}
+          >
+            <span className="toolbar-menu-check" />
+            View on GitHub
+          </button>
+          <button
+            className="toolbar-menu-item"
+            onClick={() => {
+              onSettingsClick();
+              setIsOpen(false);
+            }}
+          >
+            <span className="toolbar-menu-check" />
+            Settings
+          </button>
         </div>
       )}
-      {hasSummary && summaryExpanded && (
-        <div className="header-summary">
-          <SummaryParagraphs text={manifest!.summary} />
-        </div>
-      )}
-    </header>
+    </div>
   );
 }
 

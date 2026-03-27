@@ -262,6 +262,92 @@ body {
   flex-shrink: 0;
 }
 
+/* ─── Toolbar Dropdown Menu ────────────────────────────────────────────── */
+.toolbar-menu-wrapper {
+  position: relative;
+}
+
+.toolbar-menu-button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  letter-spacing: 2px;
+}
+
+.toolbar-menu-button:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.toolbar-menu-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 220px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 0;
+  z-index: 50;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.toolbar-menu-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  gap: 12px;
+}
+
+.toolbar-menu-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.toolbar-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.toolbar-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  text-align: left;
+}
+
+.toolbar-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.toolbar-menu-check {
+  display: inline-block;
+  width: 16px;
+  color: transparent;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.toolbar-menu-check.visible {
+  color: var(--accent);
+}
+
 .view-toggle {
   display: flex;
   border: 1px solid var(--border);
