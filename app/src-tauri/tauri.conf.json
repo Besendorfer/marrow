@@ -30,7 +30,13 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "Developer ID Application: PRONOIA TECH LLC (5P846H7G74)",
+      "entitlements": "./Entitlements.plist",
+      "minimumSystemVersion": "10.13",
+      "hardenedRuntime": true
+    }
   },
   "plugins": {
     "shell": {
