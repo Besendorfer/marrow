@@ -86,8 +86,50 @@ impl AiBackend {
 
 }
 
+/// Resolve the `claude` binary path.  Bundled macOS `.app` bundles inherit a
+/// minimal PATH that usually does not include user-local install directories,
+/// so we probe well-known locations when a plain `which`-style lookup fails.
+///
+/// The result is cached for the lifetime of the process via `OnceLock`.
+fn resolve_claude_binary() -> &'static str {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    static CLAUDE_BIN: OnceLock<String> = OnceLock::new();
+    CLAUDE_BIN.get_or_init(|| {
+        if let Ok(output) = std::process::Command::new("which")
+            .arg("claude")
+            .output()
+        {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return path;
+                }
+            }
+        }
+
+        let home = std::env::var("HOME").unwrap_or_default();
+        let candidates: Vec<PathBuf> = vec![
+            PathBuf::from(&home).join(".local/bin/claude"),
+            PathBuf::from("/opt/homebrew/bin/claude"),
+            PathBuf::from("/usr/local/bin/claude"),
+            PathBuf::from(&home).join(".nvm/current/bin/claude"),
+            PathBuf::from(&home).join(".volta/bin/claude"),
+        ];
+
+        for candidate in candidates {
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+
+        "claude".to_string()
+    })
+}
+
 async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> {
-    let mut child = Command::new("claude")
+    let mut child = Command::new(resolve_claude_binary())
         .args(["--model", model, "--print"])
         .env("CLAUDECODE", "") // prevent recursive Claude Code invocation
         .stdin(Stdio::piped())
@@ -96,8 +138,8 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
         .spawn()
         .map_err(|e| {
             format!(
-                "Failed to run claude CLI: {}. Is the `claude` command installed and on your PATH?",
-                e
+                "Failed to run claude CLI: {} (os error {}). Is the `claude` command installed and on your PATH?",
+                e, e.raw_os_error().unwrap_or(-1)
             )
         })?;
 
