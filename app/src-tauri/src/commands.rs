@@ -2,7 +2,7 @@ use crate::bedrock::{region_from_arn, BedrockClient};
 use crate::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use crate::fetch::fetch_pr_impl;
 use crate::github::GithubClient;
-use crate::types::{PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use crate::types::{MyReviewState, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
 use crate::manifest_cache::{self, CachedPrInfo};
 use crate::viewed_state::{self, ViewedFileState};
 use std::fs;
@@ -139,6 +139,15 @@ pub async fn update_review_comment(
 ) -> Result<ReviewComment, String> {
     let github = github_client();
     github.update_review_comment(&comment_id, &body).await
+}
+
+#[command]
+pub async fn get_my_review_state(pr_url: String) -> Result<MyReviewState, String> {
+    let github = github_client();
+    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    github
+        .get_my_review_state(&parsed.owner, &parsed.repo, parsed.number)
+        .await
 }
 
 #[command]

@@ -12,7 +12,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
 import { SearchBar } from "./components/SearchBar";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState } from "./types";
 import { parsePrUrl } from "./utils";
 
 function App() {
@@ -100,6 +100,16 @@ function App() {
     setShowOpener(false);
     setError(null);
     loadPersistedViewedState(tab);
+    fetchMyReviewState(tab.id, data.pr_url);
+  }
+
+  async function fetchMyReviewState(tabId: string, prUrl: string) {
+    try {
+      const state = await invoke<MyReviewState>("get_my_review_state", { prUrl });
+      updateTab(tabId, (t) => ({ ...t, myReviewState: state }));
+    } catch {
+      // Non-critical: if fetching fails, button stays enabled
+    }
   }
 
   function reconcileViewedFiles(
@@ -247,6 +257,7 @@ function App() {
 
       updateTab(tab.id, () => refreshedTab);
       persistViewedState(refreshedTab);
+      fetchMyReviewState(tab.id, newManifest.pr_url);
 
       if (parts.length > 0) {
         addToast("success", `PR updated: ${parts.join(", ")}`);
@@ -518,6 +529,22 @@ function App() {
         event,
         body,
       });
+
+      // Update review state immediately (submitting clears the review request)
+      const statusMap: Record<string, string> = {
+        APPROVE: "approved",
+        REQUEST_CHANGES: "changes_requested",
+        COMMENT: "commented",
+      };
+      updateTab(activeTabId, (t) => ({
+        ...t,
+        myReviewState: {
+          status: statusMap[event] as MyReviewState["status"],
+          is_re_requested: false,
+          is_merged: t.myReviewState?.is_merged ?? false,
+        },
+      }));
+
       // Re-fetch threads to update resolved states
       if (tab.commentThreads.status === "loaded") {
         const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
@@ -709,6 +736,7 @@ function App() {
         onSubmitReview={activeTab ? handleSubmitReview : undefined}
         onRefresh={activeTab ? () => handleRefreshPr() : undefined}
         isRefreshing={activeTab?.isRefreshing}
+        myReviewState={activeTab?.myReviewState}
       />
       <SettingsModal
         open={settingsOpen}
