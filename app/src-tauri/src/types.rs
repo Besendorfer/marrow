@@ -188,6 +188,13 @@ pub struct PrUpdateStatus {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MyReviewState {
+    pub status: String,
+    pub is_re_requested: bool,
+    pub is_merged: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewRequestItem {
     pub owner: String,
     pub repo: String,

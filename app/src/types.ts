@@ -103,6 +103,7 @@ export interface Tab {
   sidebarView: SidebarView;
   isRefreshing?: boolean;
   lastCommentCount?: number;
+  myReviewState?: MyReviewState;
 }
 
 export interface PrUpdateStatus {
@@ -130,6 +131,12 @@ export interface Settings {
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
+
+export interface MyReviewState {
+  status: ReviewStatus;
+  is_re_requested: boolean;
+  is_merged: boolean;
+}
 
 export interface ViewedFileState {
   files: Record<string, string>; // path -> diff_hash

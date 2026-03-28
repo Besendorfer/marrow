@@ -1,4 +1,4 @@
-use crate::types::{CommentAuthor, PrFile, PrMetadata, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CommentAuthor, MyReviewState, PrFile, PrMetadata, ReviewComment, ReviewRequestItem, ReviewThread};
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::Client;
@@ -89,6 +89,47 @@ fn parse_review_thread(node: &serde_json::Value) -> ReviewThread {
         diff_hunk,
         comments,
     }
+}
+
+/// Check whether `username` appears as a requested reviewer in a
+/// `reviewRequests { nodes { requestedReviewer { login } } }` JSON array.
+fn is_user_in_review_requests(nodes: &[serde_json::Value], username: &str) -> bool {
+    nodes.iter().any(|node| {
+        node.pointer("/requestedReviewer/login")
+            .and_then(|l| l.as_str())
+            .map(|l| l.eq_ignore_ascii_case(username))
+            .unwrap_or(false)
+    })
+}
+
+/// Determine the latest decisive review status for `username` from a
+/// `reviews { nodes { author { login } state } }` JSON array.
+/// Returns one of: "pending", "approved", "changes_requested", "dismissed", "commented".
+fn resolve_user_review_status(reviews: &[serde_json::Value], username: &str) -> String {
+    let mut status = "pending".to_string();
+    for review in reviews {
+        let author = review
+            .pointer("/author/login")
+            .and_then(|l| l.as_str())
+            .unwrap_or("");
+        if !author.eq_ignore_ascii_case(username) {
+            continue;
+        }
+        if let Some(state) = review.get("state").and_then(|s| s.as_str()) {
+            match state {
+                "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED" => {
+                    status = state.to_lowercase();
+                }
+                "COMMENTED" => {
+                    if status == "pending" {
+                        status = "commented".to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    status
 }
 
 impl GithubClient {
@@ -552,42 +593,12 @@ impl GithubClient {
                 None => continue,
             };
 
-            // Direct vs team: check if user is in requestedReviewer users
             if let Some(nodes) = pr.pointer("/reviewRequests/nodes").and_then(|v| v.as_array()) {
-                item.direct_request = nodes.iter().any(|node| {
-                    node.pointer("/requestedReviewer/login")
-                        .and_then(|l| l.as_str())
-                        .map(|l| l.eq_ignore_ascii_case(username))
-                        .unwrap_or(false)
-                });
+                item.direct_request = is_user_in_review_requests(nodes, username);
             }
 
-            // My review status: find latest decisive review by the user
             if let Some(reviews) = pr.pointer("/reviews/nodes").and_then(|v| v.as_array()) {
-                let mut status = "pending".to_string();
-                for review in reviews {
-                    let author = review
-                        .pointer("/author/login")
-                        .and_then(|l| l.as_str())
-                        .unwrap_or("");
-                    if !author.eq_ignore_ascii_case(username) {
-                        continue;
-                    }
-                    if let Some(state) = review.get("state").and_then(|s| s.as_str()) {
-                        match state {
-                            "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED" => {
-                                status = state.to_lowercase();
-                            }
-                            "COMMENTED" => {
-                                if status == "pending" {
-                                    status = "commented".to_string();
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                item.my_review_status = status;
+                item.my_review_status = resolve_user_review_status(reviews, username);
             }
 
             // Unresolved thread count
@@ -1014,5 +1025,75 @@ impl GithubClient {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| "Could not find PR node ID".to_string())
+    }
+
+    /// Get the current user's review state on a PR, including whether they've
+    /// been re-requested for review.
+    pub async fn get_my_review_state(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<MyReviewState, String> {
+        let query = format!(
+            r#"{{
+                viewer {{ login }}
+                repository(owner: "{}", name: "{}") {{
+                    pullRequest(number: {}) {{
+                        merged
+                        reviewRequests(first: 20) {{
+                            nodes {{
+                                requestedReviewer {{
+                                    ... on User {{ login }}
+                                }}
+                            }}
+                        }}
+                        reviews(last: 100) {{
+                            nodes {{
+                                author {{ login }}
+                                state
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            owner, repo, pr_number
+        );
+
+        let result = self
+            .graphql_request(serde_json::json!({ "query": query }))
+            .await?;
+
+        let viewer_login = result
+            .pointer("/data/viewer/login")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let pr = result
+            .pointer("/data/repository/pullRequest")
+            .ok_or("Could not find PR data")?;
+
+        let is_merged = pr
+            .get("merged")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let is_re_requested = pr
+            .pointer("/reviewRequests/nodes")
+            .and_then(|v| v.as_array())
+            .map(|nodes| is_user_in_review_requests(nodes, viewer_login))
+            .unwrap_or(false);
+
+        let status = pr
+            .pointer("/reviews/nodes")
+            .and_then(|v| v.as_array())
+            .map(|reviews| resolve_user_review_status(reviews, viewer_login))
+            .unwrap_or_else(|| "pending".to_string());
+
+        Ok(MyReviewState {
+            status,
+            is_re_requested,
+            is_merged,
+        })
     }
 }
