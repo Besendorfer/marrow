@@ -1,5 +1,6 @@
 mod ai;
 mod bedrock;
+mod checks_dismiss;
 mod commands;
 mod config;
 mod fetch;
@@ -43,6 +44,9 @@ pub fn run() {
             commands::load_viewed_files,
             commands::save_viewed_files,
             commands::list_cached_prs,
+            commands::get_pr_checks,
+            commands::dismiss_checks_warning,
+            commands::is_checks_dismissed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

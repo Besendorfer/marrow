@@ -9,10 +9,11 @@ import { PrOpener } from "./components/PrOpener";
 import { ReviewRequestList } from "./components/ReviewRequestList";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
+import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
 import { SearchBar } from "./components/SearchBar";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus } from "./types";
 import { parsePrUrl } from "./utils";
 
 function App() {
@@ -35,6 +36,8 @@ function App() {
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [toasts, setToasts] = useState<ToastData[]>([]);
+  const [checksMap, setChecksMap] = useState<Record<string, PrChecksStatus>>({});
+  const [checksDismissed, setChecksDismissed] = useState<Record<string, boolean>>({});
 
   const addToast = useCallback((type: ToastData["type"], message: string) => {
     setToasts((prev) => [...prev, createToast(type, message)]);
@@ -46,6 +49,9 @@ function App() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const openPrUrls = useMemo(() => new Set(tabs.map((t) => t.manifest.pr_url)), [tabs]);
+
+  const activeChecks = activeTab ? checksMap[activeTab.id] : undefined;
+  const showChecksModal = !!activeTab && !!activeChecks && activeChecks.overall_state !== "success" && !checksDismissed[activeTab.manifest.pr_url];
 
   const selectedFilePath = activeTab?.selectedFile?.path ?? null;
   const fileSearchMatches = useMemo(
@@ -101,6 +107,7 @@ function App() {
     setError(null);
     loadPersistedViewedState(tab);
     fetchMyReviewState(tab.id, data.pr_url);
+    fetchChecksStatus(tab.id, data.pr_url);
   }
 
   async function fetchMyReviewState(tabId: string, prUrl: string) {
@@ -109,6 +116,30 @@ function App() {
       updateTab(tabId, (t) => ({ ...t, myReviewState: state }));
     } catch {
       // Non-critical: if fetching fails, button stays enabled
+    }
+  }
+
+  async function fetchChecksStatus(tabId: string, prUrl: string) {
+    try {
+      const [checks, dismissed] = await Promise.all([
+        invoke<PrChecksStatus>("get_pr_checks", { prUrl }),
+        invoke<boolean>("is_checks_dismissed", { prUrl }),
+      ]);
+      setChecksMap((prev) => ({ ...prev, [tabId]: checks }));
+      if (dismissed) {
+        setChecksDismissed((prev) => ({ ...prev, [prUrl]: true }));
+      }
+    } catch {
+      // Non-critical: if fetching fails, don't block the review
+    }
+  }
+
+  async function handleDismissChecks(prUrl: string) {
+    setChecksDismissed((prev) => ({ ...prev, [prUrl]: true }));
+    try {
+      await invoke("dismiss_checks_warning", { prUrl });
+    } catch {
+      // Persistence failure is non-critical
     }
   }
 
@@ -193,6 +224,10 @@ function App() {
   tabsRef.current = tabs;
   const loadingRef = useRef(loading);
   loadingRef.current = loading;
+  const checksMapRef = useRef(checksMap);
+  checksMapRef.current = checksMap;
+  const checksDismissedRef = useRef(checksDismissed);
+  checksDismissedRef.current = checksDismissed;
 
   function updateTab(tabId: string | null, updater: (tab: Tab) => Tab) {
     setTabs((prev) => prev.map((t) => (t.id === tabId ? updater(t) : t)));
@@ -258,6 +293,7 @@ function App() {
       updateTab(tab.id, () => refreshedTab);
       persistViewedState(refreshedTab);
       fetchMyReviewState(tab.id, newManifest.pr_url);
+      fetchChecksStatus(tab.id, newManifest.pr_url);
 
       if (parts.length > 0) {
         addToast("success", `PR updated: ${parts.join(", ")}`);
@@ -600,6 +636,11 @@ function App() {
     const idx = tabs.findIndex((t) => t.id === tabId);
     const next = tabs.filter((t) => t.id !== tabId);
     setTabs(next);
+    setChecksMap((prev) => {
+      const copy = { ...prev };
+      delete copy[tabId];
+      return copy;
+    });
     if (tabId === activeTabId) {
       if (next.length === 0) {
         setActiveTabId(null);
@@ -634,6 +675,39 @@ function App() {
         })
       );
     }, 60_000);
+
+    return () => clearInterval(interval);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const currentTabs = tabsRef.current;
+      if (loadingRef.current || currentTabs.length === 0) return;
+
+      const pollableTabs = currentTabs.filter((tab) => {
+        const existing = checksMapRef.current[tab.id];
+        if (existing && existing.overall_state === "success") return false;
+        if (checksDismissedRef.current[tab.manifest.pr_url]) return false;
+        return true;
+      });
+
+      await Promise.allSettled(
+        pollableTabs.map(async (tab) => {
+          try {
+            const checks = await invoke<PrChecksStatus>("get_pr_checks", {
+              prUrl: tab.manifest.pr_url,
+            });
+            setChecksMap((prev) => {
+              const existing = prev[tab.id];
+              if (existing && existing.overall_state === checks.overall_state) return prev;
+              return { ...prev, [tab.id]: checks };
+            });
+          } catch {
+            // Poll will retry
+          }
+        })
+      );
+    }, 30_000);
 
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -742,6 +816,12 @@ function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+      {showChecksModal && (
+        <ChecksBlockingModal
+          checksStatus={activeChecks!}
+          onDismiss={() => handleDismissChecks(activeTab!.manifest.pr_url)}
+        />
+      )}
       {activeTab && (
         <>
         <SearchBar

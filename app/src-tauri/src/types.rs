@@ -195,6 +195,20 @@ pub struct MyReviewState {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CheckRunInfo {
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub details_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PrChecksStatus {
+    pub overall_state: String,
+    pub check_runs: Vec<CheckRunInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewRequestItem {
     pub owner: String,
     pub repo: String,
