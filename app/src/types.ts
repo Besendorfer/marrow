@@ -138,6 +138,18 @@ export interface MyReviewState {
   is_merged: boolean;
 }
 
+export interface CheckRunInfo {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  details_url: string | null;
+}
+
+export interface PrChecksStatus {
+  overall_state: string;
+  check_runs: CheckRunInfo[];
+}
+
 export interface ViewedFileState {
   files: Record<string, string>; // path -> diff_hash
 }

@@ -1,4 +1,4 @@
-use crate::types::{CommentAuthor, MyReviewState, PrFile, PrMetadata, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrMetadata, ReviewComment, ReviewRequestItem, ReviewThread};
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::Client;
@@ -1025,6 +1025,115 @@ impl GithubClient {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| "Could not find PR node ID".to_string())
+    }
+
+    /// Get the combined status of all checks on the PR's head commit.
+    pub async fn get_pr_checks(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<PrChecksStatus, String> {
+        let query = format!(
+            r#"{{
+                repository(owner: "{}", name: "{}") {{
+                    pullRequest(number: {}) {{
+                        commits(last: 1) {{
+                            nodes {{
+                                commit {{
+                                    statusCheckRollup {{
+                                        state
+                                        contexts(first: 100) {{
+                                            nodes {{
+                                                ... on CheckRun {{
+                                                    __typename
+                                                    name
+                                                    status
+                                                    conclusion
+                                                    detailsUrl
+                                                }}
+                                                ... on StatusContext {{
+                                                    __typename
+                                                    context
+                                                    state
+                                                    targetUrl
+                                                }}
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            owner, repo, pr_number
+        );
+
+        let result = self
+            .graphql_request(serde_json::json!({ "query": query }))
+            .await?;
+
+        let commit = result
+            .pointer("/data/repository/pullRequest/commits/nodes/0/commit");
+
+        let rollup = commit.and_then(|c| c.get("statusCheckRollup"));
+
+        // If there's no statusCheckRollup, the PR has no checks configured
+        let overall_state = rollup
+            .and_then(|r| r.get("state"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("SUCCESS")
+            .to_uppercase();
+
+        let contexts = rollup
+            .and_then(|r| r.pointer("/contexts/nodes"))
+            .and_then(|v| v.as_array());
+
+        let mut check_runs = Vec::new();
+        if let Some(nodes) = contexts {
+            for node in nodes {
+                let typename = node.get("__typename").and_then(|v| v.as_str()).unwrap_or("");
+                match typename {
+                    "CheckRun" => {
+                        let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let status = node.get("status").and_then(|v| v.as_str()).unwrap_or("QUEUED").to_string();
+                        let conclusion = node.get("conclusion").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let details_url = node.get("detailsUrl").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        check_runs.push(CheckRunInfo { name, status, conclusion, details_url });
+                    }
+                    "StatusContext" => {
+                        let name = node.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let state = node.get("state").and_then(|v| v.as_str()).unwrap_or("PENDING").to_string();
+                        let conclusion = match state.as_str() {
+                            "SUCCESS" => Some("SUCCESS".to_string()),
+                            "FAILURE" | "ERROR" => Some("FAILURE".to_string()),
+                            _ => None,
+                        };
+                        let status = match state.as_str() {
+                            "PENDING" | "EXPECTED" => "IN_PROGRESS".to_string(),
+                            _ => "COMPLETED".to_string(),
+                        };
+                        let details_url = node.get("targetUrl").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        check_runs.push(CheckRunInfo { name, status, conclusion, details_url });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Normalize overall state to lowercase for frontend consistency
+        let overall_state = match overall_state.as_str() {
+            "SUCCESS" => "success".to_string(),
+            "FAILURE" | "ERROR" => "failure".to_string(),
+            "PENDING" | "EXPECTED" => "pending".to_string(),
+            other => other.to_lowercase(),
+        };
+
+        Ok(PrChecksStatus {
+            overall_state,
+            check_runs,
+        })
     }
 
     /// Get the current user's review state on a PR, including whether they've

@@ -53,6 +53,7 @@ interface HeaderProps {
   onRefresh?: () => void;
   isRefreshing?: boolean;
   myReviewState?: MyReviewState;
+  checksBlocking?: boolean;
 }
 
 export function Header({
@@ -76,6 +77,7 @@ export function Header({
   onRefresh,
   isRefreshing,
   myReviewState,
+  checksBlocking,
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
@@ -145,7 +147,7 @@ export function Header({
             )}
           </div>
           <div className="header-right">
-            {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} myReviewState={myReviewState} />}
+            {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} myReviewState={myReviewState} checksBlocking={checksBlocking} />}
             <ToolbarMenu
               viewMode={viewMode}
               onViewModeChange={onViewModeChange}
@@ -269,12 +271,14 @@ function ReviewSubmitButton({
   prTitle,
   prUrl,
   myReviewState,
+  checksBlocking,
 }: {
   commentThreads?: CommentThreadsState;
   onSubmitReview: (event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) => Promise<void>;
   prTitle: string;
   prUrl: string;
   myReviewState?: MyReviewState;
+  checksBlocking?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [body, setBody] = useState("");
@@ -296,14 +300,17 @@ function ReviewSubmitButton({
     myReviewState.status !== "dismissed" &&
     !myReviewState.is_re_requested;
 
+  const isDisabled = hasSubmittedReview || !!checksBlocking;
   const isMerged = myReviewState?.is_merged ?? false;
 
-  const disabledTooltip = hasSubmittedReview
-    ? `You already ${REVIEW_VERB[myReviewState!.status] ?? "reviewed"} this PR`
-    : undefined;
+  const disabledTooltip = checksBlocking
+    ? "CI checks are pending or failing"
+    : hasSubmittedReview
+      ? `You already ${REVIEW_VERB[myReviewState!.status] ?? "reviewed"} this PR`
+      : undefined;
 
   async function handleOpen() {
-    if (hasSubmittedReview) return;
+    if (isDisabled) return;
     const wasOpen = isOpen;
     setIsOpen((v) => !v);
     if (wasOpen) return;
@@ -351,13 +358,13 @@ function ReviewSubmitButton({
   return (
     <div className="review-submit-wrapper" ref={wrapperRef}>
       <button
-        className={`review-submit-toggle${hasSubmittedReview ? " review-submit-disabled" : ""}`}
+        className={`review-submit-toggle${isDisabled ? " review-submit-disabled" : ""}`}
         onClick={handleOpen}
-        disabled={hasSubmittedReview}
+        disabled={isDisabled}
         title={disabledTooltip}
       >
         Finish Review
-        {unresolvedCount > 0 && !hasSubmittedReview && (
+        {unresolvedCount > 0 && !isDisabled && (
           <span className="review-submit-badge">{unresolvedCount}</span>
         )}
         {hasSubmittedReview && (
