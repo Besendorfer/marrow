@@ -1818,16 +1818,26 @@ body {
   border-color: var(--text-muted);
 }
 
+/* Review content wrapper — positioning context for checks modal */
+
+.review-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
 /* Checks blocking modal */
 
 .checks-modal-overlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 200;
+  z-index: 50;
 }
 
 .checks-modal {

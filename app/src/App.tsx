@@ -816,14 +816,14 @@ function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
-      {showChecksModal && (
-        <ChecksBlockingModal
-          checksStatus={activeChecks!}
-          onDismiss={() => handleDismissChecks(activeTab!.manifest.pr_url)}
-        />
-      )}
       {activeTab && (
-        <>
+        <div className="review-content">
+        {showChecksModal && (
+          <ChecksBlockingModal
+            checksStatus={activeChecks!}
+            onDismiss={() => handleDismissChecks(activeTab.manifest.pr_url)}
+          />
+        )}
         <SearchBar
           files={activeTab.manifest.files}
           selectedFile={activeTab.selectedFile}
@@ -881,7 +881,7 @@ function App() {
             )}
           </div>
         </div>
-        </>
+        </div>
       )}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </div>
