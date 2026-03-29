@@ -1,20 +1,23 @@
-import type { PrChecksStatus } from "../types";
+import type { PrChecksStatus, CheckRunInfo } from "../types";
 
 interface ChecksBlockingModalProps {
   checksStatus: PrChecksStatus;
   onDismiss: () => void;
 }
 
+function checkState(check: CheckRunInfo): "success" | "pending" | "fail" {
+  if (check.status !== "COMPLETED") return "pending";
+  if (check.conclusion === "SUCCESS" || check.conclusion === "NEUTRAL" || check.conclusion === "SKIPPED") return "success";
+  return "fail";
+}
+
 export function ChecksBlockingModal({ checksStatus, onDismiss }: ChecksBlockingModalProps) {
   const isPending = checksStatus.overall_state === "pending";
-  const isFailing = checksStatus.overall_state === "failure";
 
-  const failingChecks = checksStatus.check_runs.filter(
-    (c) => c.conclusion === "FAILURE" || c.conclusion === "CANCELLED" || c.conclusion === "TIMED_OUT"
-  );
-  const pendingChecks = checksStatus.check_runs.filter(
-    (c) => c.status !== "COMPLETED"
-  );
+  const sorted = [...checksStatus.check_runs].sort((a, b) => {
+    const order = { fail: 0, pending: 1, success: 2 };
+    return order[checkState(a)] - order[checkState(b)];
+  });
 
   return (
     <div className="checks-modal-overlay">
@@ -35,29 +38,21 @@ export function ChecksBlockingModal({ checksStatus, onDismiss }: ChecksBlockingM
             : "One or more CI checks have failed. You may want to wait for fixes before reviewing."}
         </p>
 
-        {failingChecks.length > 0 && (
+        {sorted.length > 0 ? (
           <div className="checks-modal-list">
-            {failingChecks.map((check) => (
-              <div key={check.name} className="checks-modal-item checks-modal-item-fail">
-                <span className="checks-modal-item-icon">&times;</span>
-                <span className="checks-modal-item-name">{check.name}</span>
-              </div>
-            ))}
+            {sorted.map((check) => {
+              const state = checkState(check);
+              return (
+                <div key={check.name} className={`checks-modal-item checks-modal-item-${state}`}>
+                  {state === "success" && <span className="checks-modal-item-icon">&#x2713;</span>}
+                  {state === "fail" && <span className="checks-modal-item-icon">&times;</span>}
+                  {state === "pending" && <span className="checks-modal-item-icon checks-modal-dot-pulse" />}
+                  <span className="checks-modal-item-name">{check.name}</span>
+                </div>
+              );
+            })}
           </div>
-        )}
-
-        {pendingChecks.length > 0 && (
-          <div className="checks-modal-list">
-            {pendingChecks.map((check) => (
-              <div key={check.name} className="checks-modal-item checks-modal-item-pending">
-                <span className="checks-modal-item-icon checks-modal-dot-pulse" />
-                <span className="checks-modal-item-name">{check.name}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {isFailing && failingChecks.length === 0 && pendingChecks.length === 0 && (
+        ) : (
           <div className="checks-modal-list">
             <div className="checks-modal-item checks-modal-item-fail">
               <span className="checks-modal-item-icon">&times;</span>

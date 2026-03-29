@@ -1926,6 +1926,10 @@ body {
   font-weight: 600;
 }
 
+.checks-modal-item-success .checks-modal-item-icon {
+  color: #3fb950;
+}
+
 .checks-modal-item-fail .checks-modal-item-icon {
   color: #f85149;
 }
