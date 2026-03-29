@@ -811,6 +811,7 @@ function App() {
         onRefresh={activeTab ? () => handleRefreshPr() : undefined}
         isRefreshing={activeTab?.isRefreshing}
         myReviewState={activeTab?.myReviewState}
+        checksBlocking={showChecksModal}
       />
       <SettingsModal
         open={settingsOpen}
