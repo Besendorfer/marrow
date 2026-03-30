@@ -54,6 +54,7 @@ interface HeaderProps {
   isRefreshing?: boolean;
   myReviewState?: MyReviewState;
   checksBlocking?: boolean;
+  onCheckForUpdates: () => void;
 }
 
 export function Header({
@@ -78,6 +79,7 @@ export function Header({
   isRefreshing,
   myReviewState,
   checksBlocking,
+  onCheckForUpdates,
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
@@ -157,6 +159,7 @@ export function Header({
               onToggleAiNotes={onToggleAiNotes}
               prUrl={manifest.pr_url}
               onSettingsClick={onSettingsClick}
+              onCheckForUpdates={onCheckForUpdates}
             />
           </div>
         </div>
@@ -179,6 +182,7 @@ function ToolbarMenu({
   onToggleAiNotes,
   prUrl,
   onSettingsClick,
+  onCheckForUpdates,
 }: {
   viewMode: DiffViewMode;
   onViewModeChange: (mode: DiffViewMode) => void;
@@ -188,6 +192,7 @@ function ToolbarMenu({
   onToggleAiNotes: () => void;
   prUrl: string;
   onSettingsClick: () => void;
+  onCheckForUpdates: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -258,6 +263,16 @@ function ToolbarMenu({
           >
             <span className="toolbar-menu-check" />
             Settings
+          </button>
+          <button
+            className="toolbar-menu-item"
+            onClick={() => {
+              onCheckForUpdates();
+              setIsOpen(false);
+            }}
+          >
+            <span className="toolbar-menu-check" />
+            Check for Updates
           </button>
         </div>
       )}
