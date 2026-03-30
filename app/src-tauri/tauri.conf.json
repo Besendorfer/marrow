@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nickkadutskyi/jb-tauri-plugin/refs/heads/main/schemas/tauri.conf.json",
   "productName": "Relevant Reviews",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "identifier": "com.relevant-reviews.app",
   "build": {
     "frontendDist": "../dist",
