@@ -106,6 +106,7 @@ export function Header({
                 onCloseTab(tab.id);
               }}
               title="Close tab"
+              aria-label="Close tab"
             >
               &times;
             </button>

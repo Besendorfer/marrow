@@ -53,7 +53,7 @@ export function UpdateBanner({
         </>
       )}
       {dismissible && (
-        <button className="update-banner-dismiss" onClick={onDismiss}>
+        <button className="update-banner-dismiss" onClick={onDismiss} aria-label="Dismiss update notification">
           &times;
         </button>
       )}

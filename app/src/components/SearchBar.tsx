@@ -269,7 +269,7 @@ export function SearchBar({
         <button className="search-nav-btn" onClick={goNext} disabled={allMatches.length === 0} title="Next (Enter)">
           &#9660;
         </button>
-        <button className="search-close-btn" onClick={close} title="Close (Esc)">
+        <button className="search-close-btn" onClick={close} title="Close (Esc)" aria-label="Close search">
           &times;
         </button>
       </div>
