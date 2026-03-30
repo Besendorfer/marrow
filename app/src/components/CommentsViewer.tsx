@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import type { ReviewThread, ReviewComment } from "../types";
 import { timeAgo } from "../utils";
-import { CommentBodyRendered } from "./DiffViewer";
+import { CommentBodyRendered, ReactionBar } from "./DiffViewer";
 
 interface CommentsViewerProps {
   threads: ReviewThread[];
@@ -9,16 +9,19 @@ interface CommentsViewerProps {
   onReply: (threadId: string, commentId: string, body: string) => void;
   onToggleResolved: (threadId: string, resolve: boolean) => void;
   onEditComment?: (commentId: string, body: string) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   lang?: string;
 }
 
 function CommentCard({
   comment,
   onEdit,
+  onToggleReaction,
   lang,
 }: {
   comment: ReviewComment;
   onEdit?: (commentId: string, body: string) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   lang?: string;
 }) {
   const [editing, setEditing] = useState(false);
@@ -67,7 +70,10 @@ function CommentCard({
           </div>
         </div>
       ) : (
-        <CommentBodyRendered body={comment.body} lang={lang} />
+        <>
+          <CommentBodyRendered body={comment.body} lang={lang} />
+          {onToggleReaction && <ReactionBar reactions={comment.reactions ?? []} commentId={comment.id} onToggleReaction={onToggleReaction} />}
+        </>
       )}
     </div>
   );
@@ -78,12 +84,14 @@ function ThreadCard({
   onReply,
   onToggleResolved,
   onEdit,
+  onToggleReaction,
   lang,
 }: {
   thread: ReviewThread;
   onReply: (threadId: string, commentId: string, body: string) => void;
   onToggleResolved: (threadId: string, resolve: boolean) => void;
   onEdit?: (commentId: string, body: string) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   lang?: string;
 }) {
   const [hunkExpanded, setHunkExpanded] = useState(!thread.is_resolved);
@@ -142,7 +150,7 @@ function ThreadCard({
 
           <div className="thread-comments">
             {thread.comments.map((comment) => (
-              <CommentCard key={comment.id} comment={comment} onEdit={onEdit} lang={lang} />
+              <CommentCard key={comment.id} comment={comment} onEdit={onEdit} onToggleReaction={onToggleReaction} lang={lang} />
             ))}
           </div>
 
@@ -205,6 +213,7 @@ export function CommentsViewer({
   onReply,
   onToggleResolved,
   onEditComment,
+  onToggleReaction,
   lang,
 }: CommentsViewerProps) {
   if (!selectedFile) {
@@ -249,6 +258,7 @@ export function CommentsViewer({
             onReply={onReply}
             onToggleResolved={onToggleResolved}
             onEdit={onEditComment}
+            onToggleReaction={onToggleReaction}
             lang={lang}
           />
         ))}
@@ -259,6 +269,7 @@ export function CommentsViewer({
             onReply={onReply}
             onToggleResolved={onToggleResolved}
             onEdit={onEditComment}
+            onToggleReaction={onToggleReaction}
             lang={lang}
           />
         ))}

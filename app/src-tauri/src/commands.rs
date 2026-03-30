@@ -205,6 +205,16 @@ pub async fn toggle_thread_resolved(
 }
 
 #[command]
+pub async fn toggle_reaction(
+    comment_id: String,
+    content: String,
+    add: bool,
+) -> Result<(), String> {
+    let github = github_client();
+    github.toggle_reaction(&comment_id, &content, add).await
+}
+
+#[command]
 pub fn load_viewed_files(owner: String, repo: String, pr_number: u64) -> Option<ViewedFileState> {
     viewed_state::load_viewed_state(&owner, &repo, pr_number)
 }

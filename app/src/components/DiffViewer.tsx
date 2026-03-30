@@ -1,7 +1,7 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
-import type { FileDiff, DiffViewMode, Highlight, ReviewThread, ReviewComment, SearchMatch } from "../types";
+import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch } from "../types";
 import { timeAgo } from "../utils";
 
 const extToLang: Record<string, string> = {
@@ -100,6 +100,9 @@ interface DiffViewerProps {
   showAiNotes: boolean;
   onCreateComment?: (path: string, endLine: number, side: "LEFT" | "RIGHT", body: string, startLine?: number, startSide?: "LEFT" | "RIGHT") => Promise<void>;
   onEditComment?: (commentId: string, body: string) => void;
+  onReply?: (threadId: string, commentId: string, body: string) => void;
+  onToggleResolved?: (threadId: string, resolve: boolean) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   reviewThreads?: ReviewThread[];
   searchMatches?: SearchMatch[];
   currentSearchMatch?: SearchMatch | null;
@@ -306,20 +309,119 @@ function EditableCommentBody({
   );
 }
 
+const REACTION_EMOJI: Record<string, string> = {
+  THUMBS_UP: "\uD83D\uDC4D",
+  THUMBS_DOWN: "\uD83D\uDC4E",
+  LAUGH: "\uD83D\uDE04",
+  HOORAY: "\uD83C\uDF89",
+  CONFUSED: "\uD83D\uDE15",
+  HEART: "\u2764\uFE0F",
+  ROCKET: "\uD83D\uDE80",
+  EYES: "\uD83D\uDC40",
+};
+
+const REACTION_CONTENTS = Object.keys(REACTION_EMOJI);
+
+export function ReactionBar({
+  reactions,
+  commentId,
+  onToggleReaction,
+}: {
+  reactions: ReactionGroup[];
+  commentId: string;
+  onToggleReaction: (commentId: string, content: string) => void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setPickerOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [pickerOpen]);
+
+  return (
+    <div className="reaction-bar">
+      {reactions.map((r) => (
+        <button
+          key={r.content}
+          className={`reaction-pill ${r.viewer_has_reacted ? "reaction-pill-active" : ""}`}
+          onClick={() => onToggleReaction(commentId, r.content)}
+          title={r.content.toLowerCase().replace(/_/g, " ")}
+        >
+          {REACTION_EMOJI[r.content] ?? r.content} {r.total_count}
+        </button>
+      ))}
+      <div className="reaction-picker-wrapper" ref={pickerRef}>
+        <button
+          className="reaction-add-button"
+          onClick={() => setPickerOpen((v) => !v)}
+          title="Add reaction"
+        >
+          +
+        </button>
+        {pickerOpen && (
+          <div className="reaction-picker">
+            {REACTION_CONTENTS.map((content) => (
+              <button
+                key={content}
+                className="reaction-picker-item"
+                onClick={() => {
+                  onToggleReaction(commentId, content);
+                  setPickerOpen(false);
+                }}
+                title={content.toLowerCase().replace(/_/g, " ")}
+              >
+                {REACTION_EMOJI[content]}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InlineThreadMarker({
   thread,
   colSpan,
   onEdit,
+  onReply,
+  onToggleResolved,
+  onToggleReaction,
   lang,
 }: {
   thread: ReviewThread;
   colSpan: number;
   onEdit?: (commentId: string, body: string) => void;
+  onReply?: (threadId: string, commentId: string, body: string) => void;
+  onToggleResolved?: (threadId: string, resolve: boolean) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   lang?: string;
 }) {
   const [collapsed, setCollapsed] = useState(thread.is_resolved);
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyText, setReplyText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const isSingle = thread.comments.length === 1;
   const first = thread.comments[0];
+  const lastComment = thread.comments[thread.comments.length - 1];
+
+  function handleSubmitReply() {
+    if (!replyText.trim() || submitting || !onReply) return;
+    setSubmitting(true);
+    onReply(thread.id, lastComment.id, replyText.trim());
+    setReplyText("");
+    setReplyOpen(false);
+    setSubmitting(false);
+  }
+
+  const showActions = onReply || onToggleResolved;
 
   return (
     <tr className={`inline-thread-row ${thread.is_resolved ? "inline-thread-resolved" : ""}`}>
@@ -337,6 +439,7 @@ function InlineThreadMarker({
                 {thread.is_resolved && <span className="inline-thread-resolved-badge">Resolved</span>}
               </div>
               <EditableCommentBody comment={first} onEdit={onEdit} lang={lang} />
+              {onToggleReaction && <ReactionBar reactions={first?.reactions ?? []} commentId={first?.id} onToggleReaction={onToggleReaction} />}
             </div>
           ) : (
             // Multi-comment: collapsible header + comment list
@@ -370,11 +473,47 @@ function InlineThreadMarker({
                         <span className="comment-time">{timeAgo(comment.created_at)}</span>
                       </div>
                       <EditableCommentBody comment={comment} onEdit={onEdit} lang={lang} />
+                      {onToggleReaction && <ReactionBar reactions={comment.reactions ?? []} commentId={comment.id} onToggleReaction={onToggleReaction} />}
                     </div>
                   ))}
                 </div>
               )}
             </>
+          )}
+          {showActions && (isSingle || !collapsed) && (
+            <div className="thread-actions">
+              {onReply && (
+                replyOpen ? (
+                  <div className="thread-reply-form" style={{ flex: 1 }}>
+                    <textarea
+                      className="reply-textarea"
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      placeholder="Write a reply..."
+                      rows={3}
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSubmitReply();
+                      }}
+                    />
+                    <div className="reply-actions">
+                      <button className="reply-cancel" onClick={() => { setReplyOpen(false); setReplyText(""); }}>Cancel</button>
+                      <button className="reply-submit" disabled={!replyText.trim() || submitting} onClick={handleSubmitReply}>Reply</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button className="reply-open-button" onClick={() => setReplyOpen(true)}>Reply...</button>
+                )
+              )}
+              {onToggleResolved && (
+                <button
+                  className={`resolve-button ${thread.is_resolved ? "resolve-button-resolved" : ""}`}
+                  onClick={() => onToggleResolved(thread.id, !thread.is_resolved)}
+                >
+                  {thread.is_resolved ? "Unresolve" : "Resolve"}
+                </button>
+              )}
+            </div>
           )}
         </div>
       </td>
@@ -656,6 +795,9 @@ function UnifiedHunkLines({
   onCancelComment,
   reviewThreads,
   onEditComment,
+  onReply,
+  onToggleResolved,
+  onToggleReaction,
   onPostHighlightAsComment,
   lang,
 }: {
@@ -670,6 +812,9 @@ function UnifiedHunkLines({
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
   onEditComment?: (commentId: string, body: string) => void;
+  onReply?: (threadId: string, commentId: string, body: string) => void;
+  onToggleResolved?: (threadId: string, resolve: boolean) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   onPostHighlightAsComment?: (h: Highlight) => void;
   lang?: string;
 }) {
@@ -756,7 +901,7 @@ function UnifiedHunkLines({
               </td>
             </tr>
             {lineThreads.map((thread) => (
-              <InlineThreadMarker key={thread.id} thread={thread} colSpan={4} onEdit={onEditComment} lang={lang} />
+              <InlineThreadMarker key={thread.id} thread={thread} colSpan={4} onEdit={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} lang={lang} />
             ))}
             {isEndOfSelection && onSubmitComment && onCancelComment && (
               <InlineCommentForm
@@ -790,6 +935,9 @@ function UnifiedView({
   onCancelComment,
   reviewThreads,
   onEditComment,
+  onReply,
+  onToggleResolved,
+  onToggleReaction,
   onPostHighlightAsComment,
   lang,
 }: {
@@ -807,6 +955,9 @@ function UnifiedView({
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
   onEditComment?: (commentId: string, body: string) => void;
+  onReply?: (threadId: string, commentId: string, body: string) => void;
+  onToggleResolved?: (threadId: string, resolve: boolean) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   onPostHighlightAsComment?: (h: Highlight) => void;
   lang?: string;
 }) {
@@ -865,13 +1016,13 @@ function UnifiedView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -895,6 +1046,9 @@ function SplitHunkLines({
   onCancelComment,
   reviewThreads,
   onEditComment,
+  onReply,
+  onToggleResolved,
+  onToggleReaction,
   onPostHighlightAsComment,
   lang,
 }: {
@@ -909,6 +1063,9 @@ function SplitHunkLines({
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
   onEditComment?: (commentId: string, body: string) => void;
+  onReply?: (threadId: string, commentId: string, body: string) => void;
+  onToggleResolved?: (threadId: string, resolve: boolean) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   onPostHighlightAsComment?: (h: Highlight) => void;
   lang?: string;
 }) {
@@ -1006,7 +1163,7 @@ function SplitHunkLines({
               </td>
             </tr>
             {lineThreads.map((thread) => (
-              <InlineThreadMarker key={thread.id} thread={thread} colSpan={4} onEdit={onEditComment} lang={lang} />
+              <InlineThreadMarker key={thread.id} thread={thread} colSpan={4} onEdit={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} lang={lang} />
             ))}
             {showForm && onSubmitComment && onCancelComment && (
               <InlineCommentForm
@@ -1040,6 +1197,9 @@ function SplitView({
   onCancelComment,
   reviewThreads,
   onEditComment,
+  onReply,
+  onToggleResolved,
+  onToggleReaction,
   onPostHighlightAsComment,
   lang,
 }: {
@@ -1057,6 +1217,9 @@ function SplitView({
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
   onEditComment?: (commentId: string, body: string) => void;
+  onReply?: (threadId: string, commentId: string, body: string) => void;
+  onToggleResolved?: (threadId: string, resolve: boolean) => void;
+  onToggleReaction?: (commentId: string, content: string) => void;
   onPostHighlightAsComment?: (h: Highlight) => void;
   lang?: string;
 }) {
@@ -1118,13 +1281,13 @@ function SplitView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                        <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -1136,7 +1299,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps) {
+export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   const diffContentRef = useRef<HTMLDivElement>(null);
@@ -1540,6 +1703,9 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               onCancelComment={handleCancelComment}
               reviewThreads={fileThreads}
               onEditComment={onEditComment}
+              onReply={onReply}
+              onToggleResolved={onToggleResolved}
+              onToggleReaction={onToggleReaction}
               onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined}
               lang={lang}
             />
@@ -1559,6 +1725,9 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               onCancelComment={handleCancelComment}
               reviewThreads={fileThreads}
               onEditComment={onEditComment}
+              onReply={onReply}
+              onToggleResolved={onToggleResolved}
+              onToggleReaction={onToggleReaction}
               onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined}
               lang={lang}
             />
@@ -1572,7 +1741,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               <col />
             </colgroup>
             <tbody>
-              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
+              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
             </tbody>
           </table>
         )}

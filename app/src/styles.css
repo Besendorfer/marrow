@@ -2777,6 +2777,102 @@ body {
   margin-top: 4px;
 }
 
+/* ─── Reactions ────────────────────────────────────────────────────────── */
+.reaction-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.6;
+}
+
+.reaction-pill:hover {
+  border-color: var(--accent);
+}
+
+.reaction-pill-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.reaction-picker-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.reaction-add-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 10px;
+  border: 1px dashed var(--border);
+  background: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.thread-comment:hover .reaction-add-button,
+.inline-thread-single:hover .reaction-add-button,
+.inline-thread-comment:hover .reaction-add-button,
+.reaction-bar:hover .reaction-add-button {
+  opacity: 1;
+}
+
+.reaction-add-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.reaction-picker {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+  white-space: nowrap;
+}
+
+.reaction-picker-item {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.reaction-picker-item:hover {
+  background: var(--bg-secondary);
+}
+
 /* ─── Inline Comment (Diff View) ───────────────────────────────────────── */
 .line-comment-button {
   display: none;
