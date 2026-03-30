@@ -41,6 +41,12 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/Besendorfer/relevant-reviews/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVBNEMwNjMxNEIxMkFEQjgKUldTNHJSSkxNUVpNV3FSc1h5bWpsMDJzUjAyeCtCb2xXZWFscDY5M05xVlpwZ21GK1l2TjhkVDEK"
     }
   }
 }

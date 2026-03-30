@@ -3414,6 +3414,92 @@ mark.search-highlight-current {
   }
 }
 
+/* ─── Update Banner ──────────────────────────────────────────────────── */
+.update-banner {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--accent);
+  z-index: 9998;
+  font-size: 13px;
+  color: var(--text-primary);
+  animation: update-slide-up 0.25s ease-out;
+}
+
+.update-banner-text {
+  flex: 1;
+}
+
+.update-banner-action {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.update-banner-action:hover {
+  opacity: 0.9;
+}
+
+.update-banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.update-banner-dismiss:hover {
+  color: var(--text-primary);
+}
+
+.update-banner-progress {
+  width: 120px;
+  height: 6px;
+  background: var(--bg-primary);
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.update-banner-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+.update-banner-pct {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 32px;
+  text-align: right;
+}
+
+@keyframes update-slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
 /* ─── Refresh Button ──────────────────────────────────────────────────── */
 .refresh-button {
   background: none;

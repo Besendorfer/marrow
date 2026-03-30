@@ -179,3 +179,11 @@ export interface ReviewRequestItem {
   my_review_status: ReviewStatus;
   unresolved_thread_count: number;
 }
+
+export type UpdateStatus =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "available"; version: string }
+  | { state: "downloading"; progress: number }
+  | { state: "ready" }
+  | { state: "up-to-date" };

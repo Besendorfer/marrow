@@ -13,7 +13,10 @@ import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
 import { SearchBar } from "./components/SearchBar";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus } from "./types";
+import { UpdateBanner } from "./components/UpdateBanner";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus } from "./types";
 import { parsePrUrl } from "./utils";
 
 function App() {
@@ -38,6 +41,10 @@ function App() {
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [checksMap, setChecksMap] = useState<Record<string, PrChecksStatus>>({});
   const [checksDismissed, setChecksDismissed] = useState<Record<string, boolean>>({});
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
+  const updateStatusRef = useRef(updateStatus.state);
+  updateStatusRef.current = updateStatus.state;
+  const pendingUpdateRef = useRef<Awaited<ReturnType<typeof check>>>(null);
 
   const addToast = useCallback((type: ToastData["type"], message: string) => {
     setToasts((prev) => [...prev, createToast(type, message)]);
@@ -46,6 +53,59 @@ function App() {
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  const checkForUpdates = useCallback(async (silent = false) => {
+    if (updateStatusRef.current === "checking" || updateStatusRef.current === "downloading") return;
+    setUpdateStatus({ state: "checking" });
+    try {
+      const update = await check();
+      if (update) {
+        pendingUpdateRef.current = update;
+        setUpdateStatus({ state: "available", version: update.version });
+      } else {
+        setUpdateStatus({ state: "up-to-date" });
+        if (!silent) addToast("info", "You're on the latest version");
+        setTimeout(() => setUpdateStatus((s) => s.state === "up-to-date" ? { state: "idle" } : s), 3000);
+      }
+    } catch (err) {
+      setUpdateStatus({ state: "idle" });
+      if (!silent) addToast("error", `Update check failed: ${String(err)}`);
+    }
+  }, [addToast]);
+
+  const handleDownloadUpdate = useCallback(async () => {
+    const update = pendingUpdateRef.current;
+    if (!update || updateStatusRef.current !== "available") return;
+    setUpdateStatus({ state: "downloading", progress: 0 });
+    try {
+      let totalBytes = 0;
+      let downloadedBytes = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started" && event.data.contentLength) {
+          totalBytes = event.data.contentLength;
+        } else if (event.event === "Progress") {
+          downloadedBytes += event.data.chunkLength;
+          const pct = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
+          setUpdateStatus({ state: "downloading", progress: pct });
+        } else if (event.event === "Finished") {
+          setUpdateStatus({ state: "ready" });
+        }
+      });
+      setUpdateStatus({ state: "ready" });
+    } catch (err) {
+      setUpdateStatus({ state: "idle" });
+      addToast("error", `Update download failed: ${String(err)}`);
+    }
+  }, [addToast]);
+
+  useEffect(() => {
+    const startupTimer = setTimeout(() => checkForUpdates(true), 5000);
+    const interval = setInterval(() => checkForUpdates(true), 6 * 60 * 60 * 1000);
+    return () => {
+      clearTimeout(startupTimer);
+      clearInterval(interval);
+    };
+  }, [checkForUpdates]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const openPrUrls = useMemo(() => new Set(tabs.map((t) => t.manifest.pr_url)), [tabs]);
@@ -812,6 +872,7 @@ function App() {
         isRefreshing={activeTab?.isRefreshing}
         myReviewState={activeTab?.myReviewState}
         checksBlocking={showChecksModal}
+        onCheckForUpdates={() => checkForUpdates(false)}
       />
       <SettingsModal
         open={settingsOpen}
@@ -884,6 +945,12 @@ function App() {
         </div>
         </div>
       )}
+      <UpdateBanner
+        status={updateStatus}
+        onDownload={handleDownloadUpdate}
+        onRelaunch={relaunch}
+        onDismiss={() => setUpdateStatus({ state: "idle" })}
+      />
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </div>
   );
