@@ -60,6 +60,12 @@ export interface CommentAuthor {
   avatar_url: string;
 }
 
+export interface ReactionGroup {
+  content: string;
+  total_count: number;
+  viewer_has_reacted: boolean;
+}
+
 export interface ReviewComment {
   id: string;
   body: string;
@@ -67,6 +73,7 @@ export interface ReviewComment {
   created_at: string;
   updated_at: string;
   url: string;
+  reactions: ReactionGroup[];
 }
 
 export interface ReviewThread {

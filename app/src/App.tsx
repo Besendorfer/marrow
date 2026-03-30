@@ -495,6 +495,7 @@ function App() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       url: "",
+      reactions: [],
     };
 
     const prevThreads = tab.commentThreads.threads;
@@ -615,6 +616,54 @@ function App() {
       );
     } catch {
       updateTab(activeTabId,(t) => ({
+        ...t,
+        commentThreads: { status: "loaded" as const, threads: prevThreads },
+      }));
+    }
+  }
+
+  async function handleToggleReaction(commentId: string, content: string) {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab || tab.commentThreads.status !== "loaded") return;
+
+    const prevThreads = tab.commentThreads.threads;
+
+    // Single pass: determine add vs remove and build optimistic update together
+    let willAdd = true;
+    const optimisticThreads = prevThreads.map((th) => {
+      if (!th.comments.some((c) => c.id === commentId)) return th;
+      return {
+        ...th,
+        comments: th.comments.map((c) => {
+          if (c.id !== commentId) return c;
+          const reactions = c.reactions ?? [];
+          const existing = reactions.find((r) => r.content === content);
+          const add = !(existing?.viewer_has_reacted);
+          willAdd = add;
+          if (add) {
+            if (existing) {
+              return { ...c, reactions: reactions.map((r) => r.content === content ? { ...r, total_count: r.total_count + 1, viewer_has_reacted: true } : r) };
+            }
+            return { ...c, reactions: [...reactions, { content, total_count: 1, viewer_has_reacted: true }] };
+          }
+          return {
+            ...c,
+            reactions: reactions
+              .map((r) => r.content === content ? { ...r, total_count: r.total_count - 1, viewer_has_reacted: false } : r)
+              .filter((r) => r.total_count > 0),
+          };
+        }),
+      };
+    });
+    updateTab(activeTabId, (t) => ({
+      ...t,
+      commentThreads: { status: "loaded" as const, threads: optimisticThreads },
+    }));
+
+    try {
+      await invoke("toggle_reaction", { commentId, content, add: willAdd });
+    } catch {
+      updateTab(activeTabId, (t) => ({
         ...t,
         commentThreads: { status: "loaded" as const, threads: prevThreads },
       }));
@@ -932,13 +981,14 @@ function App() {
                   onReply={handleReply}
                   onToggleResolved={handleToggleResolved}
                   onEditComment={handleEditComment}
+                  onToggleReaction={handleToggleReaction}
                   lang={activeTab.selectedCommentFile ? detectLanguage(activeTab.selectedCommentFile) : undefined}
                 />
               ) : (
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} onCreateComment={handleCreateComment} onEditComment={handleEditComment} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+              <DiffViewer key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
             ) : activeTab.manifest.summary ? (
               <div className="pr-summary">
                 <h3>PR Summary</h3>

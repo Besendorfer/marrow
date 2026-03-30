@@ -41,6 +41,7 @@ pub fn run() {
             commands::generate_review_body,
             commands::update_review_comment,
             commands::create_review_comment,
+            commands::toggle_reaction,
             commands::get_settings,
             commands::save_settings,
             commands::load_viewed_files,

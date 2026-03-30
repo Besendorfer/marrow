@@ -157,6 +157,13 @@ pub struct CommentAuthor {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReactionGroup {
+    pub content: String,
+    pub total_count: u32,
+    pub viewer_has_reacted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewComment {
     pub id: String,
     pub body: String,
@@ -164,6 +171,8 @@ pub struct ReviewComment {
     pub created_at: String,
     pub updated_at: String,
     pub url: String,
+    #[serde(default)]
+    pub reactions: Vec<ReactionGroup>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

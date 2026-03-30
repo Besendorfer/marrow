@@ -1,4 +1,4 @@
-use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrMetadata, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::Client;
@@ -42,6 +42,37 @@ struct SearchPullRequest {
     merged_at: Option<String>,
 }
 
+fn parse_reaction_groups(c: &serde_json::Value) -> Vec<ReactionGroup> {
+    c.get("reactionGroups")
+        .and_then(|v| v.as_array())
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|g| {
+                    let content = g.get("content")?.as_str()?.to_string();
+                    let total_count = g
+                        .pointer("/users/totalCount")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+                    let viewer_has_reacted = g
+                        .get("viewerHasReacted")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if total_count > 0 || viewer_has_reacted {
+                        Some(ReactionGroup {
+                            content,
+                            total_count,
+                            viewer_has_reacted,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Parse a single review comment from a GraphQL JSON node.
 fn parse_review_comment(c: &serde_json::Value) -> Option<ReviewComment> {
     Some(ReviewComment {
@@ -62,6 +93,7 @@ fn parse_review_comment(c: &serde_json::Value) -> Option<ReviewComment> {
         created_at: c.get("createdAt")?.as_str()?.to_string(),
         updated_at: c.get("updatedAt")?.as_str()?.to_string(),
         url: c.get("url")?.as_str()?.to_string(),
+        reactions: parse_reaction_groups(c),
     })
 }
 
@@ -656,6 +688,11 @@ impl GithubClient {
                                             updatedAt
                                             url
                                             diffHunk
+                                            reactionGroups {{
+                                                content
+                                                viewerHasReacted
+                                                users {{ totalCount }}
+                                            }}
                                         }}
                                     }}
                                 }}
@@ -719,6 +756,11 @@ impl GithubClient {
                     createdAt
                     updatedAt
                     url
+                    reactionGroups {
+                        content
+                        viewerHasReacted
+                        users { totalCount }
+                    }
                 }
             }
         }"#;
@@ -788,6 +830,11 @@ impl GithubClient {
             }) {
                 pullRequestReviewComment {
                     id body author { login avatarUrl } createdAt updatedAt url
+                    reactionGroups {
+                        content
+                        viewerHasReacted
+                        users { totalCount }
+                    }
                 }
             }
         }"#;
@@ -852,6 +899,11 @@ impl GithubClient {
                     comments(first: 100) {{
                         nodes {{
                             id body author {{ login avatarUrl }} createdAt updatedAt url diffHunk
+                            reactionGroups {{
+                                content
+                                viewerHasReacted
+                                users {{ totalCount }}
+                            }}
                         }}
                     }}
                 }}
@@ -1000,6 +1052,34 @@ impl GithubClient {
 
             Ok(state)
         }
+    }
+
+    pub async fn toggle_reaction(
+        &self,
+        subject_id: &str,
+        content: &str,
+        add: bool,
+    ) -> Result<(), String> {
+        let mutation_name = if add { "addReaction" } else { "removeReaction" };
+
+        let query = format!(
+            r#"mutation($subjectId: ID!, $content: ReactionContent!) {{
+                {mutation_name}(input: {{ subjectId: $subjectId, content: $content }}) {{
+                    reaction {{ content }}
+                }}
+            }}"#
+        );
+
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": {
+                "subjectId": subject_id,
+                "content": content,
+            }
+        });
+
+        self.graphql_request(payload).await?;
+        Ok(())
     }
 
     pub async fn get_pull_request_id(
