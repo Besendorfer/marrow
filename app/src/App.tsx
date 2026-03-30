@@ -69,7 +69,13 @@ function App() {
       }
     } catch (err) {
       setUpdateStatus({ state: "idle" });
-      if (!silent) addToast("error", `Update check failed: ${String(err)}`);
+      if (silent) return;
+      const msg = String(err);
+      if (msg.includes("Could not fetch") || msg.includes("404")) {
+        addToast("info", "No releases published yet — updates will work once a release is available");
+      } else {
+        addToast("error", `Update check failed: ${msg}`);
+      }
     }
   }, [addToast]);
 
