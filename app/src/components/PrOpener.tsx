@@ -3,9 +3,10 @@ import { useState } from "react";
 interface PrOpenerProps {
   onFetchStart: (prRef: string) => void;
   onSettingsClick?: () => void;
+  onCheckForUpdates?: () => void;
 }
 
-export function PrOpener({ onFetchStart, onSettingsClick }: PrOpenerProps) {
+export function PrOpener({ onFetchStart, onSettingsClick, onCheckForUpdates }: PrOpenerProps) {
   const [prRef, setPrRef] = useState("");
 
   function handleSubmit(e: React.FormEvent) {
@@ -31,12 +32,29 @@ export function PrOpener({ onFetchStart, onSettingsClick }: PrOpenerProps) {
         >
           Open PR
         </button>
+        {onCheckForUpdates && (
+          <button
+            type="button"
+            className="pr-opener-gear"
+            onClick={onCheckForUpdates}
+            title="Check for Updates"
+            aria-label="Check for updates"
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M17 1v6h-6" />
+              <path d="M3 10a7 7 0 0 1 11.9-5l2.1 2" />
+              <path d="M3 19v-6h6" />
+              <path d="M17 10a7 7 0 0 1-11.9 5l-2.1-2" />
+            </svg>
+          </button>
+        )}
         {onSettingsClick && (
           <button
             type="button"
             className="pr-opener-gear"
             onClick={onSettingsClick}
             title="Settings"
+            aria-label="Settings"
           >
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" />
