@@ -7,6 +7,18 @@
 
 A desktop app that uses AI to surface only the parts of a GitHub pull request that matter -- business logic, infrastructure, API changes -- so you can focus your review where it counts.
 
+<p align="center">
+  <img src="assets/screenshot.png" alt="Relevant Reviews showing a PR with AI-annotated diffs and change groups" width="900" />
+</p>
+
+## Why?
+
+A typical pull request touches 30-50 files. Most of them are UI components, tests, lock files, and config -- noise that buries the changes that actually matter. Reviewers either spend time scrolling past irrelevant diffs or start skimming and miss critical logic changes.
+
+Relevant Reviews loads a PR, uses AI to classify every file by what it contains, and surfaces only the business logic, infrastructure, and API changes. A second AI pass highlights the specific lines that deserve attention -- auth changes, removed safety checks, breaking API contracts -- so you know exactly where to focus.
+
+**In a typical 40-file PR, only 8-12 files contain reviewable business logic. Relevant Reviews finds them in seconds.**
+
 ## Download
 
 **[Download for macOS (Apple Silicon)](https://github.com/Besendorfer/relevant-reviews/releases/latest/download/Relevant.Reviews_aarch64.dmg)**
