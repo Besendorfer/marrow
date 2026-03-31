@@ -105,6 +105,7 @@ function App() {
   }, [addToast]);
 
   useEffect(() => {
+    if (import.meta.env.DEV) return;
     const startupTimer = setTimeout(() => checkForUpdates(true), 5000);
     const interval = setInterval(() => checkForUpdates(true), 6 * 60 * 60 * 1000);
     return () => {
@@ -838,6 +839,18 @@ function App() {
     }
   }
 
+  const overlays = (
+    <>
+      <UpdateBanner
+        status={updateStatus}
+        onDownload={handleDownloadUpdate}
+        onRelaunch={relaunch}
+        onDismiss={() => setUpdateStatus({ state: "idle" })}
+      />
+      <ToastContainer toasts={toasts} onDismiss={removeToast} />
+    </>
+  );
+
   if (error) {
     return (
       <div className="app error-state">
@@ -854,6 +867,7 @@ function App() {
             Back
           </button>
         </div>
+        {overlays}
       </div>
     );
   }
@@ -881,7 +895,7 @@ function App() {
                 Drop a manifest JSON file here, or enter a PR URL below to start
                 a review.
               </p>
-              <PrOpener onFetchStart={handleFetchStart} onSettingsClick={() => setSettingsOpen(true)} />
+              <PrOpener onFetchStart={handleFetchStart} onSettingsClick={() => setSettingsOpen(true)} onCheckForUpdates={() => checkForUpdates(false)} />
               <ReviewRequestList onSelectPr={handleFetchStart} openPrUrls={openPrUrls} />
             </>
           )}
@@ -899,6 +913,7 @@ function App() {
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
         />
+        {overlays}
       </div>
     );
   }
@@ -1001,13 +1016,7 @@ function App() {
         </div>
         </div>
       )}
-      <UpdateBanner
-        status={updateStatus}
-        onDownload={handleDownloadUpdate}
-        onRelaunch={relaunch}
-        onDismiss={() => setUpdateStatus({ state: "idle" })}
-      />
-      <ToastContainer toasts={toasts} onDismiss={removeToast} />
+      {overlays}
     </div>
   );
 }
