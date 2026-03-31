@@ -869,6 +869,7 @@ function UnifiedHunkLines({
               </tr>
             )}
             <tr
+              id={lineNum != null ? `diff-line-${lineNum}` : undefined}
               className={`diff-line diff-line-${line.type}${hl ? ` highlighted highlighted-${hl.severity}` : ""}${canComment ? " commentable-line" : ""}${isInSelection ? " line-selected" : ""}`}
             >
               <td
@@ -1129,6 +1130,7 @@ function SplitHunkLines({
               </tr>
             )}
             <tr
+              id={rightLineNum != null ? `diff-line-${rightLineNum}` : undefined}
               className={`diff-split-row${hl ? ` highlighted highlighted-${hl.severity}` : ""}${(canCommentLeft || canCommentRight) ? " commentable-line" : ""}`}
             >
               {/* Left side (base/old) */}
@@ -1668,14 +1670,23 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
       {highlights.length > 0 && (
         <div className="highlights-summary">
           {highlights.map((h, i) => (
-            <div key={i} className={`highlights-summary-item highlight-${h.severity}`}>
+            <div
+              key={i}
+              className={`highlights-summary-item highlight-${h.severity}`}
+              style={{ cursor: "pointer" }}
+              onClick={() => {
+                const el = document.getElementById(`diff-line-${h.start_line}`);
+                el?.scrollIntoView({ behavior: "smooth", block: "center" });
+              }}
+              title="Jump to code"
+            >
               <span className="highlight-severity-badge">{h.severity.toUpperCase()}</span>
               <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
               <span className="highlight-summary-text">{h.comment}</span>
               {onCreateComment && (
                 <button
                   className="highlight-post-comment"
-                  onClick={() => handlePostHighlightAsComment(h)}
+                  onClick={(e) => { e.stopPropagation(); handlePostHighlightAsComment(h); }}
                   title="Post this AI note as a review comment"
                 >
                   Post as comment
