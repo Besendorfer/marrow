@@ -1,5 +1,10 @@
 # Relevant Reviews
 
+[![GitHub Release](https://img.shields.io/github/v/release/Besendorfer/relevant-reviews?label=release)](https://github.com/Besendorfer/relevant-reviews/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Besendorfer/relevant-reviews/total)](https://github.com/Besendorfer/relevant-reviews/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey)](https://github.com/Besendorfer/relevant-reviews/releases/latest)
+
 A desktop app that uses AI to surface only the parts of a GitHub pull request that matter -- business logic, infrastructure, API changes -- so you can focus your review where it counts.
 
 ## Download
