@@ -13,7 +13,7 @@ Or browse [all releases](https://github.com/Besendorfer/relevant-reviews/release
 ## How it works
 
 1. **Fetch** -- pulls PR metadata, file list, and diff via the GitHub REST API
-2. **Classify** -- sends the file list and diff to Claude (via AWS Bedrock), which labels each file as RELEVANT or NOT_RELEVANT based on what it contains
+2. **Classify** -- sends the file list and diff to Claude, which labels each file as RELEVANT or NOT_RELEVANT based on what it contains
 3. **Highlight** -- a second AI pass identifies specific lines in relevant files that deserve human attention (security changes, behavior changes, removed safety checks, etc.)
 4. **Summarize** -- generates a high-level summary of the PR's changes
 5. **Review** -- displays the relevant diffs in a split or unified viewer with syntax highlighting, AI-annotated risk indicators, and inline comments
@@ -42,9 +42,10 @@ Or browse [all releases](https://github.com/Besendorfer/relevant-reviews/release
 
 You'll need:
 
-- An **AWS account** with access to [Amazon Bedrock](https://aws.amazon.com/bedrock/) and a Claude model enabled
+- A **Claude model** -- either:
+  - A Claude model name (e.g. `claude-sonnet-4-6`) with the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed, **or**
+  - An AWS Bedrock model ARN with AWS credentials configured (env vars, `~/.aws/credentials`, or SSO)
 - A **GitHub personal access token** (or `GH_TOKEN` / `GITHUB_TOKEN` environment variable)
-- AWS credentials configured (env vars, `~/.aws/credentials`, or SSO)
 
 ## Configuration
 
@@ -52,13 +53,13 @@ Settings are stored in `~/.config/relevant-reviews/config` and can be edited fro
 
 | Setting | Description |
 |---|---|
-| `model` | AWS Bedrock model ARN (e.g., `arn:aws:bedrock:us-east-2:123456789:application-inference-profile/...`) |
+| `model` | Claude model name (e.g. `claude-sonnet-4-6`) or AWS Bedrock ARN |
 | `github_token` | GitHub personal access token (optional if `GH_TOKEN` or `GITHUB_TOKEN` env var is set) |
-| `aws_profile` | AWS profile name (optional, uses default credential chain if empty) |
+| `aws_profile` | AWS profile name (only used with Bedrock ARNs; uses default credential chain if empty) |
 
 GitHub token resolution order: config file > `GH_TOKEN` env > `GITHUB_TOKEN` env.
 
-AWS region is extracted automatically from the model ARN.
+When using a Bedrock ARN, the AWS region is extracted automatically from the ARN. When using a model name, the app invokes the `claude` CLI.
 
 ## Building from source
 
@@ -89,21 +90,24 @@ bun run tauri dev
 ## How files are classified
 
 **RELEVANT** (shown for review):
-- Backend business logic (services, handlers, controllers, routers)
+- Backend business logic (services, handlers, controllers, routers, middleware)
 - Infrastructure-as-code (CDK, SST, Terraform, CI/CD workflows)
 - API routes, tRPC routers, REST endpoints
-- Database schemas, migrations
+- Database schemas, migrations, seeds
 - Auth/authz logic
-- Shared libraries used by business logic
+- Domain types (DTOs, entities, models)
+- Configuration that affects runtime behavior (feature flags, environment configs)
+- Shared libraries and utilities used by business logic
 
 **NOT RELEVANT** (skipped):
 - UI components (React JSX, CSS, layouts)
-- Tests
+- Tests (any file matching `*.test.*`, `*.spec.*`, `__tests__/`, etc.)
 - Documentation
 - IDE/editor config
 - Package manager lock files
 - Build/tooling config
-- Static assets
+- Type declaration files that only re-export or define UI prop types
+- Static assets and auto-generated files
 
 ## CLI (`rr`)
 
@@ -123,8 +127,8 @@ chmod +x rr
 # (Optional) Symlink into a directory on your PATH
 ln -s "$(pwd)/rr" /usr/local/bin/rr
 
-# Set the model ARN (env var or config file)
-export RR_MODEL="arn:aws:bedrock:us-east-2:123456789:application-inference-profile/your-profile-id"
+# Set the model (env var or config file)
+export RR_MODEL="claude-sonnet-4-6"
 ```
 
 ### Usage
