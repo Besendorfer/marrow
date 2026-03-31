@@ -93,3 +93,15 @@ jobs:
           tauriScript: bunx tauri
           args: --target ${{ matrix.target }}
           projectPath: app
+
+      - name: Upload stable-name DMG
+        if: runner.os == 'macOS'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCH=$(echo "${{ matrix.target }}" | cut -d- -f1)
+          DMG="app/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/Relevant.Reviews_${VERSION}_${ARCH}.dmg"
+          STABLE_NAME="Relevant.Reviews_${ARCH}.dmg"
+          cp "$DMG" "$STABLE_NAME"
+          gh release upload "$GITHUB_REF_NAME" "$STABLE_NAME" --clobber
