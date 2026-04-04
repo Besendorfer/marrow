@@ -5,12 +5,14 @@ use crate::github::GithubClient;
 use crate::types::{MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
 use crate::manifest_cache::{self, CachedPrInfo};
 use crate::viewed_state::{self, ViewedFileState};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
 use tauri::{command, State};
 
 pub struct AppState {
     pub manifest_path: Mutex<Option<String>>,
+    pub pr_node_ids: Mutex<HashMap<String, String>>,
 }
 
 fn github_client() -> GithubClient {
@@ -212,6 +214,38 @@ pub async fn toggle_reaction(
 ) -> Result<(), String> {
     let github = github_client();
     github.toggle_reaction(&comment_id, &content, add).await
+}
+
+#[command]
+pub async fn sync_file_viewed_to_github(
+    state: State<'_, AppState>,
+    pr_url: String,
+    path: String,
+    viewed: bool,
+) -> Result<(), String> {
+    let cached = state.pr_node_ids.lock().unwrap().get(&pr_url).cloned();
+    let github = github_client();
+    let pr_node_id = match cached {
+        Some(id) => id,
+        None => {
+            let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+            let id = github
+                .get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number)
+                .await?;
+            state.pr_node_ids.lock().unwrap().insert(pr_url, id.clone());
+            id
+        }
+    };
+    github.mark_file_viewed(&pr_node_id, &path, viewed).await
+}
+
+#[command]
+pub async fn fetch_gh_viewed_state(pr_url: String) -> Result<HashMap<String, String>, String> {
+    let github = github_client();
+    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    github
+        .get_files_viewed_state(&parsed.owner, &parsed.repo, parsed.number)
+        .await
 }
 
 #[command]

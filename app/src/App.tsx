@@ -237,6 +237,7 @@ function App() {
     } catch {
       // Graceful degradation: if loading fails, start with empty state
     }
+    syncGhViewedState(tab.id, tab.manifest.pr_url, tab.manifest.files);
   }
 
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -361,6 +362,7 @@ function App() {
       persistViewedState(refreshedTab);
       fetchMyReviewState(tab.id, newManifest.pr_url);
       fetchChecksStatus(tab.id, newManifest.pr_url);
+      syncGhViewedState(tab.id, newManifest.pr_url, newManifest.files);
 
       if (parts.length > 0) {
         addToast("success", `PR updated: ${parts.join(", ")}`);
@@ -408,24 +410,21 @@ function App() {
   }
 
   function toggleViewed(filePath: string) {
-    let tabToSave: Tab | null = null;
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== activeTabId) return t;
-        const nextViewed = new Set(t.viewedFiles);
-        const nextStale = new Set(t.staleViewedFiles);
-        if (nextViewed.has(filePath)) {
-          nextViewed.delete(filePath);
-        } else {
-          nextViewed.add(filePath);
-          nextStale.delete(filePath);
-        }
-        const updated = { ...t, viewedFiles: nextViewed, staleViewedFiles: nextStale };
-        tabToSave = updated;
-        return updated;
-      })
-    );
-    if (tabToSave) persistViewedState(tabToSave);
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab) return;
+    const nowViewed = !tab.viewedFiles.has(filePath);
+    const nextViewed = new Set(tab.viewedFiles);
+    const nextStale = new Set(tab.staleViewedFiles);
+    if (nowViewed) {
+      nextViewed.add(filePath);
+      nextStale.delete(filePath);
+    } else {
+      nextViewed.delete(filePath);
+    }
+    const updated = { ...tab, viewedFiles: nextViewed, staleViewedFiles: nextStale };
+    updateTab(tab.id, () => updated);
+    persistViewedState(updated);
+    invoke("sync_file_viewed_to_github", { prUrl: tab.manifest.pr_url, path: filePath, viewed: nowViewed }).catch(() => {});
   }
 
   async function persistViewedState(tab: Tab) {
@@ -440,6 +439,44 @@ function App() {
       await invoke("save_viewed_files", { owner, repo, prNumber: number, state: { files } });
     } catch {
       // Non-critical: persistence failure shouldn't block UI
+    }
+  }
+
+  async function syncGhViewedState(tabId: string, prUrl: string, files: Array<{ path: string; diff_hash: string }>) {
+    try {
+      const ghState = await invoke<Record<string, string>>("fetch_gh_viewed_state", { prUrl });
+      const currentPaths = new Set(files.map((f) => f.path));
+
+      setTabs((prev) => {
+        const tab = prev.find((t) => t.id === tabId);
+        if (!tab) return prev;
+
+        const nextViewed = new Set(tab.viewedFiles);
+        const nextStale = new Set(tab.staleViewedFiles);
+        let changed = false;
+
+        for (const [path, state] of Object.entries(ghState)) {
+          if (!currentPaths.has(path)) continue;
+          if (state === "VIEWED" && !nextViewed.has(path) && !nextStale.has(path)) {
+            nextViewed.add(path);
+            changed = true;
+          } else if (state === "UNVIEWED" && nextViewed.has(path)) {
+            nextViewed.delete(path);
+            changed = true;
+          } else if (state === "DISMISSED" && nextViewed.has(path)) {
+            nextViewed.delete(path);
+            nextStale.add(path);
+            changed = true;
+          }
+        }
+
+        if (!changed) return prev;
+        const updated = { ...tab, viewedFiles: nextViewed, staleViewedFiles: nextStale };
+        persistViewedState(updated);
+        return prev.map((t) => (t.id === tabId ? updated : t));
+      });
+    } catch {
+      // GH sync is best-effort — skip on failure (no token, network error, etc.)
     }
   }
 

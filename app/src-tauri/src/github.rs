@@ -1,4 +1,5 @@
 use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
+use std::collections::HashMap;
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::Client;
@@ -1214,6 +1215,114 @@ impl GithubClient {
             overall_state,
             check_runs,
         })
+    }
+
+    /// Mark or unmark a file as viewed on a pull request.
+    pub async fn mark_file_viewed(
+        &self,
+        pull_request_id: &str,
+        path: &str,
+        viewed: bool,
+    ) -> Result<(), String> {
+        let mutation_name = if viewed {
+            "markFileAsViewed"
+        } else {
+            "unmarkFileAsViewed"
+        };
+
+        let query = format!(
+            r#"mutation($prId: ID!, $path: String!) {{
+                {mutation_name}(input: {{ pullRequestId: $prId, path: $path }}) {{
+                    pullRequest {{ id }}
+                }}
+            }}"#
+        );
+
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": {
+                "prId": pull_request_id,
+                "path": path,
+            }
+        });
+
+        self.graphql_request(payload).await?;
+        Ok(())
+    }
+
+    /// Fetch the viewer's viewed state for all files in a pull request.
+    /// Returns a map of file path → "VIEWED" | "UNVIEWED" | "DISMISSED".
+    pub async fn get_files_viewed_state(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<HashMap<String, String>, String> {
+        let mut all_files = HashMap::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let after_clause = match &cursor {
+                Some(c) => format!(", after: \"{}\"", c),
+                None => String::new(),
+            };
+
+            let query = format!(
+                r#"{{
+                    repository(owner: "{}", name: "{}") {{
+                        pullRequest(number: {}) {{
+                            files(first: 100{}) {{
+                                pageInfo {{ hasNextPage endCursor }}
+                                nodes {{
+                                    path
+                                    viewerViewedState
+                                }}
+                            }}
+                        }}
+                    }}
+                }}"#,
+                owner, repo, pr_number, after_clause
+            );
+
+            let body = serde_json::json!({ "query": query });
+            let result = self.graphql_request(body).await?;
+
+            let files_data = result
+                .pointer("/data/repository/pullRequest/files")
+                .ok_or("Missing files in response")?;
+
+            let nodes = files_data
+                .pointer("/nodes")
+                .and_then(|v| v.as_array())
+                .ok_or("Missing nodes in files")?;
+
+            for node in nodes {
+                let path = node.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let state = node
+                    .get("viewerViewedState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("UNVIEWED");
+                if !path.is_empty() {
+                    all_files.insert(path.to_string(), state.to_string());
+                }
+            }
+
+            let has_next = files_data
+                .pointer("/pageInfo/hasNextPage")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if has_next {
+                cursor = files_data
+                    .pointer("/pageInfo/endCursor")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        Ok(all_files)
     }
 
     /// Get the current user's review state on a PR, including whether they've
