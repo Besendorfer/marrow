@@ -12,6 +12,7 @@ pub mod types;
 mod viewed_state;
 
 use commands::AppState;
+use std::collections::HashMap;
 use std::env;
 use std::sync::Mutex;
 
@@ -26,6 +27,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(AppState {
             manifest_path: Mutex::new(manifest_path),
+            pr_node_ids: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::load_manifest,
@@ -44,6 +46,8 @@ pub fn run() {
             commands::toggle_reaction,
             commands::get_settings,
             commands::save_settings,
+            commands::sync_file_viewed_to_github,
+            commands::fetch_gh_viewed_state,
             commands::load_viewed_files,
             commands::save_viewed_files,
             commands::list_cached_prs,
