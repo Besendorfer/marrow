@@ -8,6 +8,7 @@ mod github;
 mod manifest_cache;
 mod pr_parser;
 mod prompts;
+mod session;
 pub mod types;
 mod viewed_state;
 
@@ -54,6 +55,9 @@ pub fn run() {
             commands::get_pr_checks,
             commands::dismiss_checks_warning,
             commands::is_checks_dismissed,
+            commands::load_cached_manifest_by_pr,
+            commands::save_session,
+            commands::load_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
