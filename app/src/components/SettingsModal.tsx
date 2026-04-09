@@ -18,6 +18,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [interceptEnabled, setInterceptEnabled] = useState(false);
+  const [interceptLoading, setInterceptLoading] = useState(false);
 
   // Set href via DOM to bypass React's javascript: URL blocking
   const bookmarkletRef = useCallback((node: HTMLAnchorElement | null) => {
@@ -32,9 +34,36 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setAwsProfile(s.aws_profile || "");
         setCurrentSettings(s);
       });
+      invoke<string | null>("get_fallback_browser").then((b) => {
+        setInterceptEnabled(!!b);
+      });
       setSaved(false);
     }
   }, [open]);
+
+  async function handleEnableIntercept() {
+    setInterceptLoading(true);
+    try {
+      const currentBrowser = await invoke<string | null>("detect_default_browser");
+      const fallback = currentBrowser || "com.apple.safari";
+      await invoke("enable_browser_intercept", { fallbackBrowser: fallback });
+      await invoke("open_default_browser_settings");
+      setInterceptEnabled(true);
+    } finally {
+      setInterceptLoading(false);
+    }
+  }
+
+  async function handleDisableIntercept() {
+    setInterceptLoading(true);
+    try {
+      await invoke("disable_browser_intercept");
+      await invoke("open_default_browser_settings");
+      setInterceptEnabled(false);
+    } finally {
+      setInterceptLoading(false);
+    }
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -155,6 +184,46 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           >
             Open in Relevant Reviews
           </a>
+
+          <div className="settings-divider" />
+          <h3 className="settings-section-title">Link Interception</h3>
+          <p className="settings-hint">
+            Set Relevant Reviews as your default browser so GitHub PR links from
+            Slack, email, or anywhere open directly in the app. All other links
+            are forwarded to your real browser.
+          </p>
+          {interceptEnabled ? (
+            <div className="intercept-status">
+              <span className="intercept-badge intercept-badge--active">Active</span>
+              <button
+                type="button"
+                className="intercept-btn"
+                onClick={handleDisableIntercept}
+                disabled={interceptLoading}
+              >
+                Disable
+              </button>
+              <p className="settings-hint" style={{ marginTop: 8 }}>
+                Select your preferred browser in System Settings to stop
+                intercepting links.
+              </p>
+            </div>
+          ) : (
+            <div className="intercept-status">
+              <button
+                type="button"
+                className="intercept-btn intercept-btn--enable"
+                onClick={handleEnableIntercept}
+                disabled={interceptLoading}
+              >
+                {interceptLoading ? "Opening Settings..." : "Enable Link Interception"}
+              </button>
+              <p className="settings-hint" style={{ marginTop: 8 }}>
+                Opens System Settings. Select <strong>Relevant Reviews</strong> as
+                your default web browser.
+              </p>
+            </div>
+          )}
 
           <div className="settings-actions">
             <button

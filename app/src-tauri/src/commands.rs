@@ -1,5 +1,5 @@
 use crate::bedrock::{region_from_arn, BedrockClient};
-use crate::config::{load_settings, resolve_github_token, save_settings_to_disk};
+use crate::config::{load_settings, resolve_github_token, save_settings_to_disk, load_fallback_browser, save_fallback_browser, clear_fallback_browser};
 use crate::fetch::fetch_pr_impl;
 use crate::github::GithubClient;
 use crate::types::{MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
@@ -327,4 +327,62 @@ pub fn save_session(state: SessionState) -> Result<(), String> {
 #[command]
 pub fn load_session() -> Option<SessionState> {
     session::load_session_state()
+}
+
+/// Detect the current default browser using macOS plutil
+#[command]
+pub fn detect_default_browser() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").ok()?;
+        let plist_path = format!(
+            "{}/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist",
+            home
+        );
+        let output = std::process::Command::new("plutil")
+            .args(["-convert", "json", "-o", "-", &plist_path])
+            .output()
+            .ok()?;
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        let handlers = json.get("LSHandlers")?.as_array()?;
+        for handler in handlers {
+            if handler.get("LSHandlerURLScheme")?.as_str()? == "https" {
+                return handler.get("LSHandlerRoleAll")?.as_str().map(|s| s.to_lowercase());
+            }
+        }
+        // If no explicit handler set, Safari is the default
+        Some("com.apple.safari".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+#[command]
+pub fn enable_browser_intercept(fallback_browser: String) -> Result<(), String> {
+    save_fallback_browser(&fallback_browser)
+}
+
+#[command]
+pub fn disable_browser_intercept() -> Result<(), String> {
+    clear_fallback_browser()
+}
+
+#[command]
+pub fn get_fallback_browser() -> Option<String> {
+    load_fallback_browser()
+}
+
+/// Open macOS System Settings to the Default Web Browser section
+#[command]
+pub fn open_default_browser_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.Desktop-Settings.extension")
+            .spawn()
+            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("Browser intercept is only supported on macOS".to_string())
 }
