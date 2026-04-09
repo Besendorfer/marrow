@@ -4,6 +4,7 @@ use crate::fetch::fetch_pr_impl;
 use crate::github::GithubClient;
 use crate::types::{MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
 use crate::manifest_cache::{self, CachedPrInfo};
+use crate::session::{self, SessionState};
 use crate::viewed_state::{self, ViewedFileState};
 use std::collections::HashMap;
 use std::fs;
@@ -300,4 +301,24 @@ pub async fn list_cached_prs() -> Vec<CachedPrInfo> {
         }
     }
     open_prs
+}
+
+#[command]
+pub fn load_cached_manifest_by_pr(pr_url: String) -> Result<Option<ReviewManifest>, String> {
+    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    Ok(manifest_cache::load_cached_manifest(
+        &parsed.owner,
+        &parsed.repo,
+        parsed.number,
+    ))
+}
+
+#[command]
+pub fn save_session(state: SessionState) -> Result<(), String> {
+    session::save_session_state(&state)
+}
+
+#[command]
+pub fn load_session() -> Option<SessionState> {
+    session::load_session_state()
 }

@@ -91,10 +91,26 @@ pub struct Settings {
     pub filter_older: bool,
     #[serde(default = "default_true")]
     pub filter_team: bool,
+    #[serde(default = "default_split")]
+    pub view_mode: String,
+    #[serde(default = "default_true")]
+    pub show_hunk_significance: bool,
+    #[serde(default = "default_true")]
+    pub show_ai_notes: bool,
+    #[serde(default = "default_all")]
+    pub hunk_filter: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_split() -> String {
+    "split".to_string()
+}
+
+fn default_all() -> String {
+    "all".to_string()
 }
 
 #[derive(Debug, Deserialize)]

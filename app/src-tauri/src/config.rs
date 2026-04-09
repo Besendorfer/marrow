@@ -21,6 +21,10 @@ fn default_settings() -> Settings {
         aws_profile: String::new(),
         filter_older: true,
         filter_team: true,
+        view_mode: "split".to_string(),
+        show_hunk_significance: true,
+        show_ai_notes: true,
+        hunk_filter: "all".to_string(),
     }
 }
 
@@ -40,6 +44,10 @@ pub fn load_settings() -> Settings {
     let mut aws_profile = String::new();
     let mut filter_older = true;
     let mut filter_team = true;
+    let mut view_mode = "split".to_string();
+    let mut show_hunk_significance = true;
+    let mut show_ai_notes = true;
+    let mut hunk_filter = "all".to_string();
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -52,6 +60,14 @@ pub fn load_settings() -> Settings {
             filter_older = val == "true";
         } else if let Some(val) = line.strip_prefix("filter_team=") {
             filter_team = val == "true";
+        } else if let Some(val) = line.strip_prefix("view_mode=") {
+            view_mode = val.to_string();
+        } else if let Some(val) = line.strip_prefix("show_hunk_significance=") {
+            show_hunk_significance = val == "true";
+        } else if let Some(val) = line.strip_prefix("show_ai_notes=") {
+            show_ai_notes = val == "true";
+        } else if let Some(val) = line.strip_prefix("hunk_filter=") {
+            hunk_filter = val.to_string();
         }
     }
 
@@ -61,6 +77,10 @@ pub fn load_settings() -> Settings {
         aws_profile,
         filter_older,
         filter_team,
+        view_mode,
+        show_hunk_significance,
+        show_ai_notes,
+        hunk_filter,
     }
 }
 
@@ -80,6 +100,10 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     }
     content.push_str(&format!("filter_older={}\n", settings.filter_older));
     content.push_str(&format!("filter_team={}\n", settings.filter_team));
+    content.push_str(&format!("view_mode={}\n", settings.view_mode));
+    content.push_str(&format!("show_hunk_significance={}\n", settings.show_hunk_significance));
+    content.push_str(&format!("show_ai_notes={}\n", settings.show_ai_notes));
+    content.push_str(&format!("hunk_filter={}\n", settings.hunk_filter));
 
     fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;
 

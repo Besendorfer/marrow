@@ -135,6 +135,10 @@ export interface Settings {
   aws_profile: string;
   filter_older: boolean;
   filter_team: boolean;
+  view_mode: DiffViewMode;
+  show_hunk_significance: boolean;
+  show_ai_notes: boolean;
+  hunk_filter: HunkSignificanceFilter;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
@@ -194,3 +198,15 @@ export type UpdateStatus =
   | { state: "downloading"; progress: number }
   | { state: "ready" }
   | { state: "up-to-date" };
+
+export interface SessionPrEntry {
+  pr_url: string;
+  selected_file: string | null;
+  sidebar_view: SidebarView | null;
+  selected_comment_file: string | null;
+}
+
+export interface SessionState {
+  open_prs: SessionPrEntry[];
+  active_pr: string | null;
+}

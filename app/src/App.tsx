@@ -16,7 +16,7 @@ import { ToastContainer, createToast, type ToastData } from "./components/Toast"
 import { UpdateBanner } from "./components/UpdateBanner";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
 import { parsePrUrl } from "./utils";
 
 function App() {
@@ -45,6 +45,13 @@ function App() {
   const updateStatusRef = useRef(updateStatus.state);
   updateStatusRef.current = updateStatus.state;
   const pendingUpdateRef = useRef<Awaited<ReturnType<typeof check>>>(null);
+  const sessionRestoredRef = useRef(false);
+  const settingsRef = useRef<Settings | null>(null);
+
+  const handleSettingsClose = useCallback(() => {
+    setSettingsOpen(false);
+    invoke<Settings>("get_settings").then((s) => { settingsRef.current = s; }).catch(() => {});
+  }, []);
 
   const addToast = useCallback((type: ToastData["type"], message: string) => {
     setToasts((prev) => [...prev, createToast(type, message)]);
@@ -150,11 +157,80 @@ function App() {
   }
 
   useEffect(() => {
-    invoke<string | null>("get_initial_manifest_path").then((path) => {
-      if (path) {
-        loadManifest(path);
+    async function initSession() {
+      // Load user preferences from settings
+      try {
+        const settings = await invoke<Settings>("get_settings");
+        settingsRef.current = settings;
+        setViewMode(settings.view_mode || "split");
+        setShowHunkSignificance(settings.show_hunk_significance ?? true);
+        setShowAiNotes(settings.show_ai_notes ?? true);
+        setHunkFilter(settings.hunk_filter || "all");
+      } catch {
+        // Use defaults on failure
       }
-    });
+
+      // Check for CLI manifest path first
+      const cliPath = await invoke<string | null>("get_initial_manifest_path");
+      if (cliPath) {
+        sessionRestoredRef.current = true;
+        loadManifest(cliPath);
+        return;
+      }
+
+      // No CLI arg — try to restore previous session
+      try {
+        const session = await invoke<SessionState | null>("load_session");
+        if (session && session.open_prs.length > 0) {
+          const loaded = await Promise.all(
+            session.open_prs.map(async (entry) => {
+              try {
+                const manifest = await invoke<ReviewManifest | null>(
+                  "load_cached_manifest_by_pr",
+                  { prUrl: entry.pr_url },
+                );
+                if (!manifest) return null;
+                const tab = createTab(manifest);
+                if (entry.selected_file) {
+                  const file = manifest.files.find((f) => f.path === entry.selected_file);
+                  if (file) tab.selectedFile = file;
+                }
+                if (entry.sidebar_view) {
+                  tab.sidebarView = entry.sidebar_view as SidebarView;
+                }
+                if (entry.selected_comment_file) {
+                  tab.selectedCommentFile = entry.selected_comment_file;
+                }
+                return tab;
+              } catch {
+                return null;
+              }
+            }),
+          );
+          const restoredTabs = loaded.filter((t): t is Tab => t !== null);
+
+          if (restoredTabs.length > 0) {
+            setTabs(restoredTabs);
+            const active = session.active_pr
+              ? restoredTabs.find((t) => t.manifest.pr_url === session.active_pr)
+              : null;
+            setActiveTabId(active?.id ?? restoredTabs[0].id);
+
+            for (const tab of restoredTabs) {
+              loadPersistedViewedState(tab);
+              fetchMyReviewState(tab.id, tab.manifest.pr_url);
+              fetchChecksStatus(tab.id, tab.manifest.pr_url);
+            }
+          }
+        }
+      } catch {
+        // Session restore is best-effort
+      }
+
+      sessionRestoredRef.current = true;
+    }
+
+    initSession();
   }, []);
 
   async function loadManifest(path: string) {
@@ -865,6 +941,38 @@ function App() {
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Persist session state whenever tabs or active tab change (debounced)
+  useEffect(() => {
+    if (!sessionRestoredRef.current) return;
+    const timer = setTimeout(() => {
+      const state: SessionState = {
+        open_prs: tabs.map((t) => ({
+          pr_url: t.manifest.pr_url,
+          selected_file: t.selectedFile?.path ?? null,
+          sidebar_view: t.sidebarView,
+          selected_comment_file: t.selectedCommentFile,
+        })),
+        active_pr: tabs.find((t) => t.id === activeTabId)?.manifest.pr_url ?? null,
+      };
+      invoke("save_session", { state }).catch(() => {});
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [tabs, activeTabId]);
+
+  // Persist user preferences whenever they change (debounced, with dirty check)
+  useEffect(() => {
+    const s = settingsRef.current;
+    if (!s) return;
+    if (s.view_mode === viewMode && s.show_hunk_significance === showHunkSignificance
+        && s.show_ai_notes === showAiNotes && s.hunk_filter === hunkFilter) return;
+    const timer = setTimeout(() => {
+      const updated = { ...settingsRef.current!, view_mode: viewMode, show_hunk_significance: showHunkSignificance, show_ai_notes: showAiNotes, hunk_filter: hunkFilter };
+      settingsRef.current = updated;
+      invoke("save_settings", { settings: updated }).catch(() => {});
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [viewMode, showHunkSignificance, showAiNotes, hunkFilter]);
+
   async function handleFileDrop(e: React.DragEvent) {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
@@ -948,7 +1056,7 @@ function App() {
         </div>
         <SettingsModal
           open={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
+          onClose={handleSettingsClose}
         />
         {overlays}
       </div>
@@ -983,7 +1091,7 @@ function App() {
       />
       <SettingsModal
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={handleSettingsClose}
       />
       {activeTab && (
         <div className="review-content">

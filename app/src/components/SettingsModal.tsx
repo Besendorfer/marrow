@@ -38,6 +38,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           aws_profile: awsProfile.trim(),
           filter_older: currentSettings?.filter_older ?? true,
           filter_team: currentSettings?.filter_team ?? true,
+          view_mode: currentSettings?.view_mode ?? "split",
+          show_hunk_significance: currentSettings?.show_hunk_significance ?? true,
+          show_ai_notes: currentSettings?.show_ai_notes ?? true,
+          hunk_filter: currentSettings?.hunk_filter ?? "all",
         },
       });
       setSaved(true);
