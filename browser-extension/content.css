@@ -1,0 +1,34 @@
+.rr-open-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 32px;
+  height: 32px;
+  box-sizing: border-box;
+  margin: 0 !important;
+  color: #fff !important;
+  background-color: #6f42c1;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none !important;
+  white-space: nowrap;
+}
+
+/* Legacy GitHub UI: smaller buttons in .gh-header-actions */
+.gh-header-actions .rr-open-btn {
+  font-size: 12px;
+  line-height: 28px;
+  height: 28px;
+  padding: 0 12px;
+}
+
+.rr-open-btn:hover {
+  background-color: #5a32a3;
+  text-decoration: none !important;
+  color: #fff !important;
+}

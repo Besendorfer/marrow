@@ -13,6 +13,7 @@ use tauri::{command, State};
 
 pub struct AppState {
     pub manifest_path: Mutex<Option<String>>,
+    pub pending_deep_link: Mutex<Option<String>>,
     pub pr_node_ids: Mutex<HashMap<String, String>>,
 }
 
@@ -44,6 +45,11 @@ pub fn load_manifest(path: String) -> Result<ReviewManifest, String> {
 #[command]
 pub fn get_initial_manifest_path(state: State<AppState>) -> Option<String> {
     state.manifest_path.lock().unwrap().clone()
+}
+
+#[command]
+pub fn get_pending_deep_link(state: State<AppState>) -> Option<String> {
+    state.pending_deep_link.lock().ok()?.take()
 }
 
 #[command]

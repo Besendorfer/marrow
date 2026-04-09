@@ -10,6 +10,9 @@ app/src-tauri/gen/
 # app/src-tauri/Cargo.lock  — intentionally tracked
 app/bun.lockb
 
+# Browser extension build output
+browser-extension/dist/
+
 # OS files
 .DS_Store
 Thumbs.db

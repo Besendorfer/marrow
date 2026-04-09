@@ -1678,8 +1678,9 @@ body {
   flex-shrink: 0;
 }
 
-/* ─── Settings Modal ───────────────────────────────────────────────────── */
-.settings-overlay {
+/* ─── Modal Overlays ──────────────────────────────────────────────────── */
+.settings-overlay,
+.deep-link-loading-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
@@ -1688,6 +1689,8 @@ body {
   justify-content: center;
   z-index: 100;
 }
+
+/* ─── Settings Modal ───────────────────────────────────────────────────── */
 
 .settings-modal {
   background: var(--bg-secondary);
@@ -1757,6 +1760,48 @@ body {
 
 .settings-input::placeholder {
   color: var(--text-muted);
+}
+
+.deep-link-loading-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 560px;
+  max-width: 90vw;
+  padding: 32px 24px;
+  text-align: center;
+}
+
+.settings-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 20px 0 16px;
+}
+
+.settings-section-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.bookmarklet-link {
+  display: inline-block;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #fff;
+  background: var(--accent, #6f42c1);
+  border-radius: 6px;
+  text-decoration: none;
+  cursor: grab;
+  user-select: none;
+}
+.bookmarklet-link:hover {
+  filter: brightness(1.15);
+}
+.bookmarklet-link:active {
+  cursor: grabbing;
 }
 
 .settings-actions {

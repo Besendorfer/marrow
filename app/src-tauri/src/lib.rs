@@ -16,6 +16,8 @@ use commands::AppState;
 use std::collections::HashMap;
 use std::env;
 use std::sync::Mutex;
+use tauri::{Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,11 +28,39 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_deep_link::init())
         .manage(AppState {
             manifest_path: Mutex::new(manifest_path),
+            pending_deep_link: Mutex::new(None),
             pr_node_ids: Mutex::new(HashMap::new()),
         })
+        .setup(|app| {
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event: tauri_plugin_deep_link::OpenUrlEvent| {
+                if let Some(url) = event.urls().first() {
+                    let url_str: &str = url.as_str();
+                    let pr_ref = match url_str.strip_prefix("relevantreviews://") {
+                        Some(rest) => rest.to_string(),
+                        None => return, // Ignore URLs with unexpected scheme
+                    };
+
+                    // Cold-start: frontend not ready yet
+                    if let Ok(mut pending) = handle.state::<AppState>().pending_deep_link.lock() {
+                        *pending = Some(pr_ref.clone());
+                    }
+
+                    // Hot-open: frontend already running
+                    let _ = handle.emit("deep-link-open", &pr_ref);
+
+                    if let Some(window) = handle.get_webview_window("main") {
+                        let _ = window.set_focus();
+                    }
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            commands::get_pending_deep_link,
             commands::load_manifest,
             commands::get_initial_manifest_path,
             commands::fetch_pr,

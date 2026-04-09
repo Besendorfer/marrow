@@ -1,6 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Settings } from "../types";
+
+// Keep in sync with browser-extension/content.js getPrRef()
+const BOOKMARKLET_HREF =
+  "javascript:void(function(){var m=window.location.pathname.match(/^\\/([^/]+\\/[^/]+\\/pull\\/\\d+)/);if(m){window.location='relevantreviews://github.com/'+m[1]}else{alert('Not a GitHub PR page')}}())";
 
 interface SettingsModalProps {
   open: boolean;
@@ -14,6 +18,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Set href via DOM to bypass React's javascript: URL blocking
+  const bookmarkletRef = useCallback((node: HTMLAnchorElement | null) => {
+    if (node) node.setAttribute("href", BOOKMARKLET_HREF);
+  }, []);
 
   useEffect(() => {
     if (open) {
@@ -131,6 +140,21 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             spellCheck={false}
             autoComplete="off"
           />
+
+          <div className="settings-divider" />
+          <h3 className="settings-section-title">Browser Integration</h3>
+          <p className="settings-hint">
+            Drag this link to your bookmark bar. When you're on a GitHub PR
+            page, click it to open the PR directly in Relevant Reviews.
+          </p>
+          <a
+            className="bookmarklet-link"
+            ref={bookmarkletRef}
+            onClick={(e) => e.preventDefault()}
+            draggable
+          >
+            Open in Relevant Reviews
+          </a>
 
           <div className="settings-actions">
             <button

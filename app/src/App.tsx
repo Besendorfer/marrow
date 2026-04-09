@@ -178,6 +178,17 @@ function App() {
         return;
       }
 
+      // Check for deep link (cold-start: app launched via URL)
+      const deepLink = await invoke<string | null>("get_pending_deep_link");
+      if (deepLink) {
+        sessionRestoredRef.current = true;
+        // Show loading immediately so the user doesn't see a bare landing page
+        setLoading(true);
+        setLoadingPrRef(deepLink);
+        handleFetchStart(deepLink);
+        return;
+      }
+
       // No CLI arg — try to restore previous session
       try {
         const session = await invoke<SessionState | null>("load_session");
@@ -232,6 +243,23 @@ function App() {
 
     initSession();
   }, []);
+
+  // Listen for deep links while app is running (hot-open)
+  useEffect(() => {
+    const unlisten = listen<string>("deep-link-open", (event) => {
+      if (!event.payload || loadingRef.current) return;
+      // If the PR is already open in a tab, just switch to it
+      const prUrl = "https://" + event.payload;
+      const existing = tabsRef.current.find((t) => t.manifest.pr_url === prUrl);
+      if (existing) {
+        setActiveTabId(existing.id);
+        setShowOpener(false);
+        return;
+      }
+      handleFetchStart(event.payload);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadManifest(path: string) {
     try {
@@ -1093,6 +1121,19 @@ function App() {
         open={settingsOpen}
         onClose={handleSettingsClose}
       />
+      {loading && (
+        <div className="deep-link-loading-overlay">
+          <div className="deep-link-loading-modal">
+            <LoadingView
+              prRef={loadingPrRef}
+              prTitle={loadingPrTitle}
+              progress={progress}
+              fileCounts={fileCounts}
+              onCancel={handleFetchCancel}
+            />
+          </div>
+        </div>
+      )}
       {activeTab && (
         <div className="review-content">
         {showChecksModal && (
