@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nickkadutskyi/jb-tauri-plugin/refs/heads/main/schemas/tauri.conf.json",
+  "$schema": "https://tauri.app/schemas/app-schema.json",
   "productName": "Relevant Reviews",
   "version": "0.3.1",
   "identifier": "com.relevant-reviews.app",
