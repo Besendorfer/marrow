@@ -307,11 +307,11 @@ function TreeFolder({
 
 function CommentFileList({
   threads,
-  selectedFile,
+  selectedCommentFile,
   onSelectFile,
 }: {
   threads: ReviewThread[];
-  selectedFile: string | null;
+  selectedCommentFile: string | null;
   onSelectFile: (path: string) => void;
 }) {
   const fileMap = useMemo(() => {
@@ -347,7 +347,7 @@ function CommentFileList({
         return (
           <button
             key={path}
-            className={`comment-file-item ${selectedFile === path ? "selected" : ""}`}
+            className={`comment-file-item ${selectedCommentFile === path ? "selected" : ""}`}
             onClick={() => onSelectFile(path)}
             title={path}
           >
@@ -431,7 +431,7 @@ export function FileSidebar({
     return map;
   }, [files]);
 
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set([NEEDS_ATTENTION]));
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggleCollapsed = (section: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -439,6 +439,28 @@ export function FileSidebar({
       else next.add(section);
       return next;
     });
+  };
+
+  const handleCollapseAll = () => {
+    const allCollapsibleSections = new Set<string>();
+    if (view === "groups") {
+      changeGroups.forEach((_, idx) => allCollapsibleSections.add(`group:${idx}`));
+    } else if (view === "category") {
+      if (visibleCriticalFiles.length > 0) allCollapsibleSections.add(NEEDS_ATTENTION);
+      Object.keys(visibleGrouped).forEach((category) => allCollapsibleSections.add(category));
+    } else if (view === "tree") {
+      // For tree view, we need to collect all folder keys
+      const collectFolderKeys = (node: TreeNode, depth: number) => {
+        for (const child of node.children.values()) {
+          if (!child.file) {
+            allCollapsibleSections.add(`tree:${depth}:${child.name}`);
+            collectFolderKeys(child, depth + 1);
+          }
+        }
+      };
+      collectFolderKeys(visibleFileTree, 0);
+    }
+    setCollapsed(allCollapsibleSections);
   };
 
   const [hideViewed, setHideViewed] = useState(true);
@@ -496,6 +518,11 @@ export function FileSidebar({
       <div className="sidebar-header">
         <div className="sidebar-header-top">
           <span className="sidebar-title">Files</span>
+          {(view === "groups" || view === "category" || view === "tree") && (
+            <button className="collapse-all-button" onClick={handleCollapseAll}>
+              Collapse All
+            </button>
+          )}
           <div className="sidebar-view-toggle">
             {hasGroups && (
               <button
@@ -567,7 +594,7 @@ export function FileSidebar({
         {view === "comments" ? (
           <CommentFileList
             threads={commentThreads}
-            selectedFile={selectedCommentFile}
+            selectedCommentFile={selectedCommentFile}
             onSelectFile={onSelectCommentFile}
           />
         ) : view === "groups" ? (
