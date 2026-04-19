@@ -1655,13 +1655,13 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               {collapsedCount} {collapsedCount === 1 ? "hunk" : "hunks"} collapsed
             </span>
             <button className="hunk-toggle-all" onClick={expandAll}>
-              Expand all
+              Expand All
             </button>
           </>
         )}
         {showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && (
           <button className="hunk-toggle-all" onClick={collapseAll}>
-            Collapse all
+            Collapse All
           </button>
         )}
       </div>
