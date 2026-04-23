@@ -1620,10 +1620,8 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
   const highHunkCount = hunks.filter((h) => h.significance === "high").length;
   const collapsedCount = collapsedHunks.size;
 
-  const collapseAllLow = () => {
-    setCollapsedHunks(new Set(
-      hunks.filter((h) => h.significance === "low").map((h) => h.index)
-    ));
+  const collapseAll = () => {
+    setCollapsedHunks(new Set(hunks.map((h) => h.index)));
   };
 
   const expandAll = () => {
@@ -1657,13 +1655,13 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               {collapsedCount} {collapsedCount === 1 ? "hunk" : "hunks"} collapsed
             </span>
             <button className="hunk-toggle-all" onClick={expandAll}>
-              Expand all
+              Expand All
             </button>
           </>
         )}
-        {showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && hunks.some((h) => h.significance === "low") && (
-          <button className="hunk-toggle-all" onClick={collapseAllLow}>
-            Collapse low
+        {showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && (
+          <button className="hunk-toggle-all" onClick={collapseAll}>
+            Collapse All
           </button>
         )}
       </div>
