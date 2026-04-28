@@ -45,7 +45,7 @@
     },
     "deep-link": {
       "desktop": {
-        "schemes": ["relevantreviews", "https", "http"]
+        "schemes": ["relevantreviews"]
       }
     },
     "updater": {

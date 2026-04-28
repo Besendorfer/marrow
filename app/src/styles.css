@@ -1688,6 +1688,7 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 100;
+  overflow-y: auto;
 }
 
 /* ─── Settings Modal ───────────────────────────────────────────────────── */
@@ -1698,6 +1699,8 @@ body {
   border-radius: 10px;
   width: 480px;
   max-width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
   padding: 24px;
 }
 
@@ -1802,51 +1805,6 @@ body {
 }
 .bookmarklet-link:active {
   cursor: grabbing;
-}
-
-.intercept-status {
-  margin-top: 8px;
-}
-
-.intercept-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  border-radius: 4px;
-  margin-right: 8px;
-  vertical-align: middle;
-}
-
-.intercept-badge--active {
-  background: rgba(63, 185, 80, 0.2);
-  color: #3fb950;
-}
-
-.intercept-btn {
-  padding: 5px 14px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-primary);
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-  vertical-align: middle;
-}
-
-.intercept-btn:hover {
-  background: var(--bg-hover);
-}
-
-.intercept-btn--enable {
-  color: #fff;
-  background: var(--accent, #58a6ff);
-  border-color: transparent;
-}
-
-.intercept-btn--enable:hover {
-  filter: brightness(1.15);
 }
 
 .settings-actions {

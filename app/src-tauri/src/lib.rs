@@ -13,7 +13,6 @@ pub mod types;
 mod viewed_state;
 
 use commands::AppState;
-use config::load_fallback_browser;
 use std::collections::HashMap;
 use std::env;
 use std::sync::Mutex;
@@ -41,39 +40,17 @@ pub fn run() {
                 if let Some(url) = event.urls().first() {
                     let url_str: &str = url.as_str();
 
-                    // Extract PR ref from custom scheme or https:// GitHub PR URLs
-                    let pr_ref = if let Some(rest) = url_str.strip_prefix("relevantreviews://") {
-                        Some(rest.to_string())
-                    } else if url_str.starts_with("https://") || url_str.starts_with("http://") {
-                        // Check if this is a GitHub PR URL
-                        let re = regex::Regex::new(
-                            r"^https?://github\.com/([^/]+/[^/]+/pull/\d+)"
-                        ).unwrap();
-                        re.captures(url_str).map(|caps| {
-                            format!("github.com/{}", &caps[1])
-                        })
-                    } else {
-                        None
-                    };
+                    if let Some(pr_ref) = url_str.strip_prefix("relevantreviews://") {
+                        // Hot-open: frontend already running
+                        let _ = handle.emit("deep-link-open", pr_ref);
 
-                    if let Some(pr_ref) = pr_ref {
                         // Cold-start: frontend not ready yet
                         if let Ok(mut pending) = handle.state::<AppState>().pending_deep_link.lock() {
-                            *pending = Some(pr_ref.clone());
+                            *pending = Some(pr_ref.to_string());
                         }
-
-                        // Hot-open: frontend already running
-                        let _ = handle.emit("deep-link-open", &pr_ref);
 
                         if let Some(window) = handle.get_webview_window("main") {
                             let _ = window.set_focus();
-                        }
-                    } else if url_str.starts_with("https://") || url_str.starts_with("http://") {
-                        // Not a PR URL — forward to the user's real browser
-                        if let Some(browser) = load_fallback_browser() {
-                            let _ = std::process::Command::new("open")
-                                .args(["-b", &browser, url_str])
-                                .spawn();
                         }
                     }
                 }
@@ -109,11 +86,6 @@ pub fn run() {
             commands::load_cached_manifest_by_pr,
             commands::save_session,
             commands::load_session,
-            commands::detect_default_browser,
-            commands::enable_browser_intercept,
-            commands::disable_browser_intercept,
-            commands::get_fallback_browser,
-            commands::open_default_browser_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

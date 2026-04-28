@@ -118,32 +118,6 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-fn fallback_browser_path() -> PathBuf {
-    app_config_dir().join("fallback_browser")
-}
-
-pub fn load_fallback_browser() -> Option<String> {
-    fs::read_to_string(fallback_browser_path()).ok().filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
-}
-
-pub fn save_fallback_browser(bundle_id: &str) -> Result<(), String> {
-    let path = fallback_browser_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config directory: {}", e))?;
-    }
-    fs::write(&path, bundle_id).map_err(|e| format!("Failed to save fallback browser: {}", e))
-}
-
-pub fn clear_fallback_browser() -> Result<(), String> {
-    let path = fallback_browser_path();
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| format!("Failed to clear fallback browser: {}", e))?;
-    }
-    Ok(())
-}
-
 /// Resolve a GitHub token: config file > GH_TOKEN env > GITHUB_TOKEN env.
 /// Returns None if no token is configured (fine for public repos).
 pub fn resolve_github_token(settings: &Settings) -> Option<String> {
