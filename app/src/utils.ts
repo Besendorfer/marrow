@@ -9,7 +9,11 @@ export function parsePrUrl(url: string): { owner: string; repo: string; number: 
 }
 
 export function extractPrRef(input: string): string | null {
-  const match = input.match(/github\.com\/([^/]+\/[^/]+\/pull\/\d+)/);
+  // Mirrors the tightened backend regex in pr_parser.rs so the frontend
+  // doesn't accept refs the backend would reject.
+  const match = input.match(
+    /github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}\/pull\/\d+)/
+  );
   return match ? match[1] : null;
 }
 
