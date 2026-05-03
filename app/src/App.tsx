@@ -250,6 +250,12 @@ function App() {
   // Listen for deep links while app is running (hot-open)
   useEffect(() => {
     const unlisten = listen<string>("deep-link-open", (event) => {
+      // Receiving an emit proves the frontend is wired up — clear any
+      // race-buffered duplicate (deep link fired between listener mount and
+      // signal_frontend_ready) and re-assert ready so further hot-opens skip
+      // buffering entirely.
+      invoke("get_pending_deep_link").catch(() => {});
+      invoke("signal_frontend_ready").catch(() => {});
       if (!event.payload) return;
       if (loadingRef.current) {
         addToast("info", "Already fetching a PR — try the deep link again when it finishes.");
