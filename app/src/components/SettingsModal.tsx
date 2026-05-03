@@ -4,7 +4,7 @@ import type { Settings } from "../types";
 
 // Keep in sync with browser-extension/content.js getPrRef()
 const BOOKMARKLET_HREF =
-  "javascript:void(function(){var m=window.location.pathname.match(/^\\/([^/]+\\/[^/]+\\/pull\\/\\d+)/);if(m){window.location='relevantreviews://github.com/'+m[1]}else{alert('Not a GitHub PR page')}}())";
+  "javascript:void(function(){var m=window.location.pathname.match(/^\\/([A-Za-z0-9][A-Za-z0-9-]{0,38}\\/[A-Za-z0-9._-]{1,100}\\/pull\\/\\d+)/);if(m){window.location='relevantreviews://github.com/'+m[1]}else{alert('Not a GitHub PR page')}}())";
 
 interface SettingsModalProps {
   open: boolean;

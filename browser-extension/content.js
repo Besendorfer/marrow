@@ -2,9 +2,10 @@
   "use strict";
 
   // Keep regex in sync with bookmarklet in app/src/components/SettingsModal.tsx
+  // and pr_parser.rs / utils.ts on the desktop side.
   function getPrRef() {
     var match = window.location.pathname.match(
-      /^\/([^/]+\/[^/]+\/pull\/\d+)/
+      /^\/([A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}\/pull\/\d+)/
     );
     return match ? match[1] : null;
   }
