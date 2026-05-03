@@ -180,16 +180,9 @@ function App() {
 
       // Check for deep link (cold-start: app launched via URL)
       const deepLink = await invoke<string | null>("get_pending_deep_link");
-      if (deepLink) {
-        sessionRestoredRef.current = true;
-        // Show loading immediately so the user doesn't see a bare landing page
-        setLoading(true);
-        setLoadingPrRef(deepLink);
-        handleFetchStart(deepLink);
-        return;
-      }
 
-      // No CLI arg — try to restore previous session
+      // Restore previous session before honoring a deep link, so the user
+      // doesn't lose their open PRs just because they clicked an external link.
       try {
         const session = await invoke<SessionState | null>("load_session");
         if (session && session.open_prs.length > 0) {
@@ -239,6 +232,12 @@ function App() {
       }
 
       sessionRestoredRef.current = true;
+
+      if (deepLink) {
+        setLoading(true);
+        setLoadingPrRef(deepLink);
+        handleFetchStart(deepLink);
+      }
     }
 
     initSession();
@@ -247,7 +246,11 @@ function App() {
   // Listen for deep links while app is running (hot-open)
   useEffect(() => {
     const unlisten = listen<string>("deep-link-open", (event) => {
-      if (!event.payload || loadingRef.current) return;
+      if (!event.payload) return;
+      if (loadingRef.current) {
+        addToast("info", "Already fetching a PR — try the deep link again when it finishes.");
+        return;
+      }
       // Match by canonical owner/repo/pull/N rather than raw URL — payload format
       // (with/without scheme, www., trailing slash) may not match manifest pr_url verbatim.
       const incomingRef = extractPrRef(event.payload);
