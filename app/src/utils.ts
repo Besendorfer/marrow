@@ -8,6 +8,11 @@ export function parsePrUrl(url: string): { owner: string; repo: string; number: 
   return { owner: match[1], repo: match[2], number: parseInt(match[3], 10) };
 }
 
+export function extractPrRef(input: string): string | null {
+  const match = input.match(/github\.com\/([^/]+\/[^/]+\/pull\/\d+)/);
+  return match ? match[1] : null;
+}
+
 export function timeAgo(dateStr: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();

@@ -17,7 +17,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
-import { parsePrUrl } from "./utils";
+import { parsePrUrl, extractPrRef } from "./utils";
 
 function App() {
   const nextTabId = useRef(1);
@@ -248,13 +248,18 @@ function App() {
   useEffect(() => {
     const unlisten = listen<string>("deep-link-open", (event) => {
       if (!event.payload || loadingRef.current) return;
-      // If the PR is already open in a tab, just switch to it
-      const prUrl = "https://" + event.payload;
-      const existing = tabsRef.current.find((t) => t.manifest.pr_url === prUrl);
-      if (existing) {
-        setActiveTabId(existing.id);
-        setShowOpener(false);
-        return;
+      // Match by canonical owner/repo/pull/N rather than raw URL — payload format
+      // (with/without scheme, www., trailing slash) may not match manifest pr_url verbatim.
+      const incomingRef = extractPrRef(event.payload);
+      if (incomingRef) {
+        const existing = tabsRef.current.find(
+          (t) => extractPrRef(t.manifest.pr_url) === incomingRef
+        );
+        if (existing) {
+          setActiveTabId(existing.id);
+          setShowOpener(false);
+          return;
+        }
       }
       handleFetchStart(event.payload);
     });

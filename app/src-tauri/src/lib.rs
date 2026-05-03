@@ -40,7 +40,18 @@ pub fn run() {
                 if let Some(url) = event.urls().first() {
                     let url_str: &str = url.as_str();
 
-                    if let Some(pr_ref) = url_str.strip_prefix("relevantreviews://") {
+                    // Tauri normalizes scheme to `relevantreviews://` on most platforms,
+                    // but some shells/OSes hand off `relevantreviews:` without the slashes.
+                    let pr_ref = url_str
+                        .strip_prefix("relevantreviews://")
+                        .or_else(|| url_str.strip_prefix("relevantreviews:"));
+
+                    if let Some(pr_ref) = pr_ref {
+                        // Reject anything that isn't a real PR reference before forwarding.
+                        if pr_parser::parse_pr_ref(pr_ref).is_err() {
+                            return;
+                        }
+
                         // Hot-open: frontend already running
                         let _ = handle.emit("deep-link-open", pr_ref);
 
