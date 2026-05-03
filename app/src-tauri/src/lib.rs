@@ -33,6 +33,7 @@ pub fn run() {
             manifest_path: Mutex::new(manifest_path),
             pending_deep_link: Mutex::new(None),
             pr_node_ids: Mutex::new(HashMap::new()),
+            frontend_ready: Mutex::new(false),
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -55,9 +56,20 @@ pub fn run() {
                         // Hot-open: frontend already running
                         let _ = handle.emit("deep-link-open", pr_ref);
 
-                        // Cold-start: frontend not ready yet
-                        if let Ok(mut pending) = handle.state::<AppState>().pending_deep_link.lock() {
-                            *pending = Some(pr_ref.to_string());
+                        // Cold-start: only buffer for replay if the frontend
+                        // hasn't completed init — otherwise the next cold-start
+                        // would replay this URL after the frontend already
+                        // handled it via the emit above.
+                        let state = handle.state::<AppState>();
+                        let frontend_ready = state
+                            .frontend_ready
+                            .lock()
+                            .map(|g| *g)
+                            .unwrap_or(false);
+                        if !frontend_ready {
+                            if let Ok(mut pending) = state.pending_deep_link.lock() {
+                                *pending = Some(pr_ref.to_string());
+                            }
                         }
 
                         if let Some(window) = handle.get_webview_window("main") {
@@ -70,6 +82,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_pending_deep_link,
+            commands::signal_frontend_ready,
             commands::load_manifest,
             commands::get_initial_manifest_path,
             commands::fetch_pr,

@@ -238,6 +238,10 @@ function App() {
         setLoadingPrRef(deepLink);
         handleFetchStart(deepLink);
       }
+
+      // Tell the backend it's safe to skip cold-start buffering — from now on
+      // hot-open emits go straight to the listener above.
+      invoke("signal_frontend_ready").catch(() => {});
     }
 
     initSession();

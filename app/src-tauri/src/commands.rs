@@ -15,6 +15,11 @@ pub struct AppState {
     pub manifest_path: Mutex<Option<String>>,
     pub pending_deep_link: Mutex<Option<String>>,
     pub pr_node_ids: Mutex<HashMap<String, String>>,
+    // True once the frontend has finished its init handshake. Until then,
+    // deep-link events get buffered into pending_deep_link for cold-start
+    // replay; after that point, hot-open emits suffice and we skip buffering
+    // to avoid replaying stale URLs on the next cold-start.
+    pub frontend_ready: Mutex<bool>,
 }
 
 fn github_client() -> GithubClient {
@@ -50,6 +55,13 @@ pub fn get_initial_manifest_path(state: State<AppState>) -> Option<String> {
 #[command]
 pub fn get_pending_deep_link(state: State<AppState>) -> Option<String> {
     state.pending_deep_link.lock().ok()?.take()
+}
+
+#[command]
+pub fn signal_frontend_ready(state: State<AppState>) {
+    if let Ok(mut ready) = state.frontend_ready.lock() {
+        *ready = true;
+    }
 }
 
 #[command]
