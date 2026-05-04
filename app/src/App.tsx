@@ -17,7 +17,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
-import { parsePrUrl } from "./utils";
+import { parsePrUrl, extractPrRef } from "./utils";
 
 function App() {
   const nextTabId = useRef(1);
@@ -178,7 +178,11 @@ function App() {
         return;
       }
 
-      // No CLI arg — try to restore previous session
+      // Check for deep link (cold-start: app launched via URL)
+      const deepLink = await invoke<string | null>("get_pending_deep_link");
+
+      // Restore previous session before honoring a deep link, so the user
+      // doesn't lose their open PRs just because they clicked an external link.
       try {
         const session = await invoke<SessionState | null>("load_session");
         if (session && session.open_prs.length > 0) {
@@ -228,10 +232,52 @@ function App() {
       }
 
       sessionRestoredRef.current = true;
+
+      if (deepLink) {
+        setLoading(true);
+        setLoadingPrRef(deepLink);
+        handleFetchStart(deepLink);
+      }
+
+      // Tell the backend it's safe to skip cold-start buffering — from now on
+      // hot-open emits go straight to the listener above.
+      invoke("signal_frontend_ready").catch(() => {});
     }
 
     initSession();
   }, []);
+
+  // Listen for deep links while app is running (hot-open)
+  useEffect(() => {
+    const unlisten = listen<string>("deep-link-open", (event) => {
+      // Receiving an emit proves the frontend is wired up — clear any
+      // race-buffered duplicate (deep link fired between listener mount and
+      // signal_frontend_ready) and re-assert ready so further hot-opens skip
+      // buffering entirely.
+      invoke("get_pending_deep_link").catch(() => {});
+      invoke("signal_frontend_ready").catch(() => {});
+      if (!event.payload) return;
+      if (loadingRef.current) {
+        addToast("info", "Already fetching a PR — try the deep link again when it finishes.");
+        return;
+      }
+      // Match by canonical owner/repo/pull/N rather than raw URL — payload format
+      // (with/without scheme, www., trailing slash) may not match manifest pr_url verbatim.
+      const incomingRef = extractPrRef(event.payload);
+      if (incomingRef) {
+        const existing = tabsRef.current.find(
+          (t) => extractPrRef(t.manifest.pr_url) === incomingRef
+        );
+        if (existing) {
+          setActiveTabId(existing.id);
+          setShowOpener(false);
+          return;
+        }
+      }
+      handleFetchStart(event.payload);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadManifest(path: string) {
     try {
@@ -1093,6 +1139,19 @@ function App() {
         open={settingsOpen}
         onClose={handleSettingsClose}
       />
+      {loading && (
+        <div className="deep-link-loading-overlay">
+          <div className="deep-link-loading-modal">
+            <LoadingView
+              prRef={loadingPrRef}
+              prTitle={loadingPrTitle}
+              progress={progress}
+              fileCounts={fileCounts}
+              onCancel={handleFetchCancel}
+            />
+          </div>
+        </div>
+      )}
       {activeTab && (
         <div className="review-content">
         {showChecksModal && (

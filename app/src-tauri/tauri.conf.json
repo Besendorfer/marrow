@@ -43,6 +43,11 @@
     "shell": {
       "open": true
     },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["relevantreviews"]
+      }
+    },
     "updater": {
       "endpoints": [
         "https://github.com/Besendorfer/relevant-reviews/releases/latest/download/latest.json"
