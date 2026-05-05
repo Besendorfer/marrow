@@ -120,35 +120,50 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHa
     }
 
     // Step 4: AI highlight analysis + summary + grouping (parallel)
-    emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((0, 3)));
+    // Each prompt is gated on a Settings flag — disabled prompts are skipped
+    // entirely to save AI cost and time.
     let per_file_diff_map = build_per_file_diff_map(&full_diff);
     let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
     let highlight_prompt = build_highlight_prompt(&pr_title, &per_file_diffs);
-
     let summary_prompt = build_summary_prompt(&pr_title, &relevant);
     let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
 
-    let mut ai_stream: FuturesUnordered<_> = [
-        ("highlights", ai.invoke(&highlight_prompt)),
-        ("summary", ai.invoke(&summary_prompt)),
-        ("grouping", ai.invoke(&grouping_prompt)),
-    ].into_iter().map(|(name, fut)| async move { (name, fut.await) }).collect();
-
-    let mut highlights_raw = Err("not started".to_string());
-    let mut summary_raw = Err("not started".to_string());
-    let mut grouping_raw = Err("not started".to_string());
-    let mut ai_done: u32 = 0;
-    while let Some((name, result)) = ai_stream.next().await {
-        ai_done += 1;
-        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((ai_done, 3)));
-        match name {
-            "highlights" => highlights_raw = result,
-            "summary" => summary_raw = result,
-            "grouping" => grouping_raw = result,
-            _ => {}
-        }
+    let mut ai_futures = Vec::new();
+    if settings.show_ai_notes {
+        ai_futures.push(("highlights", ai.invoke(&highlight_prompt)));
     }
-    emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Done, None, None);
+    if settings.enable_ai_summary {
+        ai_futures.push(("summary", ai.invoke(&summary_prompt)));
+    }
+    if settings.enable_change_groups {
+        ai_futures.push(("grouping", ai.invoke(&grouping_prompt)));
+    }
+
+    let mut highlights_raw: Result<String, String> = Ok("[]".to_string());
+    let mut summary_raw: Result<String, String> = Ok(String::new());
+    let mut grouping_raw: Result<String, String> = Ok("[]".to_string());
+
+    let total = ai_futures.len() as u32;
+    if total > 0 {
+        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((0, total)));
+        let mut ai_stream: FuturesUnordered<_> = ai_futures
+            .into_iter()
+            .map(|(name, fut)| async move { (name, fut.await) })
+            .collect();
+
+        let mut ai_done: u32 = 0;
+        while let Some((name, result)) = ai_stream.next().await {
+            ai_done += 1;
+            emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((ai_done, total)));
+            match name {
+                "highlights" => highlights_raw = result,
+                "summary" => summary_raw = result,
+                "grouping" => grouping_raw = result,
+                _ => {}
+            }
+        }
+        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Done, None, None);
+    }
 
     let highlights_raw = highlights_raw.unwrap_or_else(|_| "[]".to_string());
 

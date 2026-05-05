@@ -11,6 +11,32 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
+function FeatureToggle({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="feature-toggle">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="feature-toggle-text">
+        <span className="feature-toggle-label">{label}</span>
+        <span className="feature-toggle-hint">{hint}</span>
+      </span>
+    </label>
+  );
+}
+
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [model, setModel] = useState("");
   const [githubToken, setGithubToken] = useState("");
@@ -18,6 +44,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [enableAiSummary, setEnableAiSummary] = useState(true);
+  const [enableChangeGroups, setEnableChangeGroups] = useState(true);
+  const [enableCommentsView, setEnableCommentsView] = useState(true);
+  const [enableChecksStatus, setEnableChecksStatus] = useState(true);
+  const [showAiNotes, setShowAiNotes] = useState(true);
 
   // Set href via DOM to bypass React's javascript: URL blocking
   const bookmarkletRef = useCallback((node: HTMLAnchorElement | null) => {
@@ -30,6 +61,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setModel(s.model);
         setGithubToken(s.github_token || "");
         setAwsProfile(s.aws_profile || "");
+        setEnableAiSummary(s.enable_ai_summary ?? true);
+        setEnableChangeGroups(s.enable_change_groups ?? true);
+        setEnableCommentsView(s.enable_comments_view ?? true);
+        setEnableChecksStatus(s.enable_checks_status ?? true);
+        setShowAiNotes(s.show_ai_notes ?? true);
         setCurrentSettings(s);
       });
       setSaved(false);
@@ -49,8 +85,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           filter_team: currentSettings?.filter_team ?? true,
           view_mode: currentSettings?.view_mode ?? "split",
           show_hunk_significance: currentSettings?.show_hunk_significance ?? true,
-          show_ai_notes: currentSettings?.show_ai_notes ?? true,
+          show_ai_notes: showAiNotes,
           hunk_filter: currentSettings?.hunk_filter ?? "all",
+          enable_ai_summary: enableAiSummary,
+          enable_change_groups: enableChangeGroups,
+          enable_comments_view: enableCommentsView,
+          enable_checks_status: enableChecksStatus,
         },
       });
       setSaved(true);
@@ -139,6 +179,44 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             placeholder="ghp_... or github_pat_..."
             spellCheck={false}
             autoComplete="off"
+          />
+
+          <div className="settings-divider" />
+          <h3 className="settings-section-title">Features</h3>
+          <p className="settings-hint">
+            Turn off features you don't use to declutter the UI. Items marked
+            <em> (skips AI work)</em> also avoid the related AI calls during
+            fetch, saving cost and time.
+          </p>
+          <FeatureToggle
+            label="AI highlights"
+            hint="Inline AI annotations on the diff. (skips AI work)"
+            checked={showAiNotes}
+            onChange={(v) => { setShowAiNotes(v); setSaved(false); }}
+          />
+          <FeatureToggle
+            label="AI summary"
+            hint="The PR-level summary shown when no file is selected. (skips AI work)"
+            checked={enableAiSummary}
+            onChange={(v) => { setEnableAiSummary(v); setSaved(false); }}
+          />
+          <FeatureToggle
+            label="Change groups"
+            hint="The Groups sidebar view that clusters related files. (skips AI work)"
+            checked={enableChangeGroups}
+            onChange={(v) => { setEnableChangeGroups(v); setSaved(false); }}
+          />
+          <FeatureToggle
+            label="Comments view"
+            hint="The Comments sidebar view and review-thread fetching."
+            checked={enableCommentsView}
+            onChange={(v) => { setEnableCommentsView(v); setSaved(false); }}
+          />
+          <FeatureToggle
+            label="CI checks status"
+            hint="The blocking modal and live polling for failing/pending checks."
+            checked={enableChecksStatus}
+            onChange={(v) => { setEnableChecksStatus(v); setSaved(false); }}
           />
 
           <div className="settings-divider" />

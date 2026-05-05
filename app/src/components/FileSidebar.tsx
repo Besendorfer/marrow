@@ -18,6 +18,8 @@ interface FileSidebarProps {
   commentThreads: ReviewThread[];
   selectedCommentFile: string | null;
   onSelectCommentFile: (path: string) => void;
+  enableChangeGroups: boolean;
+  enableCommentsView: boolean;
 }
 
 function getMaxHunkSignificance(file: FileDiff): string {
@@ -387,8 +389,10 @@ export function FileSidebar({
   commentThreads,
   selectedCommentFile,
   onSelectCommentFile,
+  enableChangeGroups,
+  enableCommentsView,
 }: FileSidebarProps) {
-  const hasGroups = changeGroups.length > 0;
+  const hasGroups = enableChangeGroups && changeGroups.length > 0;
   const prevHasGroups = useRef(hasGroups);
 
   useEffect(() => {
@@ -397,6 +401,12 @@ export function FileSidebar({
     }
     prevHasGroups.current = hasGroups;
   }, [hasGroups]);
+
+  // If the user disables a view they're currently looking at, snap back to a valid one.
+  useEffect(() => {
+    if (view === "comments" && !enableCommentsView) setView("category");
+    if (view === "groups" && !enableChangeGroups) setView("category");
+  }, [view, enableCommentsView, enableChangeGroups]);
 
   const criticalFiles = useMemo(() => {
     return files
@@ -506,13 +516,15 @@ export function FileSidebar({
                 Groups
               </button>
             )}
-            <button
-              className={view === "comments" ? "active" : ""}
-              onClick={() => setView("comments")}
-              title="Review comments"
-            >
-              Comments
-            </button>
+            {enableCommentsView && (
+              <button
+                className={view === "comments" ? "active" : ""}
+                onClick={() => setView("comments")}
+                title="Review comments"
+              >
+                Comments
+              </button>
+            )}
             <button
               className={view === "category" ? "active" : ""}
               onClick={() => setView("category")}

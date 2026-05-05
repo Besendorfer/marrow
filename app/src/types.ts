@@ -139,6 +139,10 @@ export interface Settings {
   show_hunk_significance: boolean;
   show_ai_notes: boolean;
   hunk_filter: HunkSignificanceFilter;
+  enable_ai_summary: boolean;
+  enable_change_groups: boolean;
+  enable_comments_view: boolean;
+  enable_checks_status: boolean;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";

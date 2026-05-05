@@ -1788,6 +1788,32 @@ body {
   color: var(--text-primary);
 }
 
+.feature-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+.feature-toggle input[type="checkbox"] {
+  margin-top: 2px;
+  cursor: pointer;
+}
+.feature-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.feature-toggle-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.feature-toggle-hint {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+}
+
 .bookmarklet-link {
   display: inline-block;
   padding: 6px 14px;

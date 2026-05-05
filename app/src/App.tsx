@@ -27,6 +27,10 @@ function App() {
   const [showHunkSignificance, setShowHunkSignificance] = useState(true);
   const [showAiNotes, setShowAiNotes] = useState(true);
   const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
+  const [enableAiSummary, setEnableAiSummary] = useState(true);
+  const [enableChangeGroups, setEnableChangeGroups] = useState(true);
+  const [enableCommentsView, setEnableCommentsView] = useState(true);
+  const [enableChecksStatus, setEnableChecksStatus] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showOpener, setShowOpener] = useState(false);
@@ -50,7 +54,15 @@ function App() {
 
   const handleSettingsClose = useCallback(() => {
     setSettingsOpen(false);
-    invoke<Settings>("get_settings").then((s) => { settingsRef.current = s; }).catch(() => {});
+    invoke<Settings>("get_settings").then((s) => {
+      settingsRef.current = s;
+      // Mirror feature-flag changes the user made inside the modal back into
+      // local state so the UI reflects them without an app reload.
+      setEnableAiSummary(s.enable_ai_summary ?? true);
+      setEnableChangeGroups(s.enable_change_groups ?? true);
+      setEnableCommentsView(s.enable_comments_view ?? true);
+      setEnableChecksStatus(s.enable_checks_status ?? true);
+    }).catch(() => {});
   }, []);
 
   const addToast = useCallback((type: ToastData["type"], message: string) => {
@@ -166,6 +178,10 @@ function App() {
         setShowHunkSignificance(settings.show_hunk_significance ?? true);
         setShowAiNotes(settings.show_ai_notes ?? true);
         setHunkFilter(settings.hunk_filter || "all");
+        setEnableAiSummary(settings.enable_ai_summary ?? true);
+        setEnableChangeGroups(settings.enable_change_groups ?? true);
+        setEnableCommentsView(settings.enable_comments_view ?? true);
+        setEnableChecksStatus(settings.enable_checks_status ?? true);
       } catch {
         // Use defaults on failure
       }
@@ -309,6 +325,7 @@ function App() {
   }
 
   async function fetchChecksStatus(tabId: string, prUrl: string) {
+    if (!enableChecksStatus) return;
     try {
       const [checks, dismissed] = await Promise.all([
         invoke<PrChecksStatus>("get_pr_checks", { prUrl }),
@@ -954,8 +971,12 @@ function App() {
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const enableChecksStatusRef = useRef(enableChecksStatus);
+  enableChecksStatusRef.current = enableChecksStatus;
+
   useEffect(() => {
     const interval = setInterval(async () => {
+      if (!enableChecksStatusRef.current) return;
       const currentTabs = tabsRef.current;
       if (loadingRef.current || currentTabs.length === 0) return;
 
@@ -1010,14 +1031,16 @@ function App() {
     const s = settingsRef.current;
     if (!s) return;
     if (s.view_mode === viewMode && s.show_hunk_significance === showHunkSignificance
-        && s.show_ai_notes === showAiNotes && s.hunk_filter === hunkFilter) return;
+        && s.show_ai_notes === showAiNotes && s.hunk_filter === hunkFilter
+        && s.enable_ai_summary === enableAiSummary && s.enable_change_groups === enableChangeGroups
+        && s.enable_comments_view === enableCommentsView && s.enable_checks_status === enableChecksStatus) return;
     const timer = setTimeout(() => {
-      const updated = { ...settingsRef.current!, view_mode: viewMode, show_hunk_significance: showHunkSignificance, show_ai_notes: showAiNotes, hunk_filter: hunkFilter };
+      const updated = { ...settingsRef.current!, view_mode: viewMode, show_hunk_significance: showHunkSignificance, show_ai_notes: showAiNotes, hunk_filter: hunkFilter, enable_ai_summary: enableAiSummary, enable_change_groups: enableChangeGroups, enable_comments_view: enableCommentsView, enable_checks_status: enableChecksStatus };
       settingsRef.current = updated;
       invoke("save_settings", { settings: updated }).catch(() => {});
     }, 500);
     return () => clearTimeout(timer);
-  }, [viewMode, showHunkSignificance, showAiNotes, hunkFilter]);
+  }, [viewMode, showHunkSignificance, showAiNotes, hunkFilter, enableAiSummary, enableChangeGroups, enableCommentsView, enableChecksStatus]);
 
   async function handleFileDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -1184,6 +1207,8 @@ function App() {
             commentThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : []}
             selectedCommentFile={activeTab.selectedCommentFile}
             onSelectCommentFile={handleSelectCommentFile}
+            enableChangeGroups={enableChangeGroups}
+            enableCommentsView={enableCommentsView}
           />
           <div className="diff-pane">
             {activeTab.sidebarView === "comments" ? (

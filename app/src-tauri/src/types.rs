@@ -99,6 +99,14 @@ pub struct Settings {
     pub show_ai_notes: bool,
     #[serde(default = "default_all")]
     pub hunk_filter: String,
+    #[serde(default = "default_true")]
+    pub enable_ai_summary: bool,
+    #[serde(default = "default_true")]
+    pub enable_change_groups: bool,
+    #[serde(default = "default_true")]
+    pub enable_comments_view: bool,
+    #[serde(default = "default_true")]
+    pub enable_checks_status: bool,
 }
 
 fn default_true() -> bool {

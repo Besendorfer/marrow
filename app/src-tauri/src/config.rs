@@ -25,6 +25,10 @@ fn default_settings() -> Settings {
         show_hunk_significance: true,
         show_ai_notes: true,
         hunk_filter: "all".to_string(),
+        enable_ai_summary: true,
+        enable_change_groups: true,
+        enable_comments_view: true,
+        enable_checks_status: true,
     }
 }
 
@@ -48,6 +52,10 @@ pub fn load_settings() -> Settings {
     let mut show_hunk_significance = true;
     let mut show_ai_notes = true;
     let mut hunk_filter = "all".to_string();
+    let mut enable_ai_summary = true;
+    let mut enable_change_groups = true;
+    let mut enable_comments_view = true;
+    let mut enable_checks_status = true;
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -68,6 +76,14 @@ pub fn load_settings() -> Settings {
             show_ai_notes = val == "true";
         } else if let Some(val) = line.strip_prefix("hunk_filter=") {
             hunk_filter = val.to_string();
+        } else if let Some(val) = line.strip_prefix("enable_ai_summary=") {
+            enable_ai_summary = val == "true";
+        } else if let Some(val) = line.strip_prefix("enable_change_groups=") {
+            enable_change_groups = val == "true";
+        } else if let Some(val) = line.strip_prefix("enable_comments_view=") {
+            enable_comments_view = val == "true";
+        } else if let Some(val) = line.strip_prefix("enable_checks_status=") {
+            enable_checks_status = val == "true";
         }
     }
 
@@ -81,6 +97,10 @@ pub fn load_settings() -> Settings {
         show_hunk_significance,
         show_ai_notes,
         hunk_filter,
+        enable_ai_summary,
+        enable_change_groups,
+        enable_comments_view,
+        enable_checks_status,
     }
 }
 
@@ -104,6 +124,10 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     content.push_str(&format!("show_hunk_significance={}\n", settings.show_hunk_significance));
     content.push_str(&format!("show_ai_notes={}\n", settings.show_ai_notes));
     content.push_str(&format!("hunk_filter={}\n", settings.hunk_filter));
+    content.push_str(&format!("enable_ai_summary={}\n", settings.enable_ai_summary));
+    content.push_str(&format!("enable_change_groups={}\n", settings.enable_change_groups));
+    content.push_str(&format!("enable_comments_view={}\n", settings.enable_comments_view));
+    content.push_str(&format!("enable_checks_status={}\n", settings.enable_checks_status));
 
     fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;
 
