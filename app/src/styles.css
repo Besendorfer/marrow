@@ -78,6 +78,29 @@ body {
   overflow: hidden;
 }
 
+.opener-error {
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  border: 1px solid var(--diff-remove-text);
+  border-radius: 6px;
+  text-align: left;
+  max-width: 600px;
+}
+
+.opener-error strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--diff-remove-text);
+}
+
+.opener-error pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+}
+
 .empty-message, .error-message {
   text-align: center;
   color: var(--text-secondary);
@@ -181,6 +204,10 @@ body {
   border-radius: 50%;
   background: var(--accent);
   flex-shrink: 0;
+}
+
+.tab-unread-error {
+  background: var(--diff-remove-text);
 }
 
 .tab-pr-number {

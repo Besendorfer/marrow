@@ -96,7 +96,13 @@ export function Header({
             onClick={() => onSelectTab(tab.id)}
           >
             <span className="tab-label">
-              {tab.unread && <span className="tab-unread" aria-label="Finished loading" title="Finished loading" />}
+              {tab.unread && (
+                <span
+                  className={`tab-unread${tab.error ? " tab-unread-error" : ""}`}
+                  aria-label={tab.error ? "Failed to load" : "Finished loading"}
+                  title={tab.error ? "Failed to load" : "Finished loading"}
+                />
+              )}
               {tab.manifest ? (
                 <>
                   <span className="tab-pr-number">#{tab.manifest.pr_number}</span>

@@ -170,6 +170,7 @@ function App() {
       id: String(nextTabId.current++),
       manifest: null,
       loading: null,
+      error: null,
       selectedFile: null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
@@ -450,6 +451,7 @@ function App() {
 
     updateTab(loadingTabId, (t) => ({
       ...t,
+      error: null,
       loading: { prRef, prTitle: null, progress: null, fileCounts: {} },
     }));
 
@@ -486,8 +488,19 @@ function App() {
       fillTabWithManifest(loadingTabId, manifest);
     } catch (err) {
       if (fetchTokenRef.current !== token) return;
-      setError(String(err));
-      updateTab(loadingTabId, (t) => ({ ...t, loading: null }));
+      const message = String(err);
+      const isActive = activeTabIdRef.current === loadingTabId;
+      // Keep the failure in its own tab rather than hijacking the whole window.
+      // If the user has moved on, flag the tab and toast instead of stealing focus.
+      updateTab(loadingTabId, (t) => ({
+        ...t,
+        loading: null,
+        error: message,
+        unread: isActive ? t.unread : true,
+      }));
+      if (!isActive) {
+        addToast("error", `PR failed to load: ${message}`);
+      }
     } finally {
       unlisten();
       if (unlistenRef.current === unlisten) unlistenRef.current = null;
@@ -1214,6 +1227,12 @@ function App() {
               />
             ) : (
               <>
+                {activeTab.error && (
+                  <div className="opener-error" role="alert">
+                    <strong>Failed to load PR</strong>
+                    <pre>{activeTab.error}</pre>
+                  </div>
+                )}
                 <h1>Relevant Reviews</h1>
                 <p>
                   Drop a manifest JSON file here, or enter a PR URL below to start
