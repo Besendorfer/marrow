@@ -66,8 +66,12 @@ pub fn signal_frontend_ready(state: State<AppState>) {
 
 #[command]
 pub async fn fetch_pr(app: tauri::AppHandle, pr_ref: String) -> Result<ReviewManifest, String> {
+    use tauri::Emitter;
     let settings = load_settings();
-    fetch_pr_impl(&pr_ref, &settings, &app).await
+    let report = move |p: crate::types::FetchProgress| {
+        let _ = app.emit("fetch-progress", p);
+    };
+    fetch_pr_impl(&pr_ref, &settings, &report).await
 }
 
 #[command]
