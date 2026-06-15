@@ -1,4 +1,4 @@
-//! `rr` — a thin terminal frontend over the Relevant Reviews Rust core.
+//! `marrow` — a thin terminal frontend over the Relevant Reviews Rust core.
 //!
 //! This is a prototype to evaluate a TUI/CLI direction. It deliberately reuses
 //! the exact same modules the desktop app's Tauri commands call — `github.rs`,
@@ -16,7 +16,7 @@ use relevant_reviews_lib::types::{FetchProgress, FetchStatus, ReviewManifest, Re
 
 #[derive(Parser)]
 #[command(
-    name = "rr",
+    name = "marrow",
     about = "Relevant Reviews in your terminal (prototype CLI over the shared Rust core)",
     version
 )]
@@ -69,14 +69,14 @@ enum Command {
     /// Reply to a review comment thread
     Reply {
         pr: String,
-        /// Comment node ID to reply to (shown by `rr comments`)
+        /// Comment node ID to reply to (shown by `marrow comments`)
         comment_id: String,
         /// Reply body
         body: String,
     },
     /// Mark a review thread resolved
     Resolve {
-        /// Thread node ID (shown by `rr comments`)
+        /// Thread node ID (shown by `marrow comments`)
         thread_id: String,
     },
     /// Reopen a resolved review thread

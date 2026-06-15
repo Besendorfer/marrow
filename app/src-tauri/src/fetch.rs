@@ -12,7 +12,7 @@ use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 
 /// Sink for fetch progress updates. The Tauri command passes a closure that
-/// emits a `fetch-progress` event to the webview; the `rr` CLI passes one that
+/// emits a `fetch-progress` event to the webview; the `marrow` CLI passes one that
 /// prints to stderr. Decoupling the core fetch from `tauri::AppHandle` keeps it
 /// reusable by any frontend.
 pub type ProgressFn<'a> = &'a (dyn Fn(FetchProgress) + Send + Sync);

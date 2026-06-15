@@ -33,5 +33,5 @@ clap = { version = "4", features = ["derive"] }
 # Thin terminal frontend over the shared Rust core (github.rs, fetch.rs, …).
 # A prototype to evaluate a TUI direction without the Tauri/webview stack.
 [[bin]]
-name = "rr"
-path = "src/bin/rr.rs"
+name = "marrow"
+path = "src/bin/marrow.rs"
