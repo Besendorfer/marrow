@@ -99,9 +99,23 @@ export type DiffViewMode = "split" | "unified";
 
 export type HunkSignificanceFilter = "all" | "high" | "medium" | "low";
 
+export interface TabLoadingState {
+  prRef: string;
+  prTitle: string | null;
+  progress: FetchProgress | null;
+  fileCounts: Record<number, { done: number; total: number }>;
+}
+
 export interface Tab {
   id: string;
-  manifest: ReviewManifest;
+  /** null while the tab is an opener/loading tab that hasn't loaded a PR yet */
+  manifest: ReviewManifest | null;
+  /** present while this tab is actively fetching a PR; null/absent otherwise */
+  loading?: TabLoadingState | null;
+  /** true when the tab finished (loaded or errored) while inactive; cleared when viewed */
+  unread?: boolean;
+  /** error message from a failed fetch in this (still pending) tab; null otherwise */
+  error?: string | null;
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
   staleViewedFiles: Set<string>;

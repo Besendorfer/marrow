@@ -29,12 +29,6 @@ function App() {
   const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [showOpener, setShowOpener] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [loadingPrRef, setLoadingPrRef] = useState("");
-  const [loadingPrTitle, setLoadingPrTitle] = useState<string | null>(null);
-  const [progress, setProgress] = useState<FetchProgress | null>(null);
-  const [fileCounts, setFileCounts] = useState<Record<number, { done: number; total: number }>>({});
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
@@ -47,6 +41,11 @@ function App() {
   const pendingUpdateRef = useRef<Awaited<ReturnType<typeof check>>>(null);
   const sessionRestoredRef = useRef(false);
   const settingsRef = useRef<Settings | null>(null);
+  // True while a PR fetch is in flight (guards refresh/polling/concurrent fetches).
+  const fetchingRef = useRef(false);
+  // Monotonic token identifying the active fetch; bumped on cancel so a
+  // superseded/cancelled fetch resolving late is dropped instead of filling a tab.
+  const fetchTokenRef = useRef(0);
 
   const handleSettingsClose = useCallback(() => {
     setSettingsOpen(false);
@@ -122,10 +121,13 @@ function App() {
   }, [checkForUpdates]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-  const openPrUrls = useMemo(() => new Set(tabs.map((t) => t.manifest.pr_url)), [tabs]);
+  const openPrUrls = useMemo(
+    () => new Set(tabs.filter((t) => t.manifest).map((t) => t.manifest!.pr_url)),
+    [tabs]
+  );
 
   const activeChecks = activeTab ? checksMap[activeTab.id] : undefined;
-  const showChecksModal = !!activeTab && !!activeChecks && activeChecks.overall_state !== "success" && !checksDismissed[activeTab.manifest.pr_url];
+  const showChecksModal = !!activeTab && !!activeTab.manifest && !!activeChecks && activeChecks.overall_state !== "success" && !checksDismissed[activeTab.manifest.pr_url];
 
   const selectedFilePath = activeTab?.selectedFile?.path ?? null;
   const fileSearchMatches = useMemo(
@@ -140,11 +142,12 @@ function App() {
     [searchMatches, searchCurrentIndex, selectedFilePath]
   );
 
-  function createTab(manifest: ReviewManifest): Tab {
+  function buildReviewTab(id: string, manifest: ReviewManifest): Tab {
     const hasGroups = (manifest.change_groups ?? []).length > 0;
     return {
-      id: String(nextTabId.current++),
+      id,
       manifest,
+      loading: null,
       selectedFile: manifest.files.length > 0 ? manifest.files[0] : null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
@@ -154,6 +157,41 @@ function App() {
       isRefreshing: false,
       lastCommentCount: 0,
     };
+  }
+
+  function createTab(manifest: ReviewManifest): Tab {
+    return buildReviewTab(String(nextTabId.current++), manifest);
+  }
+
+  // A tab that hasn't loaded a PR yet — renders the opener form (or the loading
+  // view once a fetch starts in it).
+  function createOpenerTab(): Tab {
+    return {
+      id: String(nextTabId.current++),
+      manifest: null,
+      loading: null,
+      error: null,
+      selectedFile: null,
+      viewedFiles: new Set(),
+      staleViewedFiles: new Set(),
+      commentThreads: { status: "idle" },
+      selectedCommentFile: null,
+      sidebarView: "category",
+      isRefreshing: false,
+      lastCommentCount: 0,
+    };
+  }
+
+  function handleNewReview() {
+    const tab = createOpenerTab();
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }
+
+  function handleSelectTab(id: string) {
+    setActiveTabId(id);
+    // Viewing a tab clears its "finished loading" notification.
+    setTabs((prev) => prev.map((t) => (t.id === id && t.unread ? { ...t, unread: false } : t)));
   }
 
   useEffect(() => {
@@ -183,6 +221,7 @@ function App() {
 
       // Restore previous session before honoring a deep link, so the user
       // doesn't lose their open PRs just because they clicked an external link.
+      let restoredTabs: Tab[] = [];
       try {
         const session = await invoke<SessionState | null>("load_session");
         if (session && session.open_prs.length > 0) {
@@ -211,19 +250,20 @@ function App() {
               }
             }),
           );
-          const restoredTabs = loaded.filter((t): t is Tab => t !== null);
+          const restored = loaded.filter((t): t is Tab => t !== null);
 
-          if (restoredTabs.length > 0) {
-            setTabs(restoredTabs);
+          if (restored.length > 0) {
+            restoredTabs = restored;
+            setTabs(restored);
             const active = session.active_pr
-              ? restoredTabs.find((t) => t.manifest.pr_url === session.active_pr)
+              ? restored.find((t) => t.manifest!.pr_url === session.active_pr)
               : null;
-            setActiveTabId(active?.id ?? restoredTabs[0].id);
+            setActiveTabId(active?.id ?? restored[0].id);
 
-            for (const tab of restoredTabs) {
+            for (const tab of restored) {
               loadPersistedViewedState(tab);
-              fetchMyReviewState(tab.id, tab.manifest.pr_url);
-              fetchChecksStatus(tab.id, tab.manifest.pr_url);
+              fetchMyReviewState(tab.id, tab.manifest!.pr_url);
+              fetchChecksStatus(tab.id, tab.manifest!.pr_url);
             }
           }
         }
@@ -234,9 +274,12 @@ function App() {
       sessionRestoredRef.current = true;
 
       if (deepLink) {
-        setLoading(true);
-        setLoadingPrRef(deepLink);
+        // Open the incoming PR in its own new tab.
         handleFetchStart(deepLink);
+      } else if (restoredTabs.length === 0) {
+        // Nothing to show — start with an opener tab so the tab bar is present
+        // from the start instead of a full-screen empty state.
+        handleNewReview();
       }
 
       // Tell the backend it's safe to skip cold-start buffering — from now on
@@ -257,7 +300,7 @@ function App() {
       invoke("get_pending_deep_link").catch(() => {});
       invoke("signal_frontend_ready").catch(() => {});
       if (!event.payload) return;
-      if (loadingRef.current) {
+      if (fetchingRef.current) {
         addToast("info", "Already fetching a PR — try the deep link again when it finishes.");
         return;
       }
@@ -266,11 +309,10 @@ function App() {
       const incomingRef = extractPrRef(event.payload);
       if (incomingRef) {
         const existing = tabsRef.current.find(
-          (t) => extractPrRef(t.manifest.pr_url) === incomingRef
+          (t) => t.manifest && extractPrRef(t.manifest.pr_url) === incomingRef
         );
         if (existing) {
-          setActiveTabId(existing.id);
-          setShowOpener(false);
+          handleSelectTab(existing.id);
           return;
         }
       }
@@ -288,11 +330,33 @@ function App() {
     }
   }
 
+  // Turn a pending (opener/loading) tab into a loaded review tab in place,
+  // preserving its position in the tab bar. If the user has navigated away to
+  // another tab, we don't steal focus — instead the tab is flagged unread and a
+  // toast lets them know it finished.
+  function fillTabWithManifest(tabId: string, data: ReviewManifest) {
+    const isActive = activeTabIdRef.current === tabId;
+    const tab = buildReviewTab(tabId, data);
+    if (!isActive) tab.unread = true;
+    setTabs((prev) => prev.map((t) => (t.id === tabId ? tab : t)));
+    setError(null);
+    loadPersistedViewedState(tab);
+    fetchMyReviewState(tabId, data.pr_url);
+    fetchChecksStatus(tabId, data.pr_url);
+    if (!isActive) {
+      addToast("success", `PR #${data.pr_number} finished loading`);
+    }
+  }
+
   function handleManifestLoaded(data: ReviewManifest) {
+    // Reuse the active opener tab if one is focused; otherwise open a new tab.
+    if (activeTab && activeTab.manifest === null && !activeTab.loading) {
+      fillTabWithManifest(activeTab.id, data);
+      return;
+    }
     const tab = createTab(data);
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
-    setShowOpener(false);
     setError(null);
     loadPersistedViewedState(tab);
     fetchMyReviewState(tab.id, data.pr_url);
@@ -347,6 +411,7 @@ function App() {
   }
 
   async function loadPersistedViewedState(tab: Tab) {
+    if (!tab.manifest) return;
     try {
       const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
       const saved = await invoke<ViewedFileState | null>("load_viewed_files", { owner, repo, prNumber: number });
@@ -364,56 +429,99 @@ function App() {
 
   const unlistenRef = useRef<(() => void) | null>(null);
 
-  async function handleFetchStart(prRef: string) {
-    if (loading) return;
-    setLoading(true);
-    setLoadingPrRef(prRef);
-    setLoadingPrTitle(null);
-    setProgress(null);
-    setFileCounts({});
+  // Fetch a PR into a tab. If `targetTabId` is an existing opener tab it loads
+  // in place; otherwise a new tab is created so opening never takes over the
+  // currently active review.
+  async function handleFetchStart(prRef: string, targetTabId?: string) {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+    const token = ++fetchTokenRef.current;
     setError(null);
 
+    let tabId = targetTabId;
+    const existing = tabId ? tabsRef.current.find((t) => t.id === tabId) : undefined;
+    if (!existing || existing.manifest !== null) {
+      // No reusable opener tab — spin up a fresh one and switch to it.
+      const tab = createOpenerTab();
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
+      tabId = tab.id;
+    }
+    const loadingTabId = tabId!;
+
+    updateTab(loadingTabId, (t) => ({
+      ...t,
+      error: null,
+      loading: { prRef, prTitle: null, progress: null, fileCounts: {} },
+    }));
+
     const unlisten = await listen<FetchProgress>("fetch-progress", (event) => {
-      setProgress(event.payload);
-      if (event.payload.pr_title) {
-        setLoadingPrTitle(event.payload.pr_title);
-      }
-      if (event.payload.files_total != null) {
-        setFileCounts((prev) => ({
-          ...prev,
-          [event.payload.step]: {
-            done: event.payload.files_done ?? 0,
-            total: event.payload.files_total!,
+      updateTab(loadingTabId, (t) => {
+        if (!t.loading) return t;
+        const fileCounts =
+          event.payload.files_total != null
+            ? {
+                ...t.loading.fileCounts,
+                [event.payload.step]: {
+                  done: event.payload.files_done ?? 0,
+                  total: event.payload.files_total,
+                },
+              }
+            : t.loading.fileCounts;
+        return {
+          ...t,
+          loading: {
+            ...t.loading,
+            progress: event.payload,
+            prTitle: event.payload.pr_title ?? t.loading.prTitle,
+            fileCounts,
           },
-        }));
-      }
+        };
+      });
     });
     unlistenRef.current = unlisten;
 
     try {
       const manifest = await invoke<ReviewManifest>("fetch_pr", { prRef });
-      handleManifestLoaded(manifest);
+      // Cancelled or superseded while in flight — drop the result.
+      if (fetchTokenRef.current !== token) return;
+      fillTabWithManifest(loadingTabId, manifest);
     } catch (err) {
-      setError(String(err));
+      if (fetchTokenRef.current !== token) return;
+      const message = String(err);
+      const isActive = activeTabIdRef.current === loadingTabId;
+      // Keep the failure in its own tab rather than hijacking the whole window.
+      // If the user has moved on, flag the tab and toast instead of stealing focus.
+      updateTab(loadingTabId, (t) => ({
+        ...t,
+        loading: null,
+        error: message,
+        unread: isActive ? t.unread : true,
+      }));
+      if (!isActive) {
+        addToast("error", `PR failed to load: ${message}`);
+      }
     } finally {
       unlisten();
-      unlistenRef.current = null;
-      setLoading(false);
-      setProgress(null);
+      if (unlistenRef.current === unlisten) unlistenRef.current = null;
+      if (fetchTokenRef.current === token) fetchingRef.current = false;
     }
   }
 
-  function handleFetchCancel() {
+  function handleFetchCancel(tabId: string) {
     unlistenRef.current?.();
     unlistenRef.current = null;
-    setLoading(false);
-    setProgress(null);
+    // Invalidate the in-flight fetch so its late result is ignored, and free up
+    // the fetch guard so the user can open another PR immediately.
+    fetchTokenRef.current++;
+    fetchingRef.current = false;
+    updateTab(tabId, (t) => ({ ...t, loading: null }));
   }
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
-  const loadingRef = useRef(loading);
-  loadingRef.current = loading;
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
   const checksMapRef = useRef(checksMap);
   checksMapRef.current = checksMap;
   const checksDismissedRef = useRef(checksDismissed);
@@ -426,7 +534,7 @@ function App() {
   async function handleRefreshPr(tabId?: string) {
     const targetId = tabId ?? activeTabId;
     const tab = tabsRef.current.find((t) => t.id === targetId);
-    if (!tab || tab.isRefreshing || loadingRef.current) return;
+    if (!tab || !tab.manifest || tab.isRefreshing || fetchingRef.current) return;
 
     updateTab(tab.id, (t) => ({ ...t, isRefreshing: true }));
 
@@ -499,7 +607,7 @@ function App() {
 
   async function handleRefreshComments(tabId: string) {
     const tab = tabsRef.current.find((t) => t.id === tabId);
-    if (!tab || tab.isRefreshing) return;
+    if (!tab || !tab.manifest || tab.isRefreshing) return;
 
     try {
       const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
@@ -533,7 +641,7 @@ function App() {
 
   function toggleViewed(filePath: string) {
     const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab) return;
+    if (!tab || !tab.manifest) return;
     const nowViewed = !tab.viewedFiles.has(filePath);
     const nextViewed = new Set(tab.viewedFiles);
     const nextStale = new Set(tab.staleViewedFiles);
@@ -550,6 +658,7 @@ function App() {
   }
 
   async function persistViewedState(tab: Tab) {
+    if (!tab.manifest) return;
     try {
       const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
       const fileHashMap = new Map(tab.manifest.files.map((f) => [f.path, f.diff_hash]));
@@ -611,7 +720,7 @@ function App() {
 
   async function handleRequestComments() {
     const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab || tab.commentThreads.status === "loading" || tab.commentThreads.status === "loaded") return;
+    if (!tab || !tab.manifest || tab.commentThreads.status === "loading" || tab.commentThreads.status === "loaded") return;
 
     updateTab(activeTabId,(t) => ({ ...t, commentThreads: { status: "loading" } }));
     try {
@@ -645,7 +754,7 @@ function App() {
 
   async function handleReply(threadId: string, commentId: string, body: string) {
     const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab || tab.commentThreads.status !== "loaded") return;
+    if (!tab || !tab.manifest || tab.commentThreads.status !== "loaded") return;
 
     // Optimistic update: add a placeholder comment
     const optimisticComment = {
@@ -832,7 +941,7 @@ function App() {
 
   async function handleSubmitReview(event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) {
     const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab) return;
+    if (!tab || !tab.manifest) return;
 
     try {
       await invoke<string>("submit_review", {
@@ -873,7 +982,7 @@ function App() {
 
   async function handleCreateComment(path: string, endLine: number, side: "LEFT" | "RIGHT", body: string, startLine?: number, startSide?: "LEFT" | "RIGHT") {
     const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab) return;
+    if (!tab || !tab.manifest) return;
 
     try {
       const newThread = await invoke<ReviewThread>("create_review_comment", {
@@ -909,34 +1018,39 @@ function App() {
 
   function closeTab(tabId: string) {
     const idx = tabs.findIndex((t) => t.id === tabId);
-    const next = tabs.filter((t) => t.id !== tabId);
-    setTabs(next);
+    let next = tabs.filter((t) => t.id !== tabId);
     setChecksMap((prev) => {
       const copy = { ...prev };
       delete copy[tabId];
       return copy;
     });
+    // Closing the last tab drops back to a fresh opener tab so the tab bar
+    // (and a way to open a new PR) is always present.
+    if (next.length === 0) {
+      const opener = createOpenerTab();
+      next = [opener];
+      setTabs(next);
+      setActiveTabId(opener.id);
+      return;
+    }
+    setTabs(next);
     if (tabId === activeTabId) {
-      if (next.length === 0) {
-        setActiveTabId(null);
-      } else {
-        const newIdx = Math.min(idx, next.length - 1);
-        setActiveTabId(next[newIdx].id);
-      }
+      const newIdx = Math.min(idx, next.length - 1);
+      setActiveTabId(next[newIdx].id);
     }
   }
 
   useEffect(() => {
     const interval = setInterval(async () => {
       const currentTabs = tabsRef.current;
-      if (loadingRef.current || currentTabs.length === 0) return;
+      if (fetchingRef.current || currentTabs.length === 0) return;
 
-      const pollableTabs = currentTabs.filter((t) => !t.isRefreshing);
+      const pollableTabs = currentTabs.filter((t) => t.manifest && !t.isRefreshing);
       await Promise.allSettled(
         pollableTabs.map(async (tab) => {
           const status = await invoke<PrUpdateStatus>("check_pr_updates", {
-            prUrl: tab.manifest.pr_url,
-            currentHeadSha: tab.manifest.head_sha,
+            prUrl: tab.manifest!.pr_url,
+            currentHeadSha: tab.manifest!.head_sha,
             currentCommentCount: tab.lastCommentCount ?? 0,
           });
 
@@ -957,9 +1071,10 @@ function App() {
   useEffect(() => {
     const interval = setInterval(async () => {
       const currentTabs = tabsRef.current;
-      if (loadingRef.current || currentTabs.length === 0) return;
+      if (fetchingRef.current || currentTabs.length === 0) return;
 
       const pollableTabs = currentTabs.filter((tab) => {
+        if (!tab.manifest) return false;
         const existing = checksMapRef.current[tab.id];
         if (existing && existing.overall_state === "success") return false;
         if (checksDismissedRef.current[tab.manifest.pr_url]) return false;
@@ -970,7 +1085,7 @@ function App() {
         pollableTabs.map(async (tab) => {
           try {
             const checks = await invoke<PrChecksStatus>("get_pr_checks", {
-              prUrl: tab.manifest.pr_url,
+              prUrl: tab.manifest!.pr_url,
             });
             setChecksMap((prev) => {
               const existing = prev[tab.id];
@@ -992,13 +1107,15 @@ function App() {
     if (!sessionRestoredRef.current) return;
     const timer = setTimeout(() => {
       const state: SessionState = {
-        open_prs: tabs.map((t) => ({
-          pr_url: t.manifest.pr_url,
-          selected_file: t.selectedFile?.path ?? null,
-          sidebar_view: t.sidebarView,
-          selected_comment_file: t.selectedCommentFile,
-        })),
-        active_pr: tabs.find((t) => t.id === activeTabId)?.manifest.pr_url ?? null,
+        open_prs: tabs
+          .filter((t) => t.manifest)
+          .map((t) => ({
+            pr_url: t.manifest!.pr_url,
+            selected_file: t.selectedFile?.path ?? null,
+            sidebar_view: t.sidebarView,
+            selected_comment_file: t.selectedCommentFile,
+          })),
+        active_pr: tabs.find((t) => t.id === activeTabId)?.manifest?.pr_url ?? null,
       };
       invoke("save_session", { state }).catch(() => {});
     }, 500);
@@ -1063,60 +1180,14 @@ function App() {
     );
   }
 
-  if (tabs.length === 0 || showOpener) {
-    return (
-      <div
-        className="app empty-state"
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={handleFileDrop}
-      >
-        <div className="empty-message">
-          {loading ? (
-            <LoadingView
-              prRef={loadingPrRef}
-              prTitle={loadingPrTitle}
-              progress={progress}
-              fileCounts={fileCounts}
-              onCancel={handleFetchCancel}
-            />
-          ) : (
-            <>
-              <h1>Relevant Reviews</h1>
-              <p>
-                Drop a manifest JSON file here, or enter a PR URL below to start
-                a review.
-              </p>
-              <PrOpener onFetchStart={handleFetchStart} onSettingsClick={() => setSettingsOpen(true)} onCheckForUpdates={() => checkForUpdates(false)} />
-              <ReviewRequestList onSelectPr={handleFetchStart} openPrUrls={openPrUrls} />
-            </>
-          )}
-          {tabs.length > 0 && !loading && (
-            <button
-              className="settings-button"
-              onClick={() => setShowOpener(false)}
-              style={{ marginTop: 16 }}
-            >
-              Cancel
-            </button>
-          )}
-        </div>
-        <SettingsModal
-          open={settingsOpen}
-          onClose={handleSettingsClose}
-        />
-        {overlays}
-      </div>
-    );
-  }
-
   return (
     <div className="app">
       <Header
         tabs={tabs}
         activeTabId={activeTabId}
-        onSelectTab={setActiveTabId}
+        onSelectTab={handleSelectTab}
         onCloseTab={closeTab}
-        onNewReview={() => setShowOpener(true)}
+        onNewReview={handleNewReview}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         viewedCount={activeTab?.viewedFiles.size ?? 0}
@@ -1139,25 +1210,53 @@ function App() {
         open={settingsOpen}
         onClose={handleSettingsClose}
       />
-      {loading && (
-        <div className="deep-link-loading-overlay">
-          <div className="deep-link-loading-modal">
-            <LoadingView
-              prRef={loadingPrRef}
-              prTitle={loadingPrTitle}
-              progress={progress}
-              fileCounts={fileCounts}
-              onCancel={handleFetchCancel}
-            />
+      {!activeTab ? null : activeTab.manifest === null ? (
+        <div
+          className="opener-tab"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={handleFileDrop}
+        >
+          <div className="empty-message">
+            {activeTab.loading ? (
+              <LoadingView
+                prRef={activeTab.loading.prRef}
+                prTitle={activeTab.loading.prTitle}
+                progress={activeTab.loading.progress}
+                fileCounts={activeTab.loading.fileCounts}
+                onCancel={() => handleFetchCancel(activeTab.id)}
+              />
+            ) : (
+              <>
+                {activeTab.error && (
+                  <div className="opener-error" role="alert">
+                    <strong>Failed to load PR</strong>
+                    <pre>{activeTab.error}</pre>
+                  </div>
+                )}
+                <h1>Relevant Reviews</h1>
+                <p>
+                  Drop a manifest JSON file here, or enter a PR URL below to start
+                  a review.
+                </p>
+                <PrOpener
+                  onFetchStart={(ref) => handleFetchStart(ref, activeTab.id)}
+                  onSettingsClick={() => setSettingsOpen(true)}
+                  onCheckForUpdates={() => checkForUpdates(false)}
+                />
+                <ReviewRequestList
+                  onSelectPr={(ref) => handleFetchStart(ref, activeTab.id)}
+                  openPrUrls={openPrUrls}
+                />
+              </>
+            )}
           </div>
         </div>
-      )}
-      {activeTab && (
+      ) : (
         <div className="review-content">
         {showChecksModal && (
           <ChecksBlockingModal
             checksStatus={activeChecks!}
-            onDismiss={() => handleDismissChecks(activeTab.manifest.pr_url)}
+            onDismiss={() => handleDismissChecks(activeTab.manifest!.pr_url)}
           />
         )}
         <SearchBar
