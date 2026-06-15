@@ -68,6 +68,16 @@ body {
   height: 100%;
 }
 
+/* Opener/loader rendered inside a tab (fills the area below the header). */
+.opener-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
 .empty-message, .error-message {
   text-align: center;
   color: var(--text-secondary);
@@ -163,6 +173,14 @@ body {
   gap: 6px;
   min-width: 0;
   overflow: hidden;
+}
+
+.tab-unread {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
 }
 
 .tab-pr-number {
@@ -1679,8 +1697,7 @@ body {
 }
 
 /* ─── Modal Overlays ──────────────────────────────────────────────────── */
-.settings-overlay,
-.deep-link-loading-overlay {
+.settings-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
@@ -1763,16 +1780,6 @@ body {
 
 .settings-input::placeholder {
   color: var(--text-muted);
-}
-
-.deep-link-loading-modal {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  width: 560px;
-  max-width: 90vw;
-  padding: 32px 24px;
-  text-align: center;
 }
 
 .settings-divider {
