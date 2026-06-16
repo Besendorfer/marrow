@@ -17,3 +17,5 @@ chrono = "0.4"
 # fancy-regex backend = pure Rust, no oniguruma/C dependency (keeps the CLI
 # easy to cross-compile and `cargo install`).
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# Interactive TUI (re-exports crossterm, so no separate crossterm dep).
+ratatui = "0.29"
