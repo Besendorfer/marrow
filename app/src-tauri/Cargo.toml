@@ -7,6 +7,13 @@ edition = "2021"
 name = "relevant_reviews_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# The Tauri crate is the workspace root so target/ and Cargo.lock stay here
+# (keeps the existing build/signing paths intact). The frontend-agnostic logic
+# lives in crates/core; the terminal frontend in crates/cli.
+[workspace]
+members = ["crates/core", "crates/cli"]
+resolver = "2"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -18,20 +25,5 @@ tauri-plugin-process = "2"
 tauri-plugin-deep-link = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-bedrockruntime = "1"
-futures = "0.3"
-regex = "1"
-base64 = "0.22"
-urlencoding = "2"
-sha2 = "0.10"
-chrono = "0.4"
-clap = { version = "4", features = ["derive"] }
-
-# Thin terminal frontend over the shared Rust core (github.rs, fetch.rs, …).
-# A prototype to evaluate a TUI direction without the Tauri/webview stack.
-[[bin]]
-name = "marrow"
-path = "src/bin/marrow.rs"
+marrow-core = { path = "crates/core" }

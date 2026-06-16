@@ -1,18 +1,7 @@
-mod ai;
-mod bedrock;
-mod checks_dismiss;
 mod commands;
-pub mod config;
-pub mod fetch;
-pub mod github;
-pub mod manifest_cache;
-pub mod pr_parser;
-mod prompts;
-mod session;
-pub mod types;
-mod viewed_state;
 
 use commands::AppState;
+use marrow_core::pr_parser;
 use std::collections::HashMap;
 use std::env;
 use std::sync::Mutex;

@@ -1,11 +1,11 @@
-use crate::bedrock::{region_from_arn, BedrockClient};
-use crate::config::{load_settings, resolve_github_token, save_settings_to_disk};
-use crate::fetch::fetch_pr_impl;
-use crate::github::GithubClient;
-use crate::types::{MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
-use crate::manifest_cache::{self, CachedPrInfo};
-use crate::session::{self, SessionState};
-use crate::viewed_state::{self, ViewedFileState};
+use marrow_core::bedrock::{region_from_arn, BedrockClient};
+use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};
+use marrow_core::fetch::fetch_pr_impl;
+use marrow_core::github::GithubClient;
+use marrow_core::types::{MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use marrow_core::manifest_cache::{self, CachedPrInfo};
+use marrow_core::session::{self, SessionState};
+use marrow_core::viewed_state::{self, ViewedFileState};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
@@ -68,7 +68,7 @@ pub fn signal_frontend_ready(state: State<AppState>) {
 pub async fn fetch_pr(app: tauri::AppHandle, pr_ref: String) -> Result<ReviewManifest, String> {
     use tauri::Emitter;
     let settings = load_settings();
-    let report = move |p: crate::types::FetchProgress| {
+    let report = move |p: marrow_core::types::FetchProgress| {
         let _ = app.emit("fetch-progress", p);
     };
     fetch_pr_impl(&pr_ref, &settings, &report).await
@@ -81,7 +81,7 @@ pub async fn check_pr_updates(
     current_comment_count: u32,
 ) -> Result<PrUpdateStatus, String> {
     let github = github_client();
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     let (new_head_sha, new_comment_count) = github
         .get_pr_status(&parsed.owner, &parsed.repo, parsed.number)
         .await?;
@@ -113,7 +113,7 @@ pub async fn fetch_review_requests(
 #[command]
 pub async fn fetch_review_comments(pr_url: String) -> Result<Vec<ReviewThread>, String> {
     let github = github_client();
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     github.get_review_threads(&parsed.owner, &parsed.repo, parsed.number).await
 }
 
@@ -124,7 +124,7 @@ pub async fn reply_to_thread(
     body: String,
 ) -> Result<ReviewComment, String> {
     let github = github_client();
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     let pr_node_id = github.get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number).await?;
     github
         .reply_to_review_thread(&pr_node_id, &comment_id, &body)
@@ -142,7 +142,7 @@ pub async fn create_review_comment(
     start_side: Option<String>,
 ) -> Result<ReviewThread, String> {
     let github = github_client();
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     let pr_node_id = github.get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number).await?;
     github
         .create_review_thread(
@@ -169,7 +169,7 @@ pub async fn update_review_comment(
 #[command]
 pub async fn get_my_review_state(pr_url: String) -> Result<MyReviewState, String> {
     let github = github_client();
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     github
         .get_my_review_state(&parsed.owner, &parsed.repo, parsed.number)
         .await
@@ -182,7 +182,7 @@ pub async fn submit_review(
     body: String,
 ) -> Result<String, String> {
     let github = github_client();
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     github
         .submit_review(&parsed.owner, &parsed.repo, parsed.number, &event, &body)
         .await
@@ -251,7 +251,7 @@ pub async fn sync_file_viewed_to_github(
     let pr_node_id = match cached {
         Some(id) => id,
         None => {
-            let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+            let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
             let id = github
                 .get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number)
                 .await?;
@@ -265,7 +265,7 @@ pub async fn sync_file_viewed_to_github(
 #[command]
 pub async fn fetch_gh_viewed_state(pr_url: String) -> Result<HashMap<String, String>, String> {
     let github = github_client();
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     github
         .get_files_viewed_state(&parsed.owner, &parsed.repo, parsed.number)
         .await
@@ -289,7 +289,7 @@ pub fn save_viewed_files(
 #[command]
 pub async fn get_pr_checks(pr_url: String) -> Result<PrChecksStatus, String> {
     let github = github_client();
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     github
         .get_pr_checks(&parsed.owner, &parsed.repo, parsed.number)
         .await
@@ -297,14 +297,14 @@ pub async fn get_pr_checks(pr_url: String) -> Result<PrChecksStatus, String> {
 
 #[command]
 pub fn dismiss_checks_warning(pr_url: String) -> Result<(), String> {
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
-    crate::checks_dismiss::set_dismissed(&parsed.owner, &parsed.repo, parsed.number)
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
+    marrow_core::checks_dismiss::set_dismissed(&parsed.owner, &parsed.repo, parsed.number)
 }
 
 #[command]
 pub fn is_checks_dismissed(pr_url: String) -> Result<bool, String> {
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
-    Ok(crate::checks_dismiss::is_dismissed(&parsed.owner, &parsed.repo, parsed.number))
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
+    Ok(marrow_core::checks_dismiss::is_dismissed(&parsed.owner, &parsed.repo, parsed.number))
 }
 
 #[command]
@@ -327,7 +327,7 @@ pub async fn list_cached_prs() -> Vec<CachedPrInfo> {
 
 #[command]
 pub fn load_cached_manifest_by_pr(pr_url: String) -> Result<Option<ReviewManifest>, String> {
-    let parsed = crate::pr_parser::parse_pr_ref(&pr_url)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     Ok(manifest_cache::load_cached_manifest(
         &parsed.owner,
         &parsed.repo,

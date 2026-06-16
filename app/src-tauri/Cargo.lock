@@ -2650,6 +2650,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "marrow"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "marrow-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "marrow-core"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-bedrockruntime",
+ "base64 0.22.1",
+ "chrono",
+ "futures",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
 name = "match_token"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3784,17 +3813,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "relevant-reviews"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-bedrockruntime",
- "base64 0.22.1",
- "chrono",
- "clap",
- "futures",
- "regex",
- "reqwest 0.12.28",
+ "marrow-core",
  "serde",
  "serde_json",
- "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",
@@ -3802,7 +3823,6 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "tokio",
- "urlencoding",
 ]
 
 [[package]]
