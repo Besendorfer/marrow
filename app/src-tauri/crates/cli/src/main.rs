@@ -21,6 +21,8 @@ use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
 use marrow_core::types::{FetchProgress, FetchStatus, FileDiff, Highlight, ReviewManifest, ReviewThread};
 
+mod tui;
+
 /// When to colorize output. `auto` = colorize only when stdout is a terminal.
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ColorWhen {
@@ -61,6 +63,9 @@ enum Command {
         /// Also print the unified diff for each file
         #[arg(long)]
         diffs: bool,
+        /// Force the printed report instead of the interactive TUI
+        #[arg(long)]
+        no_tui: bool,
     },
     /// Print the PR's raw unified diff (relevance-ordered, no chrome) — pipe into nvim/delta
     Diff {
@@ -181,7 +186,7 @@ fn github_client() -> GithubClient {
 
 async fn run(command: Command, yes: bool) -> Result<(), String> {
     match command {
-        Command::Review { pr, json, diffs } => review(&pr, json, diffs).await,
+        Command::Review { pr, json, diffs, no_tui } => review(&pr, json, diffs, no_tui).await,
         Command::Diff { pr } => diff_cmd(&pr).await,
         Command::Requests { days, json } => requests(days, json).await,
         Command::Comments { pr, unresolved, json } => comments(&pr, unresolved, json).await,
@@ -324,13 +329,19 @@ async fn submit(pr: &str, event: &str, body: &str) -> Result<(), String> {
 
 // ── review ──────────────────────────────────────────────────────────────────
 
-async fn review(pr: &str, json: bool, show_diffs: bool) -> Result<(), String> {
+async fn review(pr: &str, json: bool, show_diffs: bool, no_tui: bool) -> Result<(), String> {
     let settings = load_settings();
     let manifest = fetch_pr_impl(pr, &settings, &fetch_progress_to_stderr).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?);
         return Ok(());
+    }
+
+    // Interactive default: open the TUI on a terminal unless raw diffs were
+    // requested or it was opted out. Piped/non-TTY falls back to the report.
+    if !show_diffs && !no_tui && std::io::stdout().is_terminal() {
+        return tui::run(&manifest).map_err(|e| e.to_string());
     }
 
     let mut out = String::new();
