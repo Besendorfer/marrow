@@ -38,6 +38,15 @@ enum Mode {
     ReviewPick,
     /// Typing the review message before submitting.
     ReviewInput,
+    /// Typing an inline comment on the cursor line.
+    CommentInput,
+}
+
+/// A commentable diff line: the file line number and the side it's on.
+#[derive(Clone, Copy)]
+struct CommentTarget {
+    line: u64,
+    side: &'static str,
 }
 
 /// A sidebar row. Group headers are display-only (not selectable).
@@ -51,12 +60,16 @@ struct App<'a> {
     manifest: &'a ReviewManifest,
     files: Vec<&'a FileDiff>,
     list_state: ListState,
-    scroll: u16,
+    /// Focused row in the main pane; the view scrolls to keep it visible.
+    cursor: u16,
+    view_top: u16,
     /// Rendered main pane for the current selection (built lazily, not per
-    /// frame), plus the row indices of hunk headers and AI findings for jumps.
+    /// frame), plus the row indices of hunk headers and AI findings for jumps,
+    /// and a per-row comment target (None for non-commentable rows).
     diff_cache: Vec<Line<'static>>,
     hunk_rows: Vec<usize>,
     finding_rows: Vec<usize>,
+    targets: Vec<Option<CommentTarget>>,
     cache_idx: Option<usize>,
     mode: Mode,
     search_input: String,
@@ -65,6 +78,8 @@ struct App<'a> {
     /// The pending review verb while typing its message (ReviewInput mode).
     review_event: &'static str,
     review_input: String,
+    /// The line being commented on while in CommentInput mode.
+    pending_comment: Option<CommentTarget>,
     /// Last action result, shown in the header.
     status: Option<String>,
 }
@@ -78,10 +93,12 @@ impl<'a> App<'a> {
             manifest,
             files,
             list_state: ListState::default(),
-            scroll: 0,
+            cursor: 0,
+            view_top: 0,
             diff_cache: Vec::new(),
             hunk_rows: Vec::new(),
             finding_rows: Vec::new(),
+            targets: Vec::new(),
             cache_idx: None,
             mode: Mode::Normal,
             search_input: String::new(),
@@ -89,6 +106,7 @@ impl<'a> App<'a> {
             filter_low: false,
             review_event: "",
             review_input: String::new(),
+            pending_comment: None,
             status: None,
         };
         app.rebuild_rows();
@@ -186,7 +204,7 @@ impl<'a> App<'a> {
             .and_then(|fi| self.rows.iter().position(|r| matches!(r, Row::File(i) if *i == fi)))
             .or_else(|| self.first_selectable());
         self.list_state.select(target);
-        self.scroll = 0;
+        self.cursor = 0;
     }
 
     fn toggle_filter(&mut self) {
@@ -213,7 +231,7 @@ impl<'a> App<'a> {
             }
             if Self::is_selectable(&self.rows[i]) {
                 self.list_state.select(Some(i));
-                self.scroll = 0;
+                self.cursor = 0;
                 return;
             }
         }
@@ -287,6 +305,7 @@ impl<'a> App<'a> {
         self.diff_cache = rendered.lines;
         self.hunk_rows = rendered.hunk_rows;
         self.finding_rows = rendered.finding_rows;
+        self.targets = rendered.targets;
     }
 
     fn jump_next(rows: &[usize], from: u16) -> Option<u16> {
@@ -298,23 +317,23 @@ impl<'a> App<'a> {
     }
 
     fn next_hunk(&mut self) {
-        if let Some(r) = Self::jump_next(&self.hunk_rows, self.scroll) {
-            self.scroll = r;
+        if let Some(r) = Self::jump_next(&self.hunk_rows, self.cursor) {
+            self.cursor = r;
         }
     }
     fn prev_hunk(&mut self) {
-        if let Some(r) = Self::jump_prev(&self.hunk_rows, self.scroll) {
-            self.scroll = r;
+        if let Some(r) = Self::jump_prev(&self.hunk_rows, self.cursor) {
+            self.cursor = r;
         }
     }
     fn next_finding(&mut self) {
-        if let Some(r) = Self::jump_next(&self.finding_rows, self.scroll) {
-            self.scroll = r;
+        if let Some(r) = Self::jump_next(&self.finding_rows, self.cursor) {
+            self.cursor = r;
         }
     }
     fn prev_finding(&mut self) {
-        if let Some(r) = Self::jump_prev(&self.finding_rows, self.scroll) {
-            self.scroll = r;
+        if let Some(r) = Self::jump_prev(&self.finding_rows, self.cursor) {
+            self.cursor = r;
         }
     }
 
@@ -334,19 +353,19 @@ impl<'a> App<'a> {
     }
 
     fn run_search(&mut self) {
-        let from = (self.scroll as usize + 1).min(self.diff_cache.len().saturating_sub(1));
+        let from = (self.cursor as usize + 1).min(self.diff_cache.len().saturating_sub(1));
         if let Some(i) = self.find_match(&self.search_input, from) {
-            self.scroll = i as u16;
+            self.cursor = i as u16;
         }
     }
 
-    fn scroll_down(&mut self, n: u16) {
+    fn cursor_down(&mut self, n: u16) {
         let max = self.diff_line_count().saturating_sub(1);
-        self.scroll = (self.scroll + n).min(max);
+        self.cursor = (self.cursor + n).min(max);
     }
 
-    fn scroll_up(&mut self, n: u16) {
-        self.scroll = self.scroll.saturating_sub(n);
+    fn cursor_up(&mut self, n: u16) {
+        self.cursor = self.cursor.saturating_sub(n);
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
@@ -371,10 +390,10 @@ impl<'a> App<'a> {
         match self.mode {
             Mode::Normal => match code {
                 KeyCode::Char('q') | KeyCode::Esc => return true,
-                KeyCode::Char('j') | KeyCode::Down => self.scroll_down(1),
-                KeyCode::Char('k') | KeyCode::Up => self.scroll_up(1),
-                KeyCode::Char('g') => self.scroll = 0,
-                KeyCode::Char('G') => self.scroll = self.diff_line_count().saturating_sub(1),
+                KeyCode::Char('j') | KeyCode::Down => self.cursor_down(1),
+                KeyCode::Char('k') | KeyCode::Up => self.cursor_up(1),
+                KeyCode::Char('g') => self.cursor = 0,
+                KeyCode::Char('G') => self.cursor = self.diff_line_count().saturating_sub(1),
                 KeyCode::Char(']') | KeyCode::Tab => self.select_step(true),
                 KeyCode::Char('[') | KeyCode::BackTab => self.select_step(false),
                 KeyCode::Char('}') => self.next_hunk(),
@@ -387,6 +406,7 @@ impl<'a> App<'a> {
                     self.status = None;
                     self.mode = Mode::ReviewPick;
                 }
+                KeyCode::Char('c') => self.begin_comment(),
                 KeyCode::Char('/') => {
                     self.mode = Mode::Search;
                     self.search_input.clear();
@@ -425,8 +445,83 @@ impl<'a> App<'a> {
                 KeyCode::Char(c) => self.review_input.push(c),
                 _ => {}
             },
+            Mode::CommentInput => match code {
+                KeyCode::Enter => self.submit_comment(),
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    self.review_input.pop();
+                }
+                KeyCode::Char(c) => self.review_input.push(c),
+                _ => {}
+            },
         }
         false
+    }
+
+    /// Start an inline comment on the cursor line, if it's commentable.
+    fn begin_comment(&mut self) {
+        if !matches!(self.current_row(), Some(Row::File(_))) {
+            return;
+        }
+        match self.targets.get(self.cursor as usize).copied().flatten() {
+            Some(target) => {
+                self.pending_comment = Some(target);
+                self.review_input.clear();
+                self.status = None;
+                self.mode = Mode::CommentInput;
+            }
+            None => self.status = Some("not a commentable line".to_string()),
+        }
+    }
+
+    /// Post the inline comment as a new review thread. Blocks the UI briefly.
+    fn submit_comment(&mut self) {
+        let body = self.review_input.clone();
+        if body.trim().is_empty() {
+            self.status = Some("error: comment needs a message".to_string());
+            return;
+        }
+        let target = match self.pending_comment {
+            Some(t) => t,
+            None => {
+                self.mode = Mode::Normal;
+                return;
+            }
+        };
+        let path = match self.selected() {
+            Some(f) => f.path.clone(),
+            None => {
+                self.mode = Mode::Normal;
+                return;
+            }
+        };
+
+        let settings = marrow_core::config::load_settings();
+        let github = marrow_core::github::GithubClient::new(
+            marrow_core::config::resolve_github_token(&settings),
+        );
+        let parsed = match marrow_core::pr_parser::parse_pr_ref(&self.manifest.pr_url) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = Some(format!("error: {e}"));
+                self.mode = Mode::Normal;
+                return;
+            }
+        };
+
+        let result = block_on(async move {
+            let pr_id = github
+                .get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number)
+                .await?;
+            github
+                .create_review_thread(&pr_id, &body, &path, target.line, target.side, None, None)
+                .await
+        });
+        self.status = Some(match result {
+            Ok(_) => format!("✓ comment added on {}:{}", target.side, target.line),
+            Err(e) => format!("error: {e}"),
+        });
+        self.mode = Mode::Normal;
     }
 
     fn begin_review(&mut self, event: &'static str) {
@@ -514,8 +609,19 @@ impl<'a> App<'a> {
                 Span::raw(self.review_input.clone()),
                 Span::styled("▏  (Enter submit · Esc cancel)", Style::default().fg(Color::DarkGray)),
             ])),
+            Mode::CommentInput => {
+                let loc = self
+                    .pending_comment
+                    .map(|t| format!(" comment {} L{}: ", t.side, t.line))
+                    .unwrap_or_else(|| " comment: ".to_string());
+                Paragraph::new(Line::from(vec![
+                    Span::styled(loc, Style::default().fg(Color::Yellow)),
+                    Span::raw(self.review_input.clone()),
+                    Span::styled("▏  (Enter submit · Esc cancel)", Style::default().fg(Color::DarkGray)),
+                ]))
+            }
             _ => Paragraph::new(
-                " j/k scroll · ]/[ select · }/{ hunk · n/N finding · / search · t filter · R review · ? help · q quit ",
+                " ]/[ file · }/{ hunk · n/N find · c comment · R review · / search · t filter · ? help · q quit ",
             )
             .style(Style::default().fg(Color::DarkGray)),
         };
@@ -564,18 +670,42 @@ impl<'a> App<'a> {
         f.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn render_diff(&self, f: &mut Frame, area: Rect) {
-        let title = match self.current_row() {
-            Some(Row::Overview) => " Overview ".to_string(),
-            _ => self
-                .selected()
+    fn render_diff(&mut self, f: &mut Frame, area: Rect) {
+        let is_overview = matches!(self.current_row(), Some(Row::Overview));
+        let is_file = matches!(self.current_row(), Some(Row::File(_)));
+        let title = if is_overview {
+            " Overview ".to_string()
+        } else {
+            self.selected()
                 .map(|file| format!(" {}  +{} -{} ", file.path, file.additions, file.deletions))
-                .unwrap_or_else(|| " (no file) ".to_string()),
+                .unwrap_or_else(|| " (no file) ".to_string())
         };
 
-        let para = Paragraph::new(self.diff_cache.clone())
+        // Keep the cursor within the viewport (content height = area minus the
+        // block's title row).
+        let total = self.diff_cache.len() as u16;
+        let inner_h = area.height.saturating_sub(1).max(1);
+        if total > 0 {
+            self.cursor = self.cursor.min(total - 1);
+        }
+        if self.cursor < self.view_top {
+            self.view_top = self.cursor;
+        } else if self.cursor >= self.view_top + inner_h {
+            self.view_top = self.cursor + 1 - inner_h;
+        }
+        self.view_top = self.view_top.min(total.saturating_sub(inner_h));
+
+        // Highlight the cursor line in the diff (not the overview prose).
+        let mut lines = self.diff_cache.clone();
+        if is_file {
+            if let Some(line) = lines.get_mut(self.cursor as usize) {
+                line.style = Style::default().bg(Color::Rgb(45, 50, 60));
+            }
+        }
+
+        let para = Paragraph::new(lines)
             .block(Block::default().title(title))
-            .scroll((self.scroll, 0));
+            .scroll((self.view_top, 0));
         f.render_widget(para, area);
     }
 }
@@ -586,6 +716,7 @@ struct Rendered {
     lines: Vec<Line<'static>>,
     hunk_rows: Vec<usize>,
     finding_rows: Vec<usize>,
+    targets: Vec<Option<CommentTarget>>,
 }
 
 impl Rendered {
@@ -631,12 +762,16 @@ fn diff_lines_for(file: &FileDiff) -> Rendered {
     let mut out: Vec<Line> = Vec::new();
     let mut hunk_rows: Vec<usize> = Vec::new();
     let mut finding_rows: Vec<usize> = Vec::new();
+    let mut targets: Vec<Option<CommentTarget>> = Vec::new();
     let mut new_ln: Option<u64> = None;
+    let mut old_ln: Option<u64> = None;
     for line in file.unified_diff.lines() {
         if line.starts_with("@@") {
+            old_ln = hunk_old_start(line);
             new_ln = crate::hunk_new_start(line);
             hunk_rows.push(out.len());
             out.push(Line::from(Span::styled(line.to_string(), Style::default().fg(Color::Cyan))));
+            targets.push(None);
             continue;
         }
 
@@ -649,6 +784,7 @@ fn diff_lines_for(file: &FileDiff) -> Rendered {
                     line.to_string(),
                     Style::default().fg(Color::DarkGray),
                 )));
+                targets.push(None);
                 continue;
             }
         };
@@ -670,6 +806,7 @@ fn diff_lines_for(file: &FileDiff) -> Rendered {
                         Span::styled(format!("▸ {loc} "), Style::default().fg(c).add_modifier(Modifier::BOLD)),
                         Span::styled(h.comment.clone(), Style::default().fg(c)),
                     ]));
+                    targets.push(None);
                 }
             }
         }
@@ -683,13 +820,46 @@ fn diff_lines_for(file: &FileDiff) -> Rendered {
         spans.extend(highlight_spans(rest, syntax));
         out.push(Line::from(spans));
 
-        if on_new_side {
-            if let Some(n) = new_ln.as_mut() {
-                *n += 1;
+        // Comment target: removed lines map to the old side, everything else
+        // (added/context) to the new side.
+        let target = match marker {
+            '-' => old_ln.map(|line| CommentTarget { line, side: "LEFT" }),
+            _ => new_ln.map(|line| CommentTarget { line, side: "RIGHT" }),
+        };
+        targets.push(target);
+
+        // Advance the line counters: '+' new only, '-' old only, ' ' both.
+        match marker {
+            '+' => {
+                if let Some(n) = new_ln.as_mut() {
+                    *n += 1;
+                }
+            }
+            '-' => {
+                if let Some(o) = old_ln.as_mut() {
+                    *o += 1;
+                }
+            }
+            _ => {
+                if let Some(n) = new_ln.as_mut() {
+                    *n += 1;
+                }
+                if let Some(o) = old_ln.as_mut() {
+                    *o += 1;
+                }
             }
         }
     }
-    Rendered { lines: out, hunk_rows, finding_rows }
+    Rendered { lines: out, hunk_rows, finding_rows, targets }
+}
+
+/// Parse the old-side start line from a hunk header: `@@ -a,b +c,d @@` -> a.
+fn hunk_old_start(header: &str) -> Option<u64> {
+    header
+        .split_whitespace()
+        .find(|t| t.starts_with('-'))
+        .and_then(|t| t.trim_start_matches('-').split(',').next())
+        .and_then(|n| n.parse::<u64>().ok())
 }
 
 /// Syntect-highlight one code line into ratatui spans (foreground only).
@@ -786,6 +956,7 @@ fn render_help(f: &mut Frame) {
         Line::from("  t            filter low-risk"),
         Line::from(""),
         head("Actions"),
+        Line::from("  c            comment on the cursor line"),
         Line::from("  R            submit a review"),
         Line::from(""),
         Line::from("  ?            toggle this help"),
@@ -900,8 +1071,8 @@ mod tests {
         // Lands on the first (highest-risk) file.
         assert_eq!(app.selected().map(|f| f.path.as_str()), Some("pkg/high.go"));
         // Can't scroll above the top.
-        app.scroll_up(5);
-        assert_eq!(app.scroll, 0);
+        app.cursor_up(5);
+        assert_eq!(app.cursor, 0);
         // Forward to the next file, then clamp at the end.
         app.select_step(true);
         assert_eq!(app.selected().map(|f| f.path.as_str()), Some("pkg/low.go"));
@@ -961,18 +1132,18 @@ mod tests {
         assert_eq!(app.finding_rows.len(), 2, "two findings");
 
         // From the top, `}` jumps to the second hunk header; `{` back to the first.
-        app.scroll = 0;
+        app.cursor = 0;
         app.next_hunk();
-        assert_eq!(app.scroll as usize, app.hunk_rows[1]);
+        assert_eq!(app.cursor as usize, app.hunk_rows[1]);
         app.prev_hunk();
-        assert_eq!(app.scroll as usize, app.hunk_rows[0]);
+        assert_eq!(app.cursor as usize, app.hunk_rows[0]);
 
         // `n` cycles through findings.
-        app.scroll = 0;
+        app.cursor = 0;
         app.next_finding();
-        assert_eq!(app.scroll as usize, app.finding_rows[0]);
+        assert_eq!(app.cursor as usize, app.finding_rows[0]);
         app.next_finding();
-        assert_eq!(app.scroll as usize, app.finding_rows[1]);
+        assert_eq!(app.cursor as usize, app.finding_rows[1]);
     }
 
     #[test]
@@ -981,9 +1152,9 @@ mod tests {
         let mut app = App::new(&m);
         app.sync_cache();
         app.search_input = "b".to_string();
-        app.scroll = 0;
+        app.cursor = 0;
         app.run_search();
-        assert!(app.scroll > 0, "should jump to the line containing 'b'");
+        assert!(app.cursor > 0, "should jump to the line containing 'b'");
     }
 
     #[test]
@@ -1037,5 +1208,45 @@ mod tests {
         app.on_key(KeyCode::Enter);
         assert!(matches!(app.mode, Mode::ReviewInput));
         assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
+    }
+
+    #[test]
+    fn comment_targets_map_lines_and_sides() {
+        let f = file("pkg/c.go", "high", "@@ -5,3 +5,3 @@\n ctx\n-removed\n+added\n");
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+        assert_eq!(app.targets.len(), app.diff_cache.len(), "parallel to lines");
+        assert!(app.targets[0].is_none(), "hunk header not commentable");
+        let ctx = app.targets[1].unwrap(); // context → new side
+        assert_eq!((ctx.side, ctx.line), ("RIGHT", 5));
+        let removed = app.targets[2].unwrap(); // removed → old side
+        assert_eq!((removed.side, removed.line), ("LEFT", 6));
+        let added = app.targets[3].unwrap(); // added → new side
+        assert_eq!((added.side, added.line), ("RIGHT", 6));
+    }
+
+    #[test]
+    fn comment_flow_guards_non_commentable_and_empty() {
+        let f = file("pkg/c.go", "high", "@@ -5,3 +5,3 @@\n ctx\n-removed\n+added\n");
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+        // Cursor on the hunk header → not commentable.
+        app.on_key(KeyCode::Char('c'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.status.as_deref().unwrap_or("").contains("not a commentable"));
+        // Move to the context line → opens comment input with the right target.
+        app.cursor_down(1);
+        app.on_key(KeyCode::Char('c'));
+        assert!(matches!(app.mode, Mode::CommentInput));
+        let t = app.pending_comment.unwrap();
+        assert_eq!((t.side, t.line), ("RIGHT", 5));
+        // Submitting empty hits the guard before any network call.
+        app.on_key(KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::CommentInput));
+        assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
+        app.on_key(KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
     }
 }
