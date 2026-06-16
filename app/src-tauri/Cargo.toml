@@ -28,3 +28,10 @@ base64 = "0.22"
 urlencoding = "2"
 sha2 = "0.10"
 chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+
+# Thin terminal frontend over the shared Rust core (github.rs, fetch.rs, …).
+# A prototype to evaluate a TUI direction without the Tauri/webview stack.
+[[bin]]
+name = "marrow"
+path = "src/bin/marrow.rs"

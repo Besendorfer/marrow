@@ -940,6 +940,43 @@ impl GithubClient {
         Ok(parse_review_thread(thread))
     }
 
+    /// Add a top-level conversation comment to a PR (a GitHub "issue comment").
+    /// This is not a review and is not anchored to a diff line. Returns the URL
+    /// of the created comment.
+    pub async fn add_pr_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        body: &str,
+    ) -> Result<String, String> {
+        let subject_id = self.get_pull_request_id(owner, repo, pr_number).await?;
+
+        let query = r#"mutation($subjectId: ID!, $body: String!) {
+            addComment(input: { subjectId: $subjectId, body: $body }) {
+                commentEdge { node { url } }
+            }
+        }"#;
+
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": {
+                "subjectId": subject_id,
+                "body": body,
+            }
+        });
+
+        let result = self.graphql_request(payload).await?;
+
+        let url = result
+            .pointer("/data/addComment/commentEdge/node/url")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing comment URL in response")?
+            .to_string();
+
+        Ok(url)
+    }
+
     /// Submit a pending review, or create a new review with the given event.
     /// `event` must be one of: APPROVE, REQUEST_CHANGES, COMMENT
     pub async fn submit_review(

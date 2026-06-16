@@ -10,17 +10,22 @@ use crate::types::{
 use futures::stream::{FuturesUnordered, StreamExt};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
-use tauri::Emitter;
+
+/// Sink for fetch progress updates. The Tauri command passes a closure that
+/// emits a `fetch-progress` event to the webview; the `marrow` CLI passes one that
+/// prints to stderr. Decoupling the core fetch from `tauri::AppHandle` keeps it
+/// reusable by any frontend.
+pub type ProgressFn<'a> = &'a (dyn Fn(FetchProgress) + Send + Sync);
 
 fn emit_progress(
-    app: &tauri::AppHandle,
+    progress: ProgressFn,
     step: u8,
     label: &str,
     status: FetchStatus,
     pr_title: Option<&str>,
     files: Option<(u32, u32)>,
 ) {
-    let _ = app.emit("fetch-progress", FetchProgress {
+    progress(FetchProgress {
         step,
         total_steps: 6,
         label: label.to_string(),
@@ -31,7 +36,7 @@ fn emit_progress(
     });
 }
 
-pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHandle) -> Result<ReviewManifest, String> {
+pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_>) -> Result<ReviewManifest, String> {
     if settings.model.is_empty() {
         return Err("No model configured. Set a Bedrock ARN or Claude model name in Settings.".to_string());
     }
