@@ -5,14 +5,28 @@
 //! `fetch.rs`, `config.rs` — so it proves how much of the app is already
 //! frontend-agnostic. No webview, no Tauri runtime: just the core + stdout.
 
+use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
+use std::sync::OnceLock;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Theme, ThemeSet};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::util::as_24_bit_terminal_escaped;
 
 use marrow_core::config::{load_settings, resolve_github_token};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
-use marrow_core::types::{FetchProgress, FetchStatus, ReviewManifest, ReviewThread};
+use marrow_core::types::{FetchProgress, FetchStatus, FileDiff, Highlight, ReviewManifest, ReviewThread};
+
+/// When to colorize output. `auto` = colorize only when stdout is a terminal.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ColorWhen {
+    Auto,
+    Always,
+    Never,
+}
 
 #[derive(Parser)]
 #[command(
@@ -28,6 +42,10 @@ struct Cli {
     /// approve, …). Required when stdin is not a terminal.
     #[arg(short = 'y', long, global = true)]
     yes: bool,
+
+    /// When to colorize output: auto (TTY only), always, or never.
+    #[arg(long, value_enum, default_value_t = ColorWhen::Auto, global = true)]
+    color: ColorWhen,
 }
 
 #[derive(Subcommand)]
@@ -138,6 +156,12 @@ enum Command {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let use_color = match cli.color {
+        ColorWhen::Always => true,
+        ColorWhen::Never => false,
+        ColorWhen::Auto => std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+    };
+    let _ = COLOR.set(use_color);
     if let Err(e) = run(cli.command, cli.yes).await {
         eprintln!("{}", paint(&format!("error: {e}"), RED));
         std::process::exit(1);
@@ -358,40 +382,172 @@ fn print_manifest(m: &ReviewManifest, show_diffs: bool) {
                 println!("        {}", paint(&line, DIM));
             }
         }
-        for h in &f.highlights {
-            let sev = match h.severity.as_str() {
-                "high" | "warning" => RED,
-                "medium" => YELLOW,
-                _ => CYAN,
-            };
-            let loc = if h.start_line == h.end_line {
-                format!("L{}", h.start_line)
-            } else {
-                format!("L{}-{}", h.start_line, h.end_line)
-            };
-            println!("        {} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
+        // When showing diffs, highlights are rendered inline in the diff, so
+        // skip the summary list to avoid duplication.
+        if !show_diffs {
+            for h in &f.highlights {
+                let sev = severity_color(&h.severity);
+                let loc = if h.start_line == h.end_line {
+                    format!("L{}", h.start_line)
+                } else {
+                    format!("L{}-{}", h.start_line, h.end_line)
+                };
+                println!("        {} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
+            }
         }
         if show_diffs && !f.unified_diff.is_empty() {
             println!();
-            print_diff(&f.unified_diff);
+            render_file_diff(f);
             println!();
         }
     }
     println!();
 }
 
-fn print_diff(diff: &str) {
-    for line in diff.lines() {
-        let colored = if line.starts_with("@@") {
-            paint(line, CYAN)
-        } else if line.starts_with('+') {
-            paint(line, GREEN)
-        } else if line.starts_with('-') {
-            paint(line, RED)
-        } else {
-            line.to_string()
+// ── diff rendering (syntect highlighting + AI-highlight annotations) ─────────
+
+fn severity_color(sev: &str) -> &'static str {
+    match sev {
+        "high" | "warning" => RED,
+        "medium" => YELLOW,
+        _ => CYAN,
+    }
+}
+
+fn sev_rank(c: &str) -> u8 {
+    match c {
+        RED => 3,
+        YELLOW => 2,
+        _ => 1,
+    }
+}
+
+fn highlighter() -> &'static (SyntaxSet, Theme) {
+    static HL: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
+    HL.get_or_init(|| {
+        let ps = SyntaxSet::load_defaults_newlines();
+        let ts = ThemeSet::load_defaults();
+        let theme = ts.themes["base16-ocean.dark"].clone();
+        (ps, theme)
+    })
+}
+
+fn syntax_for<'a>(ps: &'a SyntaxSet, path: &str) -> &'a SyntaxReference {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    ps.find_syntax_by_extension(ext)
+        .unwrap_or_else(|| ps.find_syntax_plain_text())
+}
+
+/// Syntax-highlight one line of code to 24-bit ANSI (fg only). Each line is
+/// highlighted independently — good enough for a diff view, where lines arrive
+/// out of file order (a perfect render is Level 2 / a `delta`-style rebuild).
+fn highlight_line(code: &str, syntax: &SyntaxReference) -> String {
+    let (ps, theme) = highlighter();
+    let mut h = HighlightLines::new(syntax, theme);
+    match h.highlight_line(code, ps) {
+        Ok(ranges) => {
+            let mut out = as_24_bit_terminal_escaped(&ranges, false);
+            out.push_str("\x1b[0m");
+            out
+        }
+        Err(_) => code.to_string(),
+    }
+}
+
+/// Parse the new-side start line from a hunk header: `@@ -a,b +c,d @@` -> c.
+fn hunk_new_start(header: &str) -> Option<u64> {
+    header
+        .split_whitespace()
+        .find(|t| t.starts_with('+'))
+        .and_then(|t| t.trim_start_matches('+').split(',').next())
+        .and_then(|n| n.parse::<u64>().ok())
+}
+
+/// Render a file's unified diff with syntax highlighting and inline AI-highlight
+/// annotations: a severity gutter bar on flagged lines plus the comment printed
+/// above its start line. Falls back to plain text when color is disabled.
+fn render_file_diff(f: &FileDiff) {
+    let indent = "  ";
+    let color = color_enabled();
+
+    // Map new-side line numbers to the highlights that start there, and the set
+    // of new-side lines covered by any highlight (for the gutter bar).
+    let mut starts: HashMap<u64, Vec<&Highlight>> = HashMap::new();
+    let mut covered: HashMap<u64, &'static str> = HashMap::new();
+    for h in &f.highlights {
+        starts.entry(h.start_line).or_default().push(h);
+        let sev = severity_color(&h.severity);
+        for ln in h.start_line..=h.end_line {
+            covered
+                .entry(ln)
+                .and_modify(|c| {
+                    if sev_rank(sev) > sev_rank(c) {
+                        *c = sev;
+                    }
+                })
+                .or_insert(sev);
+        }
+    }
+
+    let (ps, _) = highlighter();
+    let syntax = syntax_for(ps, &f.path);
+
+    let mut new_ln: Option<u64> = None;
+    for line in f.unified_diff.lines() {
+        if line.starts_with("@@") {
+            new_ln = hunk_new_start(line);
+            println!("{indent}{}", paint(line, CYAN));
+            continue;
+        }
+
+        let (marker, rest, on_new_side, marker_color) = match line.chars().next() {
+            Some('+') => ('+', &line[1..], true, GREEN),
+            Some('-') => ('-', &line[1..], false, RED),
+            Some(' ') => (' ', &line[1..], true, DIM),
+            _ => {
+                // "\ No newline at end of file", stray blank lines, etc.
+                println!("{indent} {}", paint(line, DIM));
+                continue;
+            }
         };
-        println!("        {colored}");
+
+        let cur_new = if on_new_side { new_ln } else { None };
+
+        // Annotation: print the comment(s) just above the line they start on.
+        if let Some(ln) = cur_new {
+            if let Some(hs) = starts.get(&ln) {
+                for h in hs {
+                    let sev = severity_color(&h.severity);
+                    let loc = if h.start_line == h.end_line {
+                        format!("L{}", h.start_line)
+                    } else {
+                        format!("L{}-{}", h.start_line, h.end_line)
+                    };
+                    println!("{indent}{} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
+                }
+            }
+        }
+
+        let gutter = match cur_new.and_then(|ln| covered.get(&ln)) {
+            Some(sev) => paint("▍", sev),
+            None => " ".to_string(),
+        };
+        let marker_str = if color {
+            paint(&marker.to_string(), marker_color)
+        } else {
+            marker.to_string()
+        };
+        let code = if color { highlight_line(rest, syntax) } else { rest.to_string() };
+        println!("{indent}{gutter}{marker_str}{code}");
+
+        if on_new_side {
+            if let Some(n) = new_ln.as_mut() {
+                *n += 1;
+            }
+        }
     }
 }
 
@@ -549,8 +705,10 @@ const GREEN: &str = "32";
 const YELLOW: &str = "33";
 const CYAN: &str = "36";
 
+static COLOR: OnceLock<bool> = OnceLock::new();
+
 fn color_enabled() -> bool {
-    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+    *COLOR.get().unwrap_or(&false)
 }
 
 fn paint(s: &str, code: &str) -> String {
