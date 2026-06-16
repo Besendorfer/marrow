@@ -6,6 +6,7 @@
 //! frontend-agnostic. No webview, no Tauri runtime: just the core + stdout.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
 use std::sync::OnceLock;
 
@@ -60,6 +61,11 @@ enum Command {
         /// Also print the unified diff for each file
         #[arg(long)]
         diffs: bool,
+    },
+    /// Print the PR's raw unified diff (relevance-ordered, no chrome) — pipe into nvim/delta
+    Diff {
+        /// PR reference: URL, owner/repo/pull/N, or owner/repo#N
+        pr: String,
     },
     /// List PRs awaiting your review
     Requests {
@@ -176,6 +182,7 @@ fn github_client() -> GithubClient {
 async fn run(command: Command, yes: bool) -> Result<(), String> {
     match command {
         Command::Review { pr, json, diffs } => review(&pr, json, diffs).await,
+        Command::Diff { pr } => diff_cmd(&pr).await,
         Command::Requests { days, json } => requests(days, json).await,
         Command::Comments { pr, unresolved, json } => comments(&pr, unresolved, json).await,
         Command::Checks { pr, json } => checks(&pr, json).await,
@@ -319,54 +326,136 @@ async fn submit(pr: &str, event: &str, body: &str) -> Result<(), String> {
 
 async fn review(pr: &str, json: bool, show_diffs: bool) -> Result<(), String> {
     let settings = load_settings();
-
-    // Progress goes to stderr so stdout stays clean for piping/--json.
-    let report = move |p: FetchProgress| {
-        if matches!(p.status, FetchStatus::Running) {
-            let mut line = format!("[{}/{}] {}", p.step, p.total_steps, p.label);
-            if let (Some(d), Some(t)) = (p.files_done, p.files_total) {
-                line.push_str(&format!(" ({d}/{t})"));
-            }
-            eprintln!("{}", paint(&line, DIM));
-        }
-    };
-
-    let manifest = fetch_pr_impl(pr, &settings, &report).await?;
+    let manifest = fetch_pr_impl(pr, &settings, &fetch_progress_to_stderr).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?);
         return Ok(());
     }
 
-    print_manifest(&manifest, show_diffs);
+    let mut out = String::new();
+    print_manifest(&mut out, &manifest, show_diffs);
+    page_or_print(&out);
     Ok(())
 }
 
-fn print_manifest(m: &ReviewManifest, show_diffs: bool) {
-    println!();
-    println!("{}", paint(&format!("{} #{}", m.pr_title, m.pr_number), BOLD));
-    println!("{}", paint(&m.pr_url, DIM));
-    println!("{}", paint(&format!("{} ← {}", m.base_ref, m.head_ref), DIM));
+/// Forward fetch progress to stderr so stdout stays clean for piping/--json.
+fn fetch_progress_to_stderr(p: FetchProgress) {
+    if matches!(p.status, FetchStatus::Running) {
+        let mut line = format!("[{}/{}] {}", p.step, p.total_steps, p.label);
+        if let (Some(d), Some(t)) = (p.files_done, p.files_total) {
+            line.push_str(&format!(" ({d}/{t})"));
+        }
+        eprintln!("{}", paint(&line, DIM));
+    }
+}
+
+// ── diff (raw unified diff for piping into nvim/delta) ───────────────────────
+
+async fn diff_cmd(pr: &str) -> Result<(), String> {
+    let settings = load_settings();
+    let manifest = fetch_pr_impl(pr, &settings, &fetch_progress_to_stderr).await?;
+
+    // Order by risk so the files that matter come first — the differentiator
+    // over a plain `gh pr diff`.
+    let mut files: Vec<&FileDiff> = manifest
+        .files
+        .iter()
+        .filter(|f| !f.unified_diff.is_empty())
+        .collect();
+    files.sort_by_key(|f| risk_order(&f.risk_level));
+
+    let mut out = String::new();
+    for f in files {
+        write_file_patch(&mut out, f);
+    }
+    print!("{out}");
+    Ok(())
+}
+
+fn risk_order(risk: &str) -> u8 {
+    match risk {
+        "high" => 0,
+        "low" => 2,
+        _ => 1,
+    }
+}
+
+/// Emit a standard unified-diff section for one file. The core stores
+/// header-stripped hunks, so synthesize the `diff --git` + `---`/`+++` headers,
+/// using /dev/null for added/removed files so the patch stays valid.
+fn write_file_patch(out: &mut String, f: &FileDiff) {
+    let _ = writeln!(out, "diff --git a/{} b/{}", f.path, f.path);
+    match f.diff_type.as_str() {
+        "added" => {
+            let _ = writeln!(out, "--- /dev/null");
+            let _ = writeln!(out, "+++ b/{}", f.path);
+        }
+        "removed" => {
+            let _ = writeln!(out, "--- a/{}", f.path);
+            let _ = writeln!(out, "+++ /dev/null");
+        }
+        _ => {
+            let _ = writeln!(out, "--- a/{}", f.path);
+            let _ = writeln!(out, "+++ b/{}", f.path);
+        }
+    }
+    out.push_str(&f.unified_diff);
+    if !f.unified_diff.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+/// Print to stdout, paging through $PAGER (default `less -R`) when stdout is a
+/// terminal. Falls back to a plain print when not a TTY or no pager is found.
+fn page_or_print(content: &str) {
+    if std::io::stdout().is_terminal() && try_page(content).is_ok() {
+        return;
+    }
+    print!("{content}");
+}
+
+fn try_page(content: &str) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
+    let mut parts = pager.split_whitespace();
+    let cmd = parts
+        .next()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "empty PAGER"))?;
+    let mut child = Command::new(cmd).args(parts).stdin(Stdio::piped()).spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(content.as_bytes());
+        // stdin dropped here → EOF to the pager
+    }
+    child.wait()?;
+    Ok(())
+}
+
+fn print_manifest<W: std::fmt::Write>(out: &mut W, m: &ReviewManifest, show_diffs: bool) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "{}", paint(&format!("{} #{}", m.pr_title, m.pr_number), BOLD));
+    let _ = writeln!(out, "{}", paint(&m.pr_url, DIM));
+    let _ = writeln!(out, "{}", paint(&format!("{} ← {}", m.base_ref, m.head_ref), DIM));
 
     if !m.summary.is_empty() {
-        println!();
+        let _ = writeln!(out);
         for line in wrap(&m.summary, 88) {
-            println!("  {line}");
+            let _ = writeln!(out, "  {line}");
         }
     }
 
     if !m.change_groups.is_empty() {
-        println!("\n{}", paint("Change groups", BOLD));
+        let _ = writeln!(out, "\n{}", paint("Change groups", BOLD));
         for g in &m.change_groups {
-            println!("  {} {}", paint("●", CYAN), paint(&g.label, BOLD));
+            let _ = writeln!(out, "  {} {}", paint("●", CYAN), paint(&g.label, BOLD));
             for line in wrap(&g.description, 84) {
-                println!("      {}", paint(&line, DIM));
+                let _ = writeln!(out, "      {}", paint(&line, DIM));
             }
-            println!("      {}", paint(&format!("{} file(s)", g.file_paths.len()), DIM));
+            let _ = writeln!(out, "      {}", paint(&format!("{} file(s)", g.file_paths.len()), DIM));
         }
     }
 
-    println!("\n{} {}", paint("Files", BOLD), paint(&format!("({})", m.files.len()), DIM));
+    let _ = writeln!(out, "\n{} {}", paint("Files", BOLD), paint(&format!("({})", m.files.len()), DIM));
     for f in &m.files {
         let risk = match f.risk_level.as_str() {
             "high" => paint("HIGH", RED),
@@ -374,12 +463,12 @@ fn print_manifest(m: &ReviewManifest, show_diffs: bool) {
             _ => paint("med ", YELLOW),
         };
         let churn = paint(&format!("+{} -{}", f.additions, f.deletions), DIM);
-        println!("  {risk} {}  {churn}", f.path);
+        let _ = writeln!(out, "  {risk} {}  {churn}", f.path);
         let meta = format!("{} · {}", f.classification, f.category);
-        println!("        {}", paint(&meta, DIM));
+        let _ = writeln!(out, "        {}", paint(&meta, DIM));
         if !f.reason.is_empty() {
             for line in wrap(&f.reason, 80) {
-                println!("        {}", paint(&line, DIM));
+                let _ = writeln!(out, "        {}", paint(&line, DIM));
             }
         }
         // When showing diffs, highlights are rendered inline in the diff, so
@@ -392,16 +481,16 @@ fn print_manifest(m: &ReviewManifest, show_diffs: bool) {
                 } else {
                     format!("L{}-{}", h.start_line, h.end_line)
                 };
-                println!("        {} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
+                let _ = writeln!(out, "        {} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
             }
         }
         if show_diffs && !f.unified_diff.is_empty() {
-            println!();
-            render_file_diff(f);
-            println!();
+            let _ = writeln!(out);
+            render_file_diff(out, f);
+            let _ = writeln!(out);
         }
     }
-    println!();
+    let _ = writeln!(out);
 }
 
 // ── diff rendering (syntect highlighting + AI-highlight annotations) ─────────
@@ -469,7 +558,7 @@ fn hunk_new_start(header: &str) -> Option<u64> {
 /// Render a file's unified diff with syntax highlighting and inline AI-highlight
 /// annotations: a severity gutter bar on flagged lines plus the comment printed
 /// above its start line. Falls back to plain text when color is disabled.
-fn render_file_diff(f: &FileDiff) {
+fn render_file_diff<W: std::fmt::Write>(out: &mut W, f: &FileDiff) {
     let indent = "  ";
     let color = color_enabled();
 
@@ -499,7 +588,7 @@ fn render_file_diff(f: &FileDiff) {
     for line in f.unified_diff.lines() {
         if line.starts_with("@@") {
             new_ln = hunk_new_start(line);
-            println!("{indent}{}", paint(line, CYAN));
+            let _ = writeln!(out, "{indent}{}", paint(line, CYAN));
             continue;
         }
 
@@ -509,7 +598,7 @@ fn render_file_diff(f: &FileDiff) {
             Some(' ') => (' ', &line[1..], true, DIM),
             _ => {
                 // "\ No newline at end of file", stray blank lines, etc.
-                println!("{indent} {}", paint(line, DIM));
+                let _ = writeln!(out, "{indent} {}", paint(line, DIM));
                 continue;
             }
         };
@@ -526,7 +615,7 @@ fn render_file_diff(f: &FileDiff) {
                     } else {
                         format!("L{}-{}", h.start_line, h.end_line)
                     };
-                    println!("{indent}{} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
+                    let _ = writeln!(out, "{indent}{} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
                 }
             }
         }
@@ -541,7 +630,7 @@ fn render_file_diff(f: &FileDiff) {
             marker.to_string()
         };
         let code = if color { highlight_line(rest, syntax) } else { rest.to_string() };
-        println!("{indent}{gutter}{marker_str}{code}");
+        let _ = writeln!(out, "{indent}{gutter}{marker_str}{code}");
 
         if on_new_side {
             if let Some(n) = new_ln.as_mut() {
