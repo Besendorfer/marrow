@@ -6,6 +6,7 @@
 //! coloring), j/k scrolling, ]/[ file switching, and quit. Syntax highlighting
 //! + AI annotations land in M2.
 
+use std::collections::HashMap;
 use std::io;
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -14,8 +15,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
+use syntect::easy::HighlightLines;
+use syntect::parsing::SyntaxReference;
 
-use marrow_core::types::{FileDiff, ReviewManifest};
+use marrow_core::types::{FileDiff, Highlight, ReviewManifest};
 
 /// Enter the alternate screen, run the viewer, and always restore the terminal.
 pub fn run(manifest: &ReviewManifest) -> io::Result<()> {
@@ -31,6 +34,9 @@ struct App<'a> {
     files: Vec<&'a FileDiff>,
     list_state: ListState,
     scroll: u16,
+    /// Rendered diff for the selected file (built lazily, not per frame).
+    diff_cache: Vec<Line<'static>>,
+    cache_idx: Option<usize>,
 }
 
 impl<'a> App<'a> {
@@ -42,17 +48,39 @@ impl<'a> App<'a> {
         if !files.is_empty() {
             list_state.select(Some(0));
         }
-        Self { manifest, files, list_state, scroll: 0 }
+        Self {
+            manifest,
+            files,
+            list_state,
+            scroll: 0,
+            diff_cache: Vec::new(),
+            cache_idx: None,
+        }
     }
 
-    fn selected(&self) -> Option<&FileDiff> {
+    fn selected(&self) -> Option<&'a FileDiff> {
         self.list_state.selected().and_then(|i| self.files.get(i).copied())
     }
 
     fn diff_line_count(&self) -> u16 {
-        self.selected()
-            .map(|f| f.unified_diff.lines().count().min(u16::MAX as usize) as u16)
-            .unwrap_or(0)
+        self.diff_cache.len().min(u16::MAX as usize) as u16
+    }
+
+    /// Rebuild the rendered diff when the selected file changes.
+    fn sync_cache(&mut self) {
+        let sel = self.list_state.selected();
+        if self.cache_idx == sel {
+            return;
+        }
+        self.cache_idx = sel;
+        self.diff_cache = match self.selected() {
+            Some(file) if !file.unified_diff.is_empty() => diff_lines_for(file),
+            Some(_) => vec![Line::from(Span::styled(
+                "(no diff)",
+                Style::default().fg(Color::DarkGray),
+            ))],
+            None => Vec::new(),
+        };
     }
 
     fn next_file(&mut self) {
@@ -104,6 +132,7 @@ impl<'a> App<'a> {
     }
 
     fn ui(&mut self, f: &mut Frame) {
+        self.sync_cache();
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
@@ -162,36 +191,130 @@ impl<'a> App<'a> {
             .map(|file| format!(" {}  +{} -{} ", file.path, file.additions, file.deletions))
             .unwrap_or_else(|| " (no file) ".to_string());
 
-        let lines: Vec<Line> = match self.selected() {
-            Some(file) if !file.unified_diff.is_empty() => {
-                file.unified_diff.lines().map(diff_line).collect()
-            }
-            Some(_) => vec![Line::from(Span::styled(
-                "(no diff)",
-                Style::default().fg(Color::DarkGray),
-            ))],
-            None => Vec::new(),
-        };
-
-        let para = Paragraph::new(lines)
+        let para = Paragraph::new(self.diff_cache.clone())
             .block(Block::default().title(title))
             .scroll((self.scroll, 0));
         f.render_widget(para, area);
     }
 }
 
-/// Basic +/- diff coloring for M1 (syntect highlighting comes in M2).
-fn diff_line(line: &str) -> Line<'static> {
-    let style = if line.starts_with("@@") {
-        Style::default().fg(Color::Cyan)
-    } else if line.starts_with('+') {
-        Style::default().fg(Color::Green)
-    } else if line.starts_with('-') {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default()
-    };
-    Line::from(Span::styled(line.to_string(), style))
+/// Render a file's diff as styled ratatui lines: syntect syntax highlighting on
+/// the code, AI-highlight comments inline (`▸` above the line they start on),
+/// and a severity gutter bar (`▍`) on covered lines. Reuses the Level 1 syntect
+/// + hunk-parsing helpers from the CLI module.
+fn diff_lines_for(file: &FileDiff) -> Vec<Line<'static>> {
+    // new-side line → highlights starting there, and lines covered by any (for
+    // the gutter bar, keeping the highest severity).
+    let mut starts: HashMap<u64, Vec<&Highlight>> = HashMap::new();
+    let mut covered: HashMap<u64, Color> = HashMap::new();
+    for h in &file.highlights {
+        starts.entry(h.start_line).or_default().push(h);
+        let c = sev_color(&h.severity);
+        for ln in h.start_line..=h.end_line {
+            covered
+                .entry(ln)
+                .and_modify(|cur| {
+                    if sev_rank(c) > sev_rank(*cur) {
+                        *cur = c;
+                    }
+                })
+                .or_insert(c);
+        }
+    }
+
+    let (ps, _) = crate::highlighter();
+    let syntax = crate::syntax_for(ps, &file.path);
+
+    let mut out: Vec<Line> = Vec::new();
+    let mut new_ln: Option<u64> = None;
+    for line in file.unified_diff.lines() {
+        if line.starts_with("@@") {
+            new_ln = crate::hunk_new_start(line);
+            out.push(Line::from(Span::styled(line.to_string(), Style::default().fg(Color::Cyan))));
+            continue;
+        }
+
+        let (marker, rest, on_new_side, marker_color) = match line.chars().next() {
+            Some('+') => ('+', &line[1..], true, Color::Green),
+            Some('-') => ('-', &line[1..], false, Color::Red),
+            Some(' ') => (' ', &line[1..], true, Color::DarkGray),
+            _ => {
+                out.push(Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                continue;
+            }
+        };
+
+        let cur_new = if on_new_side { new_ln } else { None };
+
+        // Annotation comment(s) above the line they start on.
+        if let Some(ln) = cur_new {
+            if let Some(hs) = starts.get(&ln) {
+                for h in hs {
+                    let c = sev_color(&h.severity);
+                    let loc = if h.start_line == h.end_line {
+                        format!("L{}", h.start_line)
+                    } else {
+                        format!("L{}-{}", h.start_line, h.end_line)
+                    };
+                    out.push(Line::from(vec![
+                        Span::styled(format!("▸ {loc} "), Style::default().fg(c).add_modifier(Modifier::BOLD)),
+                        Span::styled(h.comment.clone(), Style::default().fg(c)),
+                    ]));
+                }
+            }
+        }
+
+        let mut spans: Vec<Span> = Vec::new();
+        match cur_new.and_then(|ln| covered.get(&ln)) {
+            Some(&c) => spans.push(Span::styled("▍", Style::default().fg(c))),
+            None => spans.push(Span::raw(" ")),
+        }
+        spans.push(Span::styled(marker.to_string(), Style::default().fg(marker_color)));
+        spans.extend(highlight_spans(rest, syntax));
+        out.push(Line::from(spans));
+
+        if on_new_side {
+            if let Some(n) = new_ln.as_mut() {
+                *n += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Syntect-highlight one code line into ratatui spans (foreground only).
+fn highlight_spans(code: &str, syntax: &SyntaxReference) -> Vec<Span<'static>> {
+    let (ps, theme) = crate::highlighter();
+    let mut h = HighlightLines::new(syntax, theme);
+    match h.highlight_line(code, ps) {
+        Ok(ranges) => ranges
+            .into_iter()
+            .map(|(style, text)| {
+                let fg = style.foreground;
+                Span::styled(text.to_string(), Style::default().fg(Color::Rgb(fg.r, fg.g, fg.b)))
+            })
+            .collect(),
+        Err(_) => vec![Span::raw(code.to_string())],
+    }
+}
+
+fn sev_color(sev: &str) -> Color {
+    match sev {
+        "high" | "warning" => Color::Red,
+        "medium" => Color::Yellow,
+        _ => Color::Cyan,
+    }
+}
+
+fn sev_rank(c: Color) -> u8 {
+    match c {
+        Color::Red => 3,
+        Color::Yellow => 2,
+        _ => 1,
+    }
 }
 
 fn risk_rank(risk: &str) -> u8 {
@@ -288,6 +411,23 @@ mod tests {
         assert!(out.contains("high.go"), "selected file path missing");
         assert!(out.contains("@@ -1,1 +1,2 @@"), "diff hunk missing");
         assert!(out.contains("q quit"), "footer missing");
+    }
+
+    #[test]
+    fn renders_ai_annotation_and_gutter() {
+        let mut m = manifest();
+        // high.go's added line is new-side L2; flag it.
+        m.files[1].highlights = vec![Highlight {
+            start_line: 2,
+            end_line: 2,
+            severity: "high".to_string(),
+            comment: "watch this bypass".to_string(),
+        }];
+        let mut app = App::new(&m);
+        let out = render_to_string(&mut app, 100, 20);
+        assert!(out.contains("▸ L2"), "annotation marker missing");
+        assert!(out.contains("watch this bypass"), "annotation comment missing");
+        assert!(out.contains('▍'), "severity gutter bar missing");
     }
 
     #[test]
