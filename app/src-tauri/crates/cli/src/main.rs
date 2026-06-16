@@ -9,10 +9,10 @@ use std::io::{IsTerminal, Write};
 
 use clap::{Parser, Subcommand};
 
-use relevant_reviews_lib::config::{load_settings, resolve_github_token};
-use relevant_reviews_lib::fetch::fetch_pr_impl;
-use relevant_reviews_lib::github::GithubClient;
-use relevant_reviews_lib::types::{FetchProgress, FetchStatus, ReviewManifest, ReviewThread};
+use marrow_core::config::{load_settings, resolve_github_token};
+use marrow_core::fetch::fetch_pr_impl;
+use marrow_core::github::GithubClient;
+use marrow_core::types::{FetchProgress, FetchStatus, ReviewManifest, ReviewThread};
 
 #[derive(Parser)]
 #[command(
@@ -222,7 +222,7 @@ fn confirm(action: &str, yes: bool) -> Result<(), String> {
 
 async fn reply(pr: &str, comment_id: &str, body: &str) -> Result<(), String> {
     let github = github_client();
-    let parsed = relevant_reviews_lib::pr_parser::parse_pr_ref(pr)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(pr)?;
     let pr_node_id = github
         .get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number)
         .await?;
@@ -250,7 +250,7 @@ async fn comment(
     start_side: Option<&str>,
 ) -> Result<(), String> {
     let github = github_client();
-    let parsed = relevant_reviews_lib::pr_parser::parse_pr_ref(pr)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(pr)?;
     let pr_node_id = github
         .get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number)
         .await?;
@@ -268,7 +268,7 @@ async fn comment(
 
 async fn pr_comment(pr: &str, body: &str) -> Result<(), String> {
     let github = github_client();
-    let parsed = relevant_reviews_lib::pr_parser::parse_pr_ref(pr)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(pr)?;
     let url = github
         .add_pr_comment(&parsed.owner, &parsed.repo, parsed.number, body)
         .await?;
@@ -278,7 +278,7 @@ async fn pr_comment(pr: &str, body: &str) -> Result<(), String> {
 
 async fn submit(pr: &str, event: &str, body: &str) -> Result<(), String> {
     let github = github_client();
-    let parsed = relevant_reviews_lib::pr_parser::parse_pr_ref(pr)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(pr)?;
     let state = github
         .submit_review(&parsed.owner, &parsed.repo, parsed.number, event, body)
         .await?;
@@ -444,7 +444,7 @@ async fn requests(days: i64, json: bool) -> Result<(), String> {
 
 async fn comments(pr: &str, unresolved_only: bool, json: bool) -> Result<(), String> {
     let github = github_client();
-    let parsed = relevant_reviews_lib::pr_parser::parse_pr_ref(pr)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(pr)?;
     let mut threads = github
         .get_review_threads(&parsed.owner, &parsed.repo, parsed.number)
         .await?;
@@ -495,7 +495,7 @@ fn print_threads(threads: &[ReviewThread]) {
 
 async fn checks(pr: &str, json: bool) -> Result<(), String> {
     let github = github_client();
-    let parsed = relevant_reviews_lib::pr_parser::parse_pr_ref(pr)?;
+    let parsed = marrow_core::pr_parser::parse_pr_ref(pr)?;
     let status = github
         .get_pr_checks(&parsed.owner, &parsed.repo, parsed.number)
         .await?;
