@@ -13,7 +13,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use syntect::easy::HighlightLines;
 use syntect::parsing::SyntaxReference;
@@ -33,6 +33,7 @@ pub fn run(manifest: &ReviewManifest) -> io::Result<()> {
 enum Mode {
     Normal,
     Search,
+    Help,
 }
 
 /// A sidebar row. Group headers are display-only (not selectable).
@@ -360,6 +361,7 @@ impl<'a> App<'a> {
                     KeyCode::Char('n') => self.next_finding(),
                     KeyCode::Char('N') => self.prev_finding(),
                     KeyCode::Char('t') => self.toggle_filter(),
+                    KeyCode::Char('?') => self.mode = Mode::Help,
                     KeyCode::Char('/') => {
                         self.mode = Mode::Search;
                         self.search_input.clear();
@@ -376,6 +378,12 @@ impl<'a> App<'a> {
                         self.search_input.pop();
                     }
                     KeyCode::Char(c) => self.search_input.push(c),
+                    _ => {}
+                },
+                Mode::Help => match key.code {
+                    KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {
+                        self.mode = Mode::Normal
+                    }
                     _ => {}
                 },
             }
@@ -413,12 +421,16 @@ impl<'a> App<'a> {
                 Span::raw(self.search_input.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
             ])),
-            Mode::Normal => Paragraph::new(
-                " j/k scroll · ]/[ select · }/{ hunk · n/N finding · / search · t filter · q quit ",
+            _ => Paragraph::new(
+                " j/k scroll · ]/[ select · }/{ hunk · n/N finding · / search · t filter · ? help · q quit ",
             )
             .style(Style::default().fg(Color::DarkGray)),
         };
         f.render_widget(footer, rows[2]);
+
+        if self.mode == Mode::Help {
+            render_help(f);
+        }
     }
 
     fn render_sidebar(&mut self, f: &mut Frame, area: Rect) {
@@ -638,6 +650,43 @@ fn short_path(path: &str) -> String {
     format!("…{tail}")
 }
 
+/// A centered rectangle of the given size within `area`, clamped to fit.
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+/// Keybindings help overlay, centered over the screen.
+fn render_help(f: &mut Frame) {
+    let head = |s| Line::from(Span::styled(s, Style::default().add_modifier(Modifier::BOLD)));
+    let lines = vec![
+        head("Navigation"),
+        Line::from("  j / k        scroll"),
+        Line::from("  g / G        top / bottom"),
+        Line::from("  ] / [        next / prev item"),
+        Line::from("  } / {        next / prev hunk"),
+        Line::from("  n / N        next / prev finding"),
+        Line::from(""),
+        head("View"),
+        Line::from("  /            search in file"),
+        Line::from("  t            filter low-risk"),
+        Line::from(""),
+        Line::from("  ?            toggle this help"),
+        Line::from("  q / Esc      quit"),
+    ];
+    let area = centered_rect(40, lines.len() as u16 + 2, f.area());
+    let popup =
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Keys "));
+    f.render_widget(Clear, area);
+    f.render_widget(popup, area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,5 +873,23 @@ mod tests {
         app.scroll = 0;
         app.run_search();
         assert!(app.scroll > 0, "should jump to the line containing 'b'");
+    }
+
+    #[test]
+    fn help_overlay_renders() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        app.mode = Mode::Help;
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Keys"), "help title missing");
+        assert!(out.contains("filter low-risk"), "help body missing");
+    }
+
+    #[test]
+    fn empty_manifest_renders_overview() {
+        let m = ReviewManifest { files: vec![], ..manifest() };
+        let mut app = App::new(&m);
+        let out = render_to_string(&mut app, 80, 20);
+        assert!(out.contains("0 files"), "overview should show zero files");
     }
 }
