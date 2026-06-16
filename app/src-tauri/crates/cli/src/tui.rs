@@ -29,14 +29,25 @@ pub fn run(manifest: &ReviewManifest) -> io::Result<()> {
     res
 }
 
+#[derive(PartialEq)]
+enum Mode {
+    Normal,
+    Search,
+}
+
 struct App<'a> {
     manifest: &'a ReviewManifest,
     files: Vec<&'a FileDiff>,
     list_state: ListState,
     scroll: u16,
-    /// Rendered diff for the selected file (built lazily, not per frame).
+    /// Rendered diff for the selected file (built lazily, not per frame), plus
+    /// the row indices of hunk headers and AI findings for jump navigation.
     diff_cache: Vec<Line<'static>>,
+    hunk_rows: Vec<usize>,
+    finding_rows: Vec<usize>,
     cache_idx: Option<usize>,
+    mode: Mode,
+    search_input: String,
 }
 
 impl<'a> App<'a> {
@@ -54,7 +65,11 @@ impl<'a> App<'a> {
             list_state,
             scroll: 0,
             diff_cache: Vec::new(),
+            hunk_rows: Vec::new(),
+            finding_rows: Vec::new(),
             cache_idx: None,
+            mode: Mode::Normal,
+            search_input: String::new(),
         }
     }
 
@@ -66,21 +81,72 @@ impl<'a> App<'a> {
         self.diff_cache.len().min(u16::MAX as usize) as u16
     }
 
-    /// Rebuild the rendered diff when the selected file changes.
+    /// Rebuild the rendered diff (and its nav indices) when the selection changes.
     fn sync_cache(&mut self) {
         let sel = self.list_state.selected();
         if self.cache_idx == sel {
             return;
         }
         self.cache_idx = sel;
-        self.diff_cache = match self.selected() {
+        let rendered = match self.selected() {
             Some(file) if !file.unified_diff.is_empty() => diff_lines_for(file),
-            Some(_) => vec![Line::from(Span::styled(
-                "(no diff)",
-                Style::default().fg(Color::DarkGray),
-            ))],
-            None => Vec::new(),
+            Some(_) => Rendered::message("(no diff)"),
+            None => Rendered::default(),
         };
+        self.diff_cache = rendered.lines;
+        self.hunk_rows = rendered.hunk_rows;
+        self.finding_rows = rendered.finding_rows;
+    }
+
+    fn jump_next(rows: &[usize], from: u16) -> Option<u16> {
+        rows.iter().copied().find(|&r| r as u16 > from).map(|r| r as u16)
+    }
+
+    fn jump_prev(rows: &[usize], from: u16) -> Option<u16> {
+        rows.iter().copied().rev().find(|&r| (r as u16) < from).map(|r| r as u16)
+    }
+
+    fn next_hunk(&mut self) {
+        if let Some(r) = Self::jump_next(&self.hunk_rows, self.scroll) {
+            self.scroll = r;
+        }
+    }
+    fn prev_hunk(&mut self) {
+        if let Some(r) = Self::jump_prev(&self.hunk_rows, self.scroll) {
+            self.scroll = r;
+        }
+    }
+    fn next_finding(&mut self) {
+        if let Some(r) = Self::jump_next(&self.finding_rows, self.scroll) {
+            self.scroll = r;
+        }
+    }
+    fn prev_finding(&mut self) {
+        if let Some(r) = Self::jump_prev(&self.finding_rows, self.scroll) {
+            self.scroll = r;
+        }
+    }
+
+    /// Case-insensitive search forward from `start`, wrapping. Returns the row.
+    fn find_match(&self, query: &str, start: usize) -> Option<usize> {
+        let q = query.to_lowercase();
+        let n = self.diff_cache.len();
+        if n == 0 || q.is_empty() {
+            return None;
+        }
+        (0..n).find_map(|off| {
+            let i = (start + off) % n;
+            let text: String =
+                self.diff_cache[i].spans.iter().map(|s| s.content.as_ref()).collect();
+            text.to_lowercase().contains(&q).then_some(i)
+        })
+    }
+
+    fn run_search(&mut self) {
+        let from = (self.scroll as usize + 1).min(self.diff_cache.len().saturating_sub(1));
+        if let Some(i) = self.find_match(&self.search_input, from) {
+            self.scroll = i as u16;
+        }
     }
 
     fn next_file(&mut self) {
@@ -117,15 +183,37 @@ impl<'a> App<'a> {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('j') | KeyCode::Down => self.scroll_down(1),
-                KeyCode::Char('k') | KeyCode::Up => self.scroll_up(1),
-                KeyCode::Char('g') => self.scroll = 0,
-                KeyCode::Char('G') => self.scroll = self.diff_line_count().saturating_sub(1),
-                KeyCode::Char(']') | KeyCode::Tab => self.next_file(),
-                KeyCode::Char('[') | KeyCode::BackTab => self.prev_file(),
-                _ => {}
+            match self.mode {
+                Mode::Normal => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('j') | KeyCode::Down => self.scroll_down(1),
+                    KeyCode::Char('k') | KeyCode::Up => self.scroll_up(1),
+                    KeyCode::Char('g') => self.scroll = 0,
+                    KeyCode::Char('G') => self.scroll = self.diff_line_count().saturating_sub(1),
+                    KeyCode::Char(']') | KeyCode::Tab => self.next_file(),
+                    KeyCode::Char('[') | KeyCode::BackTab => self.prev_file(),
+                    KeyCode::Char('}') => self.next_hunk(),
+                    KeyCode::Char('{') => self.prev_hunk(),
+                    KeyCode::Char('n') => self.next_finding(),
+                    KeyCode::Char('N') => self.prev_finding(),
+                    KeyCode::Char('/') => {
+                        self.mode = Mode::Search;
+                        self.search_input.clear();
+                    }
+                    _ => {}
+                },
+                Mode::Search => match key.code {
+                    KeyCode::Enter => {
+                        self.run_search();
+                        self.mode = Mode::Normal;
+                    }
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Backspace => {
+                        self.search_input.pop();
+                    }
+                    KeyCode::Char(c) => self.search_input.push(c),
+                    _ => {}
+                },
             }
         }
         Ok(())
@@ -155,8 +243,17 @@ impl<'a> App<'a> {
         self.render_sidebar(f, body[0]);
         self.render_diff(f, body[1]);
 
-        let footer = Paragraph::new(" j/k scroll · g/G top/bottom · ]/[ file · q quit ")
-            .style(Style::default().fg(Color::DarkGray));
+        let footer = match self.mode {
+            Mode::Search => Paragraph::new(Line::from(vec![
+                Span::styled("/", Style::default().fg(Color::Cyan)),
+                Span::raw(self.search_input.clone()),
+                Span::styled("▏", Style::default().fg(Color::Cyan)),
+            ])),
+            Mode::Normal => Paragraph::new(
+                " j/k scroll · ]/[ file · }/{ hunk · n/N finding · / search · q quit ",
+            )
+            .style(Style::default().fg(Color::DarkGray)),
+        };
         f.render_widget(footer, rows[2]);
     }
 
@@ -198,11 +295,32 @@ impl<'a> App<'a> {
     }
 }
 
+/// A rendered diff plus the row indices used for jump navigation.
+#[derive(Default)]
+struct Rendered {
+    lines: Vec<Line<'static>>,
+    hunk_rows: Vec<usize>,
+    finding_rows: Vec<usize>,
+}
+
+impl Rendered {
+    fn message(msg: &str) -> Self {
+        Rendered {
+            lines: vec![Line::from(Span::styled(
+                msg.to_string(),
+                Style::default().fg(Color::DarkGray),
+            ))],
+            ..Default::default()
+        }
+    }
+}
+
 /// Render a file's diff as styled ratatui lines: syntect syntax highlighting on
 /// the code, AI-highlight comments inline (`▸` above the line they start on),
-/// and a severity gutter bar (`▍`) on covered lines. Reuses the Level 1 syntect
-/// + hunk-parsing helpers from the CLI module.
-fn diff_lines_for(file: &FileDiff) -> Vec<Line<'static>> {
+/// and a severity gutter bar (`▍`) on covered lines. Also records the row
+/// indices of hunk headers and findings for jump navigation. Reuses the Level 1
+/// syntect + hunk-parsing helpers from the CLI module.
+fn diff_lines_for(file: &FileDiff) -> Rendered {
     // new-side line → highlights starting there, and lines covered by any (for
     // the gutter bar, keeping the highest severity).
     let mut starts: HashMap<u64, Vec<&Highlight>> = HashMap::new();
@@ -226,10 +344,13 @@ fn diff_lines_for(file: &FileDiff) -> Vec<Line<'static>> {
     let syntax = crate::syntax_for(ps, &file.path);
 
     let mut out: Vec<Line> = Vec::new();
+    let mut hunk_rows: Vec<usize> = Vec::new();
+    let mut finding_rows: Vec<usize> = Vec::new();
     let mut new_ln: Option<u64> = None;
     for line in file.unified_diff.lines() {
         if line.starts_with("@@") {
             new_ln = crate::hunk_new_start(line);
+            hunk_rows.push(out.len());
             out.push(Line::from(Span::styled(line.to_string(), Style::default().fg(Color::Cyan))));
             continue;
         }
@@ -259,6 +380,7 @@ fn diff_lines_for(file: &FileDiff) -> Vec<Line<'static>> {
                     } else {
                         format!("L{}-{}", h.start_line, h.end_line)
                     };
+                    finding_rows.push(out.len());
                     out.push(Line::from(vec![
                         Span::styled(format!("▸ {loc} "), Style::default().fg(c).add_modifier(Modifier::BOLD)),
                         Span::styled(h.comment.clone(), Style::default().fg(c)),
@@ -282,7 +404,7 @@ fn diff_lines_for(file: &FileDiff) -> Vec<Line<'static>> {
             }
         }
     }
-    out
+    Rendered { lines: out, hunk_rows, finding_rows }
 }
 
 /// Syntect-highlight one code line into ratatui spans (foreground only).
@@ -446,5 +568,46 @@ mod tests {
         app.prev_file();
         app.prev_file(); // already first → stays first
         assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn hunk_and_finding_navigation() {
+        let diff = "@@ -1,2 +1,3 @@\n line1\n+added_a\n line2\n@@ -10,2 +11,3 @@\n line10\n+added_b\n line11\n";
+        let mut f = file("pkg/multi.go", "high", diff);
+        f.highlights = vec![
+            Highlight { start_line: 2, end_line: 2, severity: "high".into(), comment: "first".into() },
+            Highlight { start_line: 12, end_line: 12, severity: "medium".into(), comment: "second".into() },
+        ];
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+
+        assert_eq!(app.hunk_rows.len(), 2, "two hunk headers");
+        assert_eq!(app.finding_rows.len(), 2, "two findings");
+
+        // From the top, `}` jumps to the second hunk header; `{` back to the first.
+        app.scroll = 0;
+        app.next_hunk();
+        assert_eq!(app.scroll as usize, app.hunk_rows[1]);
+        app.prev_hunk();
+        assert_eq!(app.scroll as usize, app.hunk_rows[0]);
+
+        // `n` cycles through findings.
+        app.scroll = 0;
+        app.next_finding();
+        assert_eq!(app.scroll as usize, app.finding_rows[0]);
+        app.next_finding();
+        assert_eq!(app.scroll as usize, app.finding_rows[1]);
+    }
+
+    #[test]
+    fn search_jumps_to_match() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        app.sync_cache();
+        app.search_input = "b".to_string();
+        app.scroll = 0;
+        app.run_search();
+        assert!(app.scroll > 0, "should jump to the line containing 'b'");
     }
 }
