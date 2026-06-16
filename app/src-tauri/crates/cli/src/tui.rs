@@ -6,7 +6,7 @@
 //! coloring), j/k scrolling, ]/[ file switching, and quit. Syntax highlighting
 //! + AI annotations land in M2.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -35,19 +35,28 @@ enum Mode {
     Search,
 }
 
+/// A sidebar row. Group headers are display-only (not selectable).
+enum Row {
+    Overview,
+    Group(String),
+    File(usize), // index into App::files
+}
+
 struct App<'a> {
     manifest: &'a ReviewManifest,
     files: Vec<&'a FileDiff>,
     list_state: ListState,
     scroll: u16,
-    /// Rendered diff for the selected file (built lazily, not per frame), plus
-    /// the row indices of hunk headers and AI findings for jump navigation.
+    /// Rendered main pane for the current selection (built lazily, not per
+    /// frame), plus the row indices of hunk headers and AI findings for jumps.
     diff_cache: Vec<Line<'static>>,
     hunk_rows: Vec<usize>,
     finding_rows: Vec<usize>,
     cache_idx: Option<usize>,
     mode: Mode,
     search_input: String,
+    rows: Vec<Row>,
+    filter_low: bool,
 }
 
 impl<'a> App<'a> {
@@ -55,14 +64,10 @@ impl<'a> App<'a> {
         // Relevance order: high risk first (matches `marrow diff`).
         let mut files: Vec<&FileDiff> = manifest.files.iter().collect();
         files.sort_by_key(|f| risk_rank(&f.risk_level));
-        let mut list_state = ListState::default();
-        if !files.is_empty() {
-            list_state.select(Some(0));
-        }
-        Self {
+        let mut app = Self {
             manifest,
             files,
-            list_state,
+            list_state: ListState::default(),
             scroll: 0,
             diff_cache: Vec::new(),
             hunk_rows: Vec::new(),
@@ -70,11 +75,177 @@ impl<'a> App<'a> {
             cache_idx: None,
             mode: Mode::Normal,
             search_input: String::new(),
+            rows: Vec::new(),
+            filter_low: false,
+        };
+        app.rebuild_rows();
+        // Land on the first (highest-risk) file rather than the overview header.
+        let start = app.first_file_row().or_else(|| app.first_selectable());
+        app.list_state.select(start);
+        app
+    }
+
+    fn current_row(&self) -> Option<&Row> {
+        self.list_state.selected().and_then(|i| self.rows.get(i))
+    }
+
+    fn is_selectable(row: &Row) -> bool {
+        !matches!(row, Row::Group(_))
+    }
+
+    fn selected_file_idx(&self) -> Option<usize> {
+        match self.current_row() {
+            Some(Row::File(i)) => Some(*i),
+            _ => None,
         }
     }
 
     fn selected(&self) -> Option<&'a FileDiff> {
-        self.list_state.selected().and_then(|i| self.files.get(i).copied())
+        self.selected_file_idx().map(|i| self.files[i])
+    }
+
+    fn first_selectable(&self) -> Option<usize> {
+        self.rows.iter().position(Self::is_selectable)
+    }
+
+    fn first_file_row(&self) -> Option<usize> {
+        self.rows.iter().position(|r| matches!(r, Row::File(_)))
+    }
+
+    /// Build the sidebar: an overview header, then files grouped by AI
+    /// change-group (risk-ordered within), then an "Other" section for any
+    /// ungrouped files. Falls back to a flat list with no groups. `filter_low`
+    /// hides low-risk files.
+    fn build_rows(&self) -> Vec<Row> {
+        let filter_low = self.filter_low;
+        let keep = |f: &FileDiff| !filter_low || f.risk_level != "low";
+        let mut rows = vec![Row::Overview];
+
+        if self.manifest.change_groups.is_empty() {
+            for (i, f) in self.files.iter().enumerate() {
+                if keep(f) {
+                    rows.push(Row::File(i));
+                }
+            }
+            return rows;
+        }
+
+        let mut grouped: HashSet<usize> = HashSet::new();
+        for g in &self.manifest.change_groups {
+            let members: Vec<usize> = self
+                .files
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| g.file_paths.contains(&f.path) && keep(f))
+                .map(|(i, _)| i)
+                .collect();
+            if members.is_empty() {
+                continue;
+            }
+            rows.push(Row::Group(g.label.clone()));
+            for i in members {
+                rows.push(Row::File(i));
+                grouped.insert(i);
+            }
+        }
+
+        let others: Vec<usize> = self
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| !grouped.contains(i) && keep(f))
+            .map(|(i, _)| i)
+            .collect();
+        if !others.is_empty() {
+            rows.push(Row::Group("Other".to_string()));
+            for i in others {
+                rows.push(Row::File(i));
+            }
+        }
+        rows
+    }
+
+    fn rebuild_rows(&mut self) {
+        let keep_file = self.selected_file_idx();
+        self.rows = self.build_rows();
+        self.cache_idx = None; // force re-render after the layout changed
+        let target = keep_file
+            .and_then(|fi| self.rows.iter().position(|r| matches!(r, Row::File(i) if *i == fi)))
+            .or_else(|| self.first_selectable());
+        self.list_state.select(target);
+        self.scroll = 0;
+    }
+
+    fn toggle_filter(&mut self) {
+        self.filter_low = !self.filter_low;
+        self.rebuild_rows();
+    }
+
+    /// Move the selection to the next/previous selectable row, skipping group
+    /// headers. Clamps at the ends (no wrap).
+    fn select_step(&mut self, forward: bool) {
+        let n = self.rows.len();
+        let mut i = self.list_state.selected().unwrap_or(0);
+        loop {
+            if forward {
+                if i + 1 >= n {
+                    return;
+                }
+                i += 1;
+            } else {
+                if i == 0 {
+                    return;
+                }
+                i -= 1;
+            }
+            if Self::is_selectable(&self.rows[i]) {
+                self.list_state.select(Some(i));
+                self.scroll = 0;
+                return;
+            }
+        }
+    }
+
+    /// Overview content: risk counts, the PR summary, and change-group blurbs.
+    fn build_overview(&self) -> Rendered {
+        let mut lines: Vec<Line> = Vec::new();
+        let (mut hi, mut me, mut lo) = (0u32, 0u32, 0u32);
+        for f in &self.files {
+            match f.risk_level.as_str() {
+                "high" => hi += 1,
+                "low" => lo += 1,
+                _ => me += 1,
+            }
+        }
+        lines.push(Line::from(Span::styled(
+            format!("{} files · {hi} high · {me} med · {lo} low", self.files.len()),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        if !self.manifest.summary.is_empty() {
+            for l in crate::wrap(&self.manifest.summary, 80) {
+                lines.push(Line::from(l));
+            }
+            lines.push(Line::from(""));
+        }
+
+        if !self.manifest.change_groups.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "Change groups",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            for g in &self.manifest.change_groups {
+                lines.push(Line::from(Span::styled(
+                    format!("● {}", g.label),
+                    Style::default().fg(Color::Cyan),
+                )));
+                for l in crate::wrap(&g.description, 78) {
+                    lines.push(Line::from(format!("    {l}")));
+                }
+            }
+        }
+        Rendered { lines, ..Default::default() }
     }
 
     fn diff_line_count(&self) -> u16 {
@@ -88,10 +259,17 @@ impl<'a> App<'a> {
             return;
         }
         self.cache_idx = sel;
-        let rendered = match self.selected() {
-            Some(file) if !file.unified_diff.is_empty() => diff_lines_for(file),
-            Some(_) => Rendered::message("(no diff)"),
-            None => Rendered::default(),
+        let rendered = match self.current_row() {
+            Some(Row::Overview) => self.build_overview(),
+            Some(Row::File(i)) => {
+                let file = self.files[*i];
+                if file.unified_diff.is_empty() {
+                    Rendered::message("(no diff)")
+                } else {
+                    diff_lines_for(file)
+                }
+            }
+            _ => Rendered::default(),
         };
         self.diff_cache = rendered.lines;
         self.hunk_rows = rendered.hunk_rows;
@@ -149,21 +327,6 @@ impl<'a> App<'a> {
         }
     }
 
-    fn next_file(&mut self) {
-        if self.files.is_empty() {
-            return;
-        }
-        let i = self.list_state.selected().unwrap_or(0);
-        self.list_state.select(Some((i + 1).min(self.files.len() - 1)));
-        self.scroll = 0;
-    }
-
-    fn prev_file(&mut self) {
-        let i = self.list_state.selected().unwrap_or(0);
-        self.list_state.select(Some(i.saturating_sub(1)));
-        self.scroll = 0;
-    }
-
     fn scroll_down(&mut self, n: u16) {
         let max = self.diff_line_count().saturating_sub(1);
         self.scroll = (self.scroll + n).min(max);
@@ -190,12 +353,13 @@ impl<'a> App<'a> {
                     KeyCode::Char('k') | KeyCode::Up => self.scroll_up(1),
                     KeyCode::Char('g') => self.scroll = 0,
                     KeyCode::Char('G') => self.scroll = self.diff_line_count().saturating_sub(1),
-                    KeyCode::Char(']') | KeyCode::Tab => self.next_file(),
-                    KeyCode::Char('[') | KeyCode::BackTab => self.prev_file(),
+                    KeyCode::Char(']') | KeyCode::Tab => self.select_step(true),
+                    KeyCode::Char('[') | KeyCode::BackTab => self.select_step(false),
                     KeyCode::Char('}') => self.next_hunk(),
                     KeyCode::Char('{') => self.prev_hunk(),
                     KeyCode::Char('n') => self.next_finding(),
                     KeyCode::Char('N') => self.prev_finding(),
+                    KeyCode::Char('t') => self.toggle_filter(),
                     KeyCode::Char('/') => {
                         self.mode = Mode::Search;
                         self.search_input.clear();
@@ -250,7 +414,7 @@ impl<'a> App<'a> {
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
             ])),
             Mode::Normal => Paragraph::new(
-                " j/k scroll · ]/[ file · }/{ hunk · n/N finding · / search · q quit ",
+                " j/k scroll · ]/[ select · }/{ hunk · n/N finding · / search · t filter · q quit ",
             )
             .style(Style::default().fg(Color::DarkGray)),
         };
@@ -259,34 +423,50 @@ impl<'a> App<'a> {
 
     fn render_sidebar(&mut self, f: &mut Frame, area: Rect) {
         let items: Vec<ListItem> = self
-            .files
+            .rows
             .iter()
-            .map(|file| {
-                let (label, color) = match file.risk_level.as_str() {
-                    "high" => ("HIGH", Color::Red),
-                    "low" => ("low ", Color::Green),
-                    _ => ("med ", Color::Yellow),
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                    Span::raw(" "),
-                    Span::raw(short_path(&file.path)),
-                ]))
+            .map(|row| match row {
+                Row::Overview => ListItem::new(Line::from(Span::styled(
+                    "Overview",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ))),
+                Row::Group(label) => ListItem::new(Line::from(Span::styled(
+                    format!("▸ {label}"),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ))),
+                Row::File(i) => {
+                    let file = self.files[*i];
+                    let (label, color) = match file.risk_level.as_str() {
+                        "high" => ("HIGH", Color::Red),
+                        "low" => ("low ", Color::Green),
+                        _ => ("med ", Color::Yellow),
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                        Span::raw(" "),
+                        Span::raw(short_path(&file.path)),
+                    ]))
+                }
             })
             .collect();
 
+        let title = if self.filter_low { "Files (relevant)" } else { "Files" };
         let list = List::new(items)
-            .block(Block::default().borders(Borders::RIGHT).title("Files"))
+            .block(Block::default().borders(Borders::RIGHT).title(title))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
             .highlight_symbol("›");
         f.render_stateful_widget(list, area, &mut self.list_state);
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {
-        let title = self
-            .selected()
-            .map(|file| format!(" {}  +{} -{} ", file.path, file.additions, file.deletions))
-            .unwrap_or_else(|| " (no file) ".to_string());
+        let title = match self.current_row() {
+            Some(Row::Overview) => " Overview ".to_string(),
+            _ => self
+                .selected()
+                .map(|file| format!(" {}  +{} -{} ", file.path, file.additions, file.deletions))
+                .unwrap_or_else(|| " (no file) ".to_string()),
+        };
 
         let para = Paragraph::new(self.diff_cache.clone())
             .block(Block::default().title(title))
@@ -461,6 +641,7 @@ fn short_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use marrow_core::types::ChangeGroup;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -553,21 +734,55 @@ mod tests {
     }
 
     #[test]
-    fn scroll_and_file_switch_are_clamped() {
-        let m = manifest();
+    fn select_step_skips_headers_and_reaches_overview() {
+        let m = manifest(); // high.go, low.go; no groups → [Overview, File, File]
         let mut app = App::new(&m);
+        // Lands on the first (highest-risk) file.
+        assert_eq!(app.selected().map(|f| f.path.as_str()), Some("pkg/high.go"));
         // Can't scroll above the top.
         app.scroll_up(5);
         assert_eq!(app.scroll, 0);
-        // Switching files resets scroll and clamps at the ends.
-        app.scroll_down(2);
-        app.next_file();
-        assert_eq!(app.scroll, 0);
-        app.next_file(); // already last → stays last
-        assert_eq!(app.list_state.selected(), Some(1));
-        app.prev_file();
-        app.prev_file(); // already first → stays first
-        assert_eq!(app.list_state.selected(), Some(0));
+        // Forward to the next file, then clamp at the end.
+        app.select_step(true);
+        assert_eq!(app.selected().map(|f| f.path.as_str()), Some("pkg/low.go"));
+        app.select_step(true);
+        assert_eq!(app.selected().map(|f| f.path.as_str()), Some("pkg/low.go"));
+        // Backward past the first file reaches the overview (no file selected).
+        app.select_step(false);
+        app.select_step(false);
+        assert!(matches!(app.current_row(), Some(Row::Overview)));
+        assert_eq!(app.selected_file_idx(), None);
+    }
+
+    #[test]
+    fn grouping_and_low_risk_filter() {
+        let mut m = manifest();
+        m.change_groups = vec![ChangeGroup {
+            label: "Core".into(),
+            description: "core logic".into(),
+            file_paths: vec!["pkg/high.go".into()],
+        }];
+        let mut app = App::new(&m);
+        let groups = |a: &App| a.rows.iter().filter(|r| matches!(r, Row::Group(_))).count();
+        let files = |a: &App| a.rows.iter().filter(|r| matches!(r, Row::File(_))).count();
+        // Core (high.go) + Other (low.go).
+        assert_eq!(groups(&app), 2);
+        assert_eq!(files(&app), 2);
+        // Filtering low-risk drops low.go and its now-empty "Other" section.
+        app.toggle_filter();
+        assert_eq!(files(&app), 1);
+        assert_eq!(groups(&app), 1);
+    }
+
+    #[test]
+    fn overview_shows_summary_and_counts() {
+        let mut m = manifest();
+        m.summary = "This PR adds a flag.".into();
+        let mut app = App::new(&m);
+        app.select_step(false); // first file → overview
+        let out = render_to_string(&mut app, 100, 20);
+        assert!(out.contains("2 files"), "risk counts missing");
+        assert!(out.contains("This PR adds a flag"), "summary missing");
     }
 
     #[test]
