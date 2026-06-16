@@ -34,6 +34,10 @@ enum Mode {
     Normal,
     Search,
     Help,
+    /// Picking a review verb (approve / request-changes / comment).
+    ReviewPick,
+    /// Typing the review message before submitting.
+    ReviewInput,
 }
 
 /// A sidebar row. Group headers are display-only (not selectable).
@@ -58,6 +62,11 @@ struct App<'a> {
     search_input: String,
     rows: Vec<Row>,
     filter_low: bool,
+    /// The pending review verb while typing its message (ReviewInput mode).
+    review_event: &'static str,
+    review_input: String,
+    /// Last action result, shown in the header.
+    status: Option<String>,
 }
 
 impl<'a> App<'a> {
@@ -78,6 +87,9 @@ impl<'a> App<'a> {
             search_input: String::new(),
             rows: Vec::new(),
             filter_low: false,
+            review_event: "",
+            review_input: String::new(),
+            status: None,
         };
         app.rebuild_rows();
         // Land on the first (highest-risk) file rather than the overview header.
@@ -347,48 +359,113 @@ impl<'a> App<'a> {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            match self.mode {
-                Mode::Normal => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('j') | KeyCode::Down => self.scroll_down(1),
-                    KeyCode::Char('k') | KeyCode::Up => self.scroll_up(1),
-                    KeyCode::Char('g') => self.scroll = 0,
-                    KeyCode::Char('G') => self.scroll = self.diff_line_count().saturating_sub(1),
-                    KeyCode::Char(']') | KeyCode::Tab => self.select_step(true),
-                    KeyCode::Char('[') | KeyCode::BackTab => self.select_step(false),
-                    KeyCode::Char('}') => self.next_hunk(),
-                    KeyCode::Char('{') => self.prev_hunk(),
-                    KeyCode::Char('n') => self.next_finding(),
-                    KeyCode::Char('N') => self.prev_finding(),
-                    KeyCode::Char('t') => self.toggle_filter(),
-                    KeyCode::Char('?') => self.mode = Mode::Help,
-                    KeyCode::Char('/') => {
-                        self.mode = Mode::Search;
-                        self.search_input.clear();
-                    }
-                    _ => {}
-                },
-                Mode::Search => match key.code {
-                    KeyCode::Enter => {
-                        self.run_search();
-                        self.mode = Mode::Normal;
-                    }
-                    KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Backspace => {
-                        self.search_input.pop();
-                    }
-                    KeyCode::Char(c) => self.search_input.push(c),
-                    _ => {}
-                },
-                Mode::Help => match key.code {
-                    KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {
-                        self.mode = Mode::Normal
-                    }
-                    _ => {}
-                },
+            if self.on_key(key.code) {
+                break;
             }
         }
         Ok(())
+    }
+
+    /// Handle one key press. Returns true when the app should quit.
+    fn on_key(&mut self, code: KeyCode) -> bool {
+        match self.mode {
+            Mode::Normal => match code {
+                KeyCode::Char('q') | KeyCode::Esc => return true,
+                KeyCode::Char('j') | KeyCode::Down => self.scroll_down(1),
+                KeyCode::Char('k') | KeyCode::Up => self.scroll_up(1),
+                KeyCode::Char('g') => self.scroll = 0,
+                KeyCode::Char('G') => self.scroll = self.diff_line_count().saturating_sub(1),
+                KeyCode::Char(']') | KeyCode::Tab => self.select_step(true),
+                KeyCode::Char('[') | KeyCode::BackTab => self.select_step(false),
+                KeyCode::Char('}') => self.next_hunk(),
+                KeyCode::Char('{') => self.prev_hunk(),
+                KeyCode::Char('n') => self.next_finding(),
+                KeyCode::Char('N') => self.prev_finding(),
+                KeyCode::Char('t') => self.toggle_filter(),
+                KeyCode::Char('?') => self.mode = Mode::Help,
+                KeyCode::Char('R') => {
+                    self.status = None;
+                    self.mode = Mode::ReviewPick;
+                }
+                KeyCode::Char('/') => {
+                    self.mode = Mode::Search;
+                    self.search_input.clear();
+                }
+                _ => {}
+            },
+            Mode::Search => match code {
+                KeyCode::Enter => {
+                    self.run_search();
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    self.search_input.pop();
+                }
+                KeyCode::Char(c) => self.search_input.push(c),
+                _ => {}
+            },
+            Mode::Help => match code {
+                KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Normal,
+                _ => {}
+            },
+            Mode::ReviewPick => match code {
+                KeyCode::Char('a') => self.begin_review("APPROVE"),
+                KeyCode::Char('r') => self.begin_review("REQUEST_CHANGES"),
+                KeyCode::Char('c') => self.begin_review("COMMENT"),
+                KeyCode::Esc => self.mode = Mode::Normal,
+                _ => {}
+            },
+            Mode::ReviewInput => match code {
+                KeyCode::Enter => self.submit_review(),
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    self.review_input.pop();
+                }
+                KeyCode::Char(c) => self.review_input.push(c),
+                _ => {}
+            },
+        }
+        false
+    }
+
+    fn begin_review(&mut self, event: &'static str) {
+        self.review_event = event;
+        self.review_input.clear();
+        self.mode = Mode::ReviewInput;
+    }
+
+    /// Submit the pending review to GitHub. Blocks the UI briefly (the call is
+    /// quick and the flow is modal); the result lands in the status line.
+    fn submit_review(&mut self) {
+        let event = self.review_event;
+        let body = self.review_input.clone();
+        if event == "REQUEST_CHANGES" && body.trim().is_empty() {
+            // GitHub requires a body; stay in input so the user can add one.
+            self.status = Some("error: request-changes needs a message".to_string());
+            return;
+        }
+
+        let settings = marrow_core::config::load_settings();
+        let github = marrow_core::github::GithubClient::new(
+            marrow_core::config::resolve_github_token(&settings),
+        );
+        let parsed = match marrow_core::pr_parser::parse_pr_ref(&self.manifest.pr_url) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = Some(format!("error: {e}"));
+                self.mode = Mode::Normal;
+                return;
+            }
+        };
+
+        let result =
+            block_on(github.submit_review(&parsed.owner, &parsed.repo, parsed.number, event, &body));
+        self.status = Some(match result {
+            Ok(state) => format!("✓ review submitted: {state}"),
+            Err(e) => format!("error: {e}"),
+        });
+        self.mode = Mode::Normal;
     }
 
     fn ui(&mut self, f: &mut Frame) {
@@ -398,14 +475,18 @@ impl<'a> App<'a> {
             .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
             .split(f.area());
 
-        let header = Line::from(vec![
+        let mut header = vec![
             Span::styled(
                 " marrow ",
                 Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(" {} #{}", self.manifest.pr_title, self.manifest.pr_number)),
-        ]);
-        f.render_widget(Paragraph::new(header), rows[0]);
+        ];
+        if let Some(s) = &self.status {
+            let color = if s.starts_with("error") { Color::Red } else { Color::Green };
+            header.push(Span::styled(format!("   {s}"), Style::default().fg(color)));
+        }
+        f.render_widget(Paragraph::new(Line::from(header)), rows[0]);
 
         let body = Layout::default()
             .direction(Direction::Horizontal)
@@ -421,8 +502,20 @@ impl<'a> App<'a> {
                 Span::raw(self.search_input.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
             ])),
+            Mode::ReviewPick => Paragraph::new(
+                " review:  a approve · r request-changes · c comment · Esc cancel ",
+            )
+            .style(Style::default().fg(Color::Yellow)),
+            Mode::ReviewInput => Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!(" {} message: ", verb(self.review_event)),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(self.review_input.clone()),
+                Span::styled("▏  (Enter submit · Esc cancel)", Style::default().fg(Color::DarkGray)),
+            ])),
             _ => Paragraph::new(
-                " j/k scroll · ]/[ select · }/{ hunk · n/N finding · / search · t filter · ? help · q quit ",
+                " j/k scroll · ]/[ select · }/{ hunk · n/N finding · / search · t filter · R review · ? help · q quit ",
             )
             .style(Style::default().fg(Color::DarkGray)),
         };
@@ -650,6 +743,21 @@ fn short_path(path: &str) -> String {
     format!("…{tail}")
 }
 
+/// Run an async future to completion from the sync TUI loop. Valid because the
+/// loop runs on tokio's multi-thread runtime (`#[tokio::main]`); block_in_place
+/// lets us block this worker without stalling the executor.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+}
+
+fn verb(event: &str) -> &'static str {
+    match event {
+        "APPROVE" => "approve",
+        "REQUEST_CHANGES" => "request-changes",
+        _ => "comment",
+    }
+}
+
 /// A centered rectangle of the given size within `area`, clamped to fit.
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let w = width.min(area.width);
@@ -676,6 +784,9 @@ fn render_help(f: &mut Frame) {
         head("View"),
         Line::from("  /            search in file"),
         Line::from("  t            filter low-risk"),
+        Line::from(""),
+        head("Actions"),
+        Line::from("  R            submit a review"),
         Line::from(""),
         Line::from("  ?            toggle this help"),
         Line::from("  q / Esc      quit"),
@@ -891,5 +1002,40 @@ mod tests {
         let mut app = App::new(&m);
         let out = render_to_string(&mut app, 80, 20);
         assert!(out.contains("0 files"), "overview should show zero files");
+    }
+
+    #[test]
+    fn review_flow_transitions() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        // R → verb picker → approve → message input.
+        assert!(!app.on_key(KeyCode::Char('R')));
+        assert!(matches!(app.mode, Mode::ReviewPick));
+        app.on_key(KeyCode::Char('a'));
+        assert!(matches!(app.mode, Mode::ReviewInput));
+        assert_eq!(app.review_event, "APPROVE");
+        // Typing accumulates the message.
+        for c in "lgtm".chars() {
+            app.on_key(KeyCode::Char(c));
+        }
+        assert_eq!(app.review_input, "lgtm");
+        // Esc backs out without submitting; q then quits.
+        app.on_key(KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.on_key(KeyCode::Char('q')));
+    }
+
+    #[test]
+    fn request_changes_requires_message() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        app.on_key(KeyCode::Char('R'));
+        app.on_key(KeyCode::Char('r')); // REQUEST_CHANGES
+        assert!(matches!(app.mode, Mode::ReviewInput));
+        // Submitting empty hits the guard before any network call: stays in
+        // input with an error status.
+        app.on_key(KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::ReviewInput));
+        assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
     }
 }
