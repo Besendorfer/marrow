@@ -28,8 +28,15 @@ marrow settings      # check resolved config (token source is masked)
 ```
 
 You'll need a GitHub token (in the config, or `GH_TOKEN` / `GITHUB_TOKEN`) and a
-Claude model — either a model name with the `claude` CLI installed, or an AWS
-Bedrock model ARN with AWS credentials configured.
+Claude model. Simplest setup — no AWS, no extra CLI:
+
+- set `model` to a model name (e.g. `claude-sonnet-4-6`), and
+- set an Anthropic API key via `anthropic_api_key` in the config or the
+  `ANTHROPIC_API_KEY` env var ([console.anthropic.com](https://console.anthropic.com)).
+
+Alternatively, use a model name with the [`claude` CLI](https://docs.anthropic.com/en/docs/claude-cli)
+installed, or an AWS Bedrock model ARN with AWS credentials configured.
+`marrow settings` shows which backend your config resolves to.
 
 ## Usage
 

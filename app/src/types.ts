@@ -147,6 +147,7 @@ export interface Settings {
   model: string;
   github_token: string;
   aws_profile: string;
+  anthropic_api_key: string;
   filter_older: boolean;
   filter_team: boolean;
   view_mode: DiffViewMode;
