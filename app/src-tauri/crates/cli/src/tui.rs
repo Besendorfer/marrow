@@ -88,6 +88,8 @@ struct App<'a> {
     threads: Option<Vec<ReviewThread>>,
     thread_at_row: Vec<Option<usize>>,
     pending_thread: Option<usize>,
+    /// Whether we've tried the one-time startup thread load (for inline comments).
+    threads_autoloaded: bool,
     /// Last action result, shown in the header.
     status: Option<String>,
 }
@@ -118,6 +120,7 @@ impl<'a> App<'a> {
             threads: None,
             thread_at_row: Vec::new(),
             pending_thread: None,
+            threads_autoloaded: false,
             status: None,
         };
         app.rebuild_rows();
@@ -317,7 +320,15 @@ impl<'a> App<'a> {
             if file.unified_diff.is_empty() {
                 Rendered::message("(no diff)")
             } else {
-                diff_lines_for(file)
+                // Open review threads on this file, shown inline in the diff.
+                let file_threads: Vec<&ReviewThread> = self
+                    .threads
+                    .as_ref()
+                    .map(|ts| {
+                        ts.iter().filter(|t| t.path == file.path && !t.is_resolved).collect()
+                    })
+                    .unwrap_or_default();
+                diff_lines_for(file, &file_threads)
             }
         } else {
             Rendered::default()
@@ -391,6 +402,14 @@ impl<'a> App<'a> {
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         loop {
             terminal.draw(|f| self.ui(f))?;
+            // After the first frame, load review threads once so they appear
+            // inline in the diff without the user pressing T. Redraw afterwards.
+            if !self.threads_autoloaded {
+                self.threads_autoloaded = true;
+                self.ensure_threads_loaded();
+                self.cache_idx = None;
+                continue;
+            }
             // Blocking read — also delivers resize events, which just redraw.
             let Event::Key(key) = event::read()? else {
                 continue;
@@ -955,15 +974,22 @@ impl Rendered {
 }
 
 /// Render a file's diff as styled ratatui lines: syntect syntax highlighting on
-/// the code, AI-highlight comments inline (`▸` above the line they start on),
-/// and a severity gutter bar (`▍`) on covered lines. Also records the row
-/// indices of hunk headers and findings for jump navigation. Reuses the Level 1
-/// syntect + hunk-parsing helpers from the CLI module.
-fn diff_lines_for(file: &FileDiff) -> Rendered {
+/// the code, AI-highlight comments inline (`▸` above the line they start on), a
+/// severity gutter bar (`▍`) on covered lines, and open review-thread comments
+/// inline (`💬` below the line). Also records the row indices of hunk headers
+/// and findings for jump navigation.
+fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
     // new-side line → highlights starting there, and lines covered by any (for
     // the gutter bar, keeping the highest severity).
     let mut starts: HashMap<u64, Vec<&Highlight>> = HashMap::new();
     let mut covered: HashMap<u64, Color> = HashMap::new();
+    // new-side line → review threads anchored there (shown inline).
+    let mut threads_at: HashMap<u64, Vec<&ReviewThread>> = HashMap::new();
+    for t in threads {
+        if let Some(l) = t.line {
+            threads_at.entry(l).or_default().push(t);
+        }
+    }
     for h in &file.highlights {
         starts.entry(h.start_line).or_default().push(h);
         let c = sev_color(&h.severity);
@@ -1050,6 +1076,33 @@ fn diff_lines_for(file: &FileDiff) -> Rendered {
             _ => new_ln.map(|line| CommentTarget { line, side: "RIGHT" }),
         };
         targets.push(target);
+
+        // Open review-thread comments, shown inline below the line they're on.
+        if let Some(ln) = cur_new {
+            if let Some(ths) = threads_at.get(&ln) {
+                for th in ths {
+                    out.push(Line::from(Span::styled(
+                        "  💬 thread".to_string(),
+                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    )));
+                    targets.push(None);
+                    for c in &th.comments {
+                        out.push(Line::from(Span::styled(
+                            format!("    @{}", c.author.login),
+                            Style::default().fg(Color::Cyan),
+                        )));
+                        targets.push(None);
+                        for l in crate::wrap(&c.body, 72) {
+                            out.push(Line::from(Span::styled(
+                                format!("      {l}"),
+                                Style::default().fg(Color::Gray),
+                            )));
+                            targets.push(None);
+                        }
+                    }
+                }
+            }
+        }
 
         // Advance the line counters: '+' new only, '-' old only, ' ' both.
         match marker {
@@ -1549,5 +1602,28 @@ mod tests {
         app.on_key(KeyCode::Enter);
         assert!(matches!(app.mode, Mode::ReplyInput));
         assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
+    }
+
+    #[test]
+    fn open_thread_renders_inline_in_diff() {
+        let m = manifest(); // default selects pkg/high.go (lines L1 ctx, L2 added)
+        let mut app = App::new(&m);
+        app.threads = Some(vec![thread(false, "pkg/high.go", 2, "needs a guard here")]);
+        app.cache_idx = None;
+        app.sync_cache();
+        let text = lines_text(&app);
+        assert!(text.contains('💬'), "inline comment marker");
+        assert!(text.contains("@alice"), "author");
+        assert!(text.contains("needs a guard here"), "comment body");
+    }
+
+    #[test]
+    fn resolved_thread_not_shown_inline() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        app.threads = Some(vec![thread(true, "pkg/high.go", 2, "already handled")]);
+        app.cache_idx = None;
+        app.sync_cache();
+        assert!(!lines_text(&app).contains("already handled"), "resolved threads stay out of the diff");
     }
 }
