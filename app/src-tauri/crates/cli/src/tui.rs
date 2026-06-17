@@ -497,6 +497,9 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('c') => self.begin_comment(),
                 KeyCode::Char('T') => self.open_threads(),
+                // Manual refresh: pull comments/replies from others in place.
+                KeyCode::F(5) => self.refresh_threads(),
+                KeyCode::Char('r') if ctrl => self.refresh_threads(),
                 KeyCode::Char('r') => self.begin_reply(),
                 KeyCode::Char('x') => self.toggle_resolve(),
                 KeyCode::Char('/') => {
@@ -662,10 +665,15 @@ impl<'a> App<'a> {
             Some(sl) => format!("{}:{sl}-{}", target.side, target.line),
             None => format!("{}:{}", target.side, target.line),
         };
-        self.status = Some(match result {
-            Ok(_) => format!("✓ comment added on {span}"),
-            Err(e) => format!("error: {e}"),
-        });
+        match result {
+            // Insert the new thread locally so it shows inline immediately,
+            // without waiting for a refresh.
+            Ok(thread) => {
+                self.append_thread(thread);
+                self.status = Some(format!("✓ comment added on {span}"));
+            }
+            Err(e) => self.status = Some(format!("error: {e}")),
+        }
         self.mode = Mode::Normal;
     }
 
@@ -728,9 +736,9 @@ impl<'a> App<'a> {
         self.thread_at_row.get(self.cursor as usize).copied().flatten()
     }
 
-    /// Load threads (if needed) and switch to the threads view.
+    /// Re-fetch threads and switch to the threads view ("T reload").
     fn open_threads(&mut self) {
-        self.ensure_threads_loaded();
+        self.refresh_threads();
         if let Some(pos) = self.rows.iter().position(|r| matches!(r, Row::Threads)) {
             self.list_state.select(Some(pos));
             self.cursor = 0;
@@ -738,17 +746,24 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Load threads only if we haven't yet (the one-time startup load).
     fn ensure_threads_loaded(&mut self) {
-        if self.threads.is_some() {
-            return;
+        if self.threads.is_none() {
+            self.refresh_threads();
         }
+    }
+
+    /// Force a re-fetch of review threads so comments/replies from others show
+    /// up. Replaces the current set and re-renders the open view.
+    fn refresh_threads(&mut self) {
         let Some((github, pr)) = self.github_and_pr() else {
             return;
         };
         match block_on(github.get_review_threads(&pr.owner, &pr.repo, pr.number)) {
             Ok(t) => {
-                self.status = Some(format!("loaded {} thread(s)", t.len()));
+                self.status = Some(format!("↻ {} thread(s)", t.len()));
                 self.threads = Some(t);
+                self.cache_idx = None;
             }
             Err(e) => self.status = Some(format!("error: {e}")),
         }
@@ -799,11 +814,32 @@ impl<'a> App<'a> {
             let pr_id = github.get_pull_request_id(&pr.owner, &pr.repo, pr.number).await?;
             github.reply_to_review_thread(&pr_id, &comment_id, &body).await
         });
-        self.status = Some(match result {
-            Ok(_) => "✓ reply posted".to_string(),
-            Err(e) => format!("error: {e}"),
-        });
+        match result {
+            // Append the reply to the thread locally so it shows right away.
+            Ok(comment) => {
+                if let Some(idx) = self.pending_thread {
+                    self.append_reply(idx, comment);
+                }
+                self.status = Some("✓ reply posted".to_string());
+            }
+            Err(e) => self.status = Some(format!("error: {e}")),
+        }
         self.mode = Mode::Normal;
+    }
+
+    /// Append a posted reply to its thread locally so it renders without a
+    /// refresh round-trip.
+    fn append_reply(&mut self, idx: usize, comment: marrow_core::types::ReviewComment) {
+        if let Some(th) = self.threads.as_mut().and_then(|t| t.get_mut(idx)) {
+            th.comments.push(comment);
+            self.cache_idx = None;
+        }
+    }
+
+    /// Insert a newly-posted thread locally so it renders inline immediately.
+    fn append_thread(&mut self, thread: ReviewThread) {
+        self.threads.get_or_insert_with(Vec::new).push(thread);
+        self.cache_idx = None;
     }
 
     /// Resolve / reopen the thread under the cursor (threads view only).
@@ -1422,7 +1458,8 @@ fn render_help(f: &mut Frame) {
         Line::from("  R            submit a review"),
         Line::from(""),
         head("Threads"),
-        Line::from("  T            load / open threads"),
+        Line::from("  T            open / reload threads"),
+        Line::from("  F5 / ^r      refresh (pull others' updates)"),
         Line::from("  r            reply (threads view or 💬 in diff)"),
         Line::from("  x            resolve / reopen"),
         Line::from(""),
@@ -1833,6 +1870,46 @@ mod tests {
         app.cursor = 0; // hunk header
         press(&mut app, KeyCode::Char('r'));
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    fn comment(author: &str, body: &str) -> ReviewComment {
+        ReviewComment {
+            id: "c2".into(),
+            body: body.into(),
+            author: CommentAuthor { login: author.into(), avatar_url: String::new() },
+            created_at: String::new(),
+            updated_at: String::new(),
+            url: String::new(),
+            reactions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn appended_reply_shows_in_diff_immediately() {
+        let m = manifest(); // default selects pkg/high.go (L2 added)
+        let mut app = App::new(&m);
+        app.threads = Some(vec![thread(false, "pkg/high.go", 2, "please fix")]);
+        app.cache_idx = None;
+        app.sync_cache();
+        assert!(!lines_text(&app).contains("fixed in latest"), "reply not present yet");
+        // Simulate the optimistic insert after a successful post.
+        app.append_reply(0, comment("bob", "fixed in latest"));
+        app.sync_cache();
+        let text = lines_text(&app);
+        assert!(text.contains("fixed in latest"), "reply shows without a refresh");
+        assert!(text.contains("@bob"), "reply author shows");
+    }
+
+    #[test]
+    fn appended_thread_shows_in_diff_immediately() {
+        let m = manifest(); // default selects pkg/high.go (L2 added)
+        let mut app = App::new(&m);
+        app.threads = None; // nothing loaded yet
+        app.sync_cache();
+        assert!(!lines_text(&app).contains("brand new note"), "no thread yet");
+        app.append_thread(thread(false, "pkg/high.go", 2, "brand new note"));
+        app.sync_cache();
+        assert!(lines_text(&app).contains("brand new note"), "new thread shows inline at once");
     }
 
     #[test]
