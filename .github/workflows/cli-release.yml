@@ -22,7 +22,9 @@ jobs:
         include:
           - runner: macos-14 # Apple Silicon
             target: aarch64-apple-darwin
-          - runner: macos-13 # Intel
+          # Intel macOS, cross-compiled on Apple Silicon — the macos-13 (Intel)
+          # runner image is scarce/deprecated and queues for a long time.
+          - runner: macos-14
             target: x86_64-apple-darwin
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
