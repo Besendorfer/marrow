@@ -82,6 +82,13 @@ The workflow builds for macOS (arm64 + Intel), Linux (x86_64), and Windows
 
 Review and **publish the draft release**, then the tarball download links work.
 
+> **Checksum integrity.** `marrow.rb`'s `sha256`s are generated from the exact
+> tarballs in the same workflow run, so they match by construction. Just don't
+> rebuild or replace release assets after the run — Rust builds aren't
+> byte-reproducible, so a rebuilt binary has a different hash and would no
+> longer match the generated formula. Publish the draft as-is, and always take
+> `marrow.rb` from the **same** release the binaries are on.
+
 ### Homebrew tap (one-time setup)
 
 The tap lives in a repo named **`homebrew-marrow`** (Homebrew maps the tap
