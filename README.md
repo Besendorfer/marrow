@@ -90,11 +90,24 @@ Settings are stored in `~/.config/marrow/config` (run `marrow init` to scaffold 
 
 | Setting | Description |
 |---|---|
-| `model` | Claude model name (e.g. `claude-sonnet-4-6`) or AWS Bedrock ARN |
-| `github_token` | GitHub personal access token (optional if `GH_TOKEN` or `GITHUB_TOKEN` env var is set) |
+| `model` | Model name (`claude*` / `gpt*` / `gemini*`) or AWS Bedrock ARN |
+| `github_token` | GitHub personal access token (optional if `GH_TOKEN` / `GITHUB_TOKEN` env var is set) |
+| `anthropic_api_key` | Anthropic API key for `claude*` models (or `ANTHROPIC_API_KEY`) |
+| `openai_api_key` | OpenAI / OpenAI-compatible key for `gpt*`/`o3*` (or `OPENAI_API_KEY`) |
+| `gemini_api_key` | Gemini key for `gemini*` models (or `GEMINI_API_KEY`) |
+| `provider` | Optional override (`openai` / `gemini` / `openai-compatible` / …); blank = auto-detect |
+| `openai_base_url` | OpenAI-compatible base URL for OpenRouter / a local server (or `OPENAI_BASE_URL`) |
 | `aws_profile` | AWS profile name (only used with Bedrock ARNs; uses default credential chain if empty) |
 
 GitHub token resolution order: config file > `GH_TOKEN` env > `GITHUB_TOKEN` env.
+
+> **Secret storage.** The token and API keys are written to this config file in
+> **plaintext** (`0600` / owner-only on macOS & Linux; user-profile ACLs on
+> Windows). Keys are never logged or printed (`marrow settings` shows only
+> `set` / `not set`). To keep secrets off disk, leave the fields blank and use
+> the environment variables instead. Note that `~/.config` can be picked up by
+> backups / dotfile sync. See [SECURITY.md](SECURITY.md); OS-keychain storage
+> is a tracked future enhancement.
 
 When using a Bedrock ARN, the AWS region is extracted automatically from the ARN. When using a model name, the app invokes the `claude` CLI.
 
