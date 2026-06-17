@@ -89,22 +89,27 @@ Review and **publish the draft release**, then the tarball download links work.
 > longer match the generated formula. Publish the draft as-is, and always take
 > `marrow.rb` from the **same** release the binaries are on.
 
-### Homebrew tap (one-time setup)
+### Homebrew tap
 
-The tap lives in a repo named **`homebrew-marrow`** (Homebrew maps the tap
-`besendorfer/marrow` → the repo `homebrew-marrow`):
+The formula lives in the **umbrella tap** `besendorfer/tap` (repo
+[`Besendorfer/homebrew-tap`](https://github.com/Besendorfer/homebrew-tap)) — one
+tap for all of Besendorfer's tools, so users tap once and `brew install` any of
+them. (The old per-project `homebrew-marrow` tap is deprecated and redirects
+here.)
 
-1. Create the repo `Besendorfer/homebrew-marrow`.
-2. After each CLI release, copy the generated `marrow.rb` from the release into
-   `Formula/marrow.rb` in that repo and push.
-
-Users then install with the short name after a one-time tap:
+After each CLI release, copy the generated `marrow.rb` from the release into
+`Formula/marrow.rb` in the tap repo and push. Users then install with the short
+name after a one-time tap:
 
 ```bash
-brew tap besendorfer/marrow
+brew tap besendorfer/tap
 brew install marrow
-# (or, without tapping first: brew install besendorfer/marrow/marrow)
+# (or, without tapping first: brew install besendorfer/tap/marrow)
 ```
+
+> **Untrusted-tap error?** If a user's Homebrew has `HOMEBREW_REQUIRE_TAP_TRUST`
+> set, it refuses non-official taps until trusted: `brew trust besendorfer/tap`
+> (one-time, per machine). Only homebrew-core formulae are exempt.
 
 > Future automation: have `cli-release.yml` push `marrow.rb` to the tap repo
 > directly (needs a `HOMEBREW_TAP_TOKEN` secret with write access to the tap).
