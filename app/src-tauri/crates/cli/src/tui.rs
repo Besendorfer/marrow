@@ -1081,6 +1081,9 @@ const COMMENT_BG: Color = Color::Rgb(52, 42, 75);
 /// Cursor-line background, and the line-selection range background.
 const CURSOR_BG: Color = Color::Rgb(45, 50, 60);
 const SELECT_BG: Color = Color::Rgb(38, 48, 70);
+/// Faint backgrounds for added / removed diff lines.
+const ADD_BG: Color = Color::Rgb(20, 45, 28);
+const DEL_BG: Color = Color::Rgb(52, 28, 30);
 
 /// Render a file's diff as styled ratatui lines: syntect syntax highlighting on
 /// the code, AI-highlight comments inline (`▸` above the line they start on), a
@@ -1169,6 +1172,13 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
             }
         }
 
+        // Faint full-width background tint so added/removed lines stand out from
+        // context (the trailing pad fills the row; Paragraph truncates it).
+        let line_bg = match marker {
+            '+' => Some(ADD_BG),
+            '-' => Some(DEL_BG),
+            _ => None,
+        };
         let mut spans: Vec<Span> = Vec::new();
         match cur_new.and_then(|ln| covered.get(&ln)) {
             Some(&c) => spans.push(Span::styled("▍", Style::default().fg(c))),
@@ -1176,7 +1186,13 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
         }
         spans.push(Span::styled(marker.to_string(), Style::default().fg(marker_color)));
         spans.extend(highlight_spans(rest, syntax));
-        out.push(Line::from(spans));
+        match line_bg {
+            Some(bg) => {
+                spans.push(Span::raw(" ".repeat(200)));
+                out.push(Line::from(spans).style(Style::default().bg(bg)));
+            }
+            None => out.push(Line::from(spans)),
+        }
 
         // Comment target: removed lines map to the old side, everything else
         // (added/context) to the new side.
@@ -1789,6 +1805,18 @@ mod tests {
         assert_eq!(app.selection_anchor, Some(1));
         press(&mut app, KeyCode::Char('v'));
         assert_eq!(app.selection_anchor, None);
+    }
+
+    #[test]
+    fn added_and_removed_lines_get_background() {
+        let f = file("pkg/d.go", "high", "@@ -1,1 +1,2 @@\n ctx\n-gone\n+new\n");
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+        // rows: 0 @@, 1 context, 2 removed, 3 added
+        assert_eq!(app.diff_cache[1].style.bg, None, "context line has no tint");
+        assert_eq!(app.diff_cache[2].style.bg, Some(DEL_BG), "removed line tinted");
+        assert_eq!(app.diff_cache[3].style.bg, Some(ADD_BG), "added line tinted");
     }
 
     #[test]
