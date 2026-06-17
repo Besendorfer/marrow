@@ -66,7 +66,7 @@ You'll need:
 
 ## Configuration
 
-Settings are stored in `~/.config/relevant-reviews/config` and can be edited from the app's Settings modal.
+Settings are stored in `~/.config/marrow/config` (run `marrow init` to scaffold it) and can be edited from the app's Settings modal.
 
 | Setting | Description |
 |---|---|

@@ -1,17 +1,88 @@
 use crate::types::Settings;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+/// The directory Marrow stores its config, cache, session, and viewed-state in.
+///
+/// - Linux / macOS: `$XDG_CONFIG_HOME/marrow`, else `~/.config/marrow`
+/// - Windows: `%APPDATA%\marrow`
+///
+/// On first access, if this dir doesn't exist yet but the pre-rename
+/// `~/.config/relevant-reviews/` dir does, its contents are copied over so
+/// tokens/settings survive the rename. The old dir is left intact as a fallback.
 pub fn app_config_dir() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".config")
-        .join("relevant-reviews")
+    let dir = config_base().join("marrow");
+    migrate_legacy_config(legacy_config_dir(), &dir);
+    dir
 }
 
 pub fn config_path() -> PathBuf {
     app_config_dir().join("config")
+}
+
+/// The platform's base config directory (the parent of the `marrow` dir).
+fn config_base() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = env::var("APPDATA") {
+            if !appdata.is_empty() {
+                return PathBuf::from(appdata);
+            }
+        }
+        return PathBuf::from(env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()))
+            .join("AppData")
+            .join("Roaming");
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
+            if !xdg.is_empty() {
+                return PathBuf::from(xdg);
+            }
+        }
+        let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(home).join(".config")
+    }
+}
+
+/// The pre-rename config dir (always `~/.config/relevant-reviews/`, as the old
+/// code hardcoded it). `None` if `HOME` is unset.
+fn legacy_config_dir() -> Option<PathBuf> {
+    let home = env::var("HOME").ok().filter(|h| !h.is_empty())?;
+    Some(PathBuf::from(home).join(".config").join("relevant-reviews"))
+}
+
+/// One-time, non-destructive migration: if `new` doesn't exist yet but `old`
+/// does, copy `old`'s contents into `new`, leaving `old` untouched. Best-effort
+/// — a copy failure must not break config access (we just fall through to a
+/// fresh config dir).
+fn migrate_legacy_config(old: Option<PathBuf>, new: &Path) {
+    if new.exists() {
+        return;
+    }
+    let Some(old) = old else { return };
+    if !old.exists() || old.as_path() == new {
+        return;
+    }
+    let _ = copy_dir_all(&old, new);
+}
+
+/// Recursively copy a directory's contents (files keep their permissions, so a
+/// `0600` config stays `0600`).
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 fn default_settings() -> Settings {
@@ -138,4 +209,65 @@ pub fn resolve_github_token(settings: &Settings) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A unique, never-reused temp path (no rand/time dependency).
+    fn unique_tmp(tag: &str) -> PathBuf {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        env::temp_dir().join(format!("marrow-cfgtest-{}-{}-{}", tag, std::process::id(), n))
+    }
+
+    #[test]
+    fn migrate_copies_contents_when_new_absent() {
+        let old = unique_tmp("old");
+        let new = unique_tmp("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("config"), "github_token=abc\n").unwrap();
+        fs::create_dir_all(old.join("cache")).unwrap();
+        fs::write(old.join("cache").join("x.json"), "{}").unwrap();
+
+        migrate_legacy_config(Some(old.clone()), &new);
+
+        assert_eq!(fs::read_to_string(new.join("config")).unwrap(), "github_token=abc\n");
+        assert!(new.join("cache").join("x.json").exists(), "nested files copied");
+        assert!(old.join("config").exists(), "old dir left intact (non-destructive)");
+
+        let _ = fs::remove_dir_all(&old);
+        let _ = fs::remove_dir_all(&new);
+    }
+
+    #[test]
+    fn migrate_is_noop_when_new_already_exists() {
+        let old = unique_tmp("old");
+        let new = unique_tmp("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("config"), "old\n").unwrap();
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join("config"), "new\n").unwrap();
+
+        migrate_legacy_config(Some(old.clone()), &new);
+        assert_eq!(
+            fs::read_to_string(new.join("config")).unwrap(),
+            "new\n",
+            "an existing config dir is never overwritten"
+        );
+
+        let _ = fs::remove_dir_all(&old);
+        let _ = fs::remove_dir_all(&new);
+    }
+
+    #[test]
+    fn migrate_is_noop_without_a_legacy_dir() {
+        let new = unique_tmp("new");
+        migrate_legacy_config(None, &new);
+        assert!(!new.exists(), "nothing is created when HOME/legacy dir is absent");
+        migrate_legacy_config(Some(unique_tmp("missing")), &new);
+        assert!(!new.exists(), "nothing is created when the legacy dir doesn't exist");
+    }
 }

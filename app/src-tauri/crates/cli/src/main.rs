@@ -16,7 +16,7 @@ use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::as_24_bit_terminal_escaped;
 
-use marrow_core::config::{load_settings, resolve_github_token};
+use marrow_core::config::{app_config_dir, config_path, load_settings, resolve_github_token};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
 use marrow_core::types::{FetchProgress, FetchStatus, FileDiff, Highlight, ReviewManifest, ReviewThread};
@@ -162,6 +162,9 @@ enum Command {
     },
     /// Print resolved settings (token source is masked)
     Settings,
+    /// Create the config directory and a starter config file (migrates the
+    /// pre-rename dir if present)
+    Init,
 }
 
 #[tokio::main]
@@ -227,6 +230,7 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
             settings_cmd();
             Ok(())
         }
+        Command::Init => init_cmd(),
     }
 }
 
@@ -781,6 +785,49 @@ async fn checks(pr: &str, json: bool) -> Result<(), String> {
 }
 
 // ── settings ────────────────────────────────────────────────────────────────
+
+/// A commented starter config written by `marrow init` when none exists.
+const CONFIG_TEMPLATE: &str = "\
+# Marrow config — https://github.com/Besendorfer/marrow
+# GitHub personal access token (optional for public repos; or set GH_TOKEN / GITHUB_TOKEN).
+github_token=
+# Claude model name (e.g. claude-sonnet-4-6) or an AWS Bedrock model ARN.
+model=
+# AWS profile name (only used with Bedrock ARNs).
+aws_profile=
+";
+
+/// Ensure the config directory exists (migrating the pre-rename dir if present)
+/// and scaffold a starter config file. Idempotent — never clobbers an existing
+/// config.
+fn init_cmd() -> Result<(), String> {
+    // Resolving the dir also runs the one-time legacy migration.
+    let dir = app_config_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create config dir: {e}"))?;
+
+    let cfg = config_path();
+    let created = !cfg.exists();
+    if created {
+        std::fs::write(&cfg, CONFIG_TEMPLATE).map_err(|e| format!("write config: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+
+    println!("{} config dir: {}", paint("✓", GREEN), dir.display());
+    let note = if created { "wrote starter config" } else { "config already exists" };
+    println!("  {note}: {}", paint(&cfg.display().to_string(), DIM));
+    println!();
+    println!(
+        "Add your GitHub token to the config, or set {} / {}.",
+        paint("GH_TOKEN", CYAN),
+        paint("GITHUB_TOKEN", CYAN)
+    );
+    println!("Then run {} to verify.", paint("marrow settings", CYAN));
+    Ok(())
+}
 
 fn settings_cmd() {
     let s = load_settings();
