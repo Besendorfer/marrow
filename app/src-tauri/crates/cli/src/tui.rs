@@ -988,10 +988,9 @@ impl<'a> App<'a> {
                         Span::raw("  "),
                         Span::styled(short_path(&file.path, 22), Style::default().fg(color)),
                         Span::raw("  "),
-                        Span::styled(
-                            format!("+{} -{}", file.additions, file.deletions),
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled(format!("+{}", file.additions), Style::default().fg(Color::Green)),
+                        Span::raw(" "),
+                        Span::styled(format!("-{}", file.deletions), Style::default().fg(Color::Red)),
                     ]))
                 }
             })
@@ -1000,7 +999,7 @@ impl<'a> App<'a> {
         let title = if self.filter_low { "Files (relevant)" } else { "Files" };
         let list = List::new(items)
             .block(Block::default().borders(Borders::RIGHT).title(title))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_style(Style::default().bg(CURSOR_BG))
             .highlight_symbol("›");
         f.render_stateful_widget(list, area, &mut self.list_state);
     }
