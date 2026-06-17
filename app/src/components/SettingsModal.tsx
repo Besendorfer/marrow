@@ -145,7 +145,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           <h3 className="settings-section-title">Browser Integration</h3>
           <p className="settings-hint">
             Drag this link to your bookmark bar. When you're on a GitHub PR
-            page, click it to open the PR directly in Relevant Reviews.
+            page, click it to open the PR directly in Marrow.
           </p>
           <a
             className="bookmarklet-link"
@@ -153,7 +153,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             onClick={(e) => e.preventDefault()}
             draggable
           >
-            Open in Relevant Reviews
+            Open in Marrow
           </a>
 
           <div className="settings-actions">

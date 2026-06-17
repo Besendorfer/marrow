@@ -1,4 +1,4 @@
-//! `marrow` — a thin terminal frontend over the Relevant Reviews Rust core.
+//! `marrow` — a thin terminal frontend over the `marrow-core` Rust core.
 //!
 //! This is a prototype to evaluate a TUI/CLI direction. It deliberately reuses
 //! the exact same modules the desktop app's Tauri commands call — `github.rs`,
@@ -34,7 +34,7 @@ enum ColorWhen {
 #[derive(Parser)]
 #[command(
     name = "marrow",
-    about = "Relevant Reviews in your terminal (prototype CLI over the shared Rust core)",
+    about = "Marrow in your terminal — surface the PR changes that matter",
     version
 )]
 struct Cli {

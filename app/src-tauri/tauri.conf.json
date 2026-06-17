@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nickkadutskyi/jb-tauri-plugin/refs/heads/main/schemas/tauri.conf.json",
-  "productName": "Relevant Reviews",
+  "productName": "Marrow",
   "version": "0.3.1",
   "identifier": "com.relevant-reviews.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Relevant Reviews",
+        "title": "Marrow",
         "width": 1400,
         "height": 900
       }
@@ -50,7 +50,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/Besendorfer/relevant-reviews/releases/latest/download/latest.json"
+        "https://github.com/Besendorfer/marrow/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDczMjNBNDJERkRBNjRBQjEKUldTeFNxYjlMYVFqYzZ0MnJVRHJ0MDJiSU5rb1ZhSmVBbHRlaDFVUkwvYldGQkVyMWpvc0lHTVEK"
     }

@@ -1,4 +1,4 @@
-# Contributing to Relevant Reviews
+# Contributing to Marrow
 
 Thanks for your interest in contributing! This guide covers how to get started.
 
@@ -28,7 +28,7 @@ bun run tauri build
 
 ## Reporting bugs
 
-Open a [bug report](https://github.com/Besendorfer/relevant-reviews/issues/new?template=bug_report.yml). Include:
+Open a [bug report](https://github.com/Besendorfer/marrow/issues/new?template=bug_report.yml). Include:
 
 - Steps to reproduce
 - Expected vs actual behavior
@@ -37,7 +37,7 @@ Open a [bug report](https://github.com/Besendorfer/relevant-reviews/issues/new?t
 
 ## Suggesting features
 
-Open a [feature request](https://github.com/Besendorfer/relevant-reviews/issues/new?template=feature_request.yml) describing the problem you're trying to solve and your proposed solution.
+Open a [feature request](https://github.com/Besendorfer/marrow/issues/new?template=feature_request.yml) describing the problem you're trying to solve and your proposed solution.
 
 ## Pull requests
 

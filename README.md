@@ -1,31 +1,31 @@
-# Relevant Reviews
+# Marrow
 
-[![GitHub Release](https://img.shields.io/github/v/release/Besendorfer/relevant-reviews?label=release)](https://github.com/Besendorfer/relevant-reviews/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Besendorfer/relevant-reviews/total)](https://github.com/Besendorfer/relevant-reviews/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/Besendorfer/marrow?label=release)](https://github.com/Besendorfer/marrow/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Besendorfer/marrow/total)](https://github.com/Besendorfer/marrow/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey)](https://github.com/Besendorfer/relevant-reviews/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey)](https://github.com/Besendorfer/marrow/releases/latest)
 
 A desktop app that uses AI to surface only the parts of a GitHub pull request that matter -- business logic, infrastructure, API changes -- so you can focus your review where it counts.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="Relevant Reviews showing a PR with AI-annotated diffs and change groups" width="900" />
+  <img src="assets/screenshot.png" alt="Marrow showing a PR with AI-annotated diffs and change groups" width="900" />
 </p>
 
 ## Why?
 
 A typical pull request touches 30-50 files. Most of them are UI components, tests, lock files, and config -- noise that buries the changes that actually matter. Reviewers either spend time scrolling past irrelevant diffs or start skimming and miss critical logic changes.
 
-Relevant Reviews loads a PR, uses AI to classify every file by what it contains, and surfaces only the business logic, infrastructure, and API changes. A second AI pass highlights the specific lines that deserve attention -- auth changes, removed safety checks, breaking API contracts -- so you know exactly where to focus.
+Marrow loads a PR, uses AI to classify every file by what it contains, and surfaces only the business logic, infrastructure, and API changes. A second AI pass highlights the specific lines that deserve attention -- auth changes, removed safety checks, breaking API contracts -- so you know exactly where to focus.
 
-**In a typical 40-file PR, only 8-12 files contain reviewable business logic. Relevant Reviews finds them in seconds.**
+**In a typical 40-file PR, only 8-12 files contain reviewable business logic. Marrow finds them in seconds.**
 
 ## Download
 
-**[Download for macOS (Apple Silicon)](https://github.com/Besendorfer/relevant-reviews/releases/latest/download/Relevant.Reviews_aarch64.dmg)**
+**[Download for macOS (Apple Silicon)](https://github.com/Besendorfer/marrow/releases/latest/download/Marrow_aarch64.dmg)**
 
-Or browse [all releases](https://github.com/Besendorfer/relevant-reviews/releases).
+Or browse [all releases](https://github.com/Besendorfer/marrow/releases).
 
-> The app is signed and notarized by Apple. After downloading the `.dmg`, open it and drag "Relevant Reviews" to your Applications folder. Auto-updates are built in -- you'll be notified when new versions are available.
+> The app is signed and notarized by Apple. After downloading the `.dmg`, open it and drag "Marrow" to your Applications folder. Auto-updates are built in -- you'll be notified when new versions are available.
 
 ## How it works
 
@@ -94,7 +94,7 @@ bun install
 bun run tauri build
 ```
 
-The built app will be at `app/src-tauri/target/release/bundle/macos/Relevant Reviews.app`.
+The built app will be at `app/src-tauri/target/release/bundle/macos/Marrow.app`.
 
 ### Development
 

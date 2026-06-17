@@ -1233,7 +1233,7 @@ function App() {
                     <pre>{activeTab.error}</pre>
                   </div>
                 )}
-                <h1>Relevant Reviews</h1>
+                <h1>Marrow</h1>
                 <p>
                   Drop a manifest JSON file here, or enter a PR URL below to start
                   a review.

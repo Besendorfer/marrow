@@ -22,7 +22,7 @@ You should receive a response within 72 hours. Once confirmed, a fix will be pri
 
 This policy covers:
 
-- The Relevant Reviews desktop application
+- The Marrow desktop application
 - The `rr` CLI script
 - GitHub API token handling
 - AWS credential handling
