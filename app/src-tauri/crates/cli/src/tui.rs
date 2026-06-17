@@ -973,6 +973,9 @@ impl Rendered {
     }
 }
 
+/// Background tint for inline review-comment blocks (a muted dark purple).
+const COMMENT_BG: Color = Color::Rgb(52, 42, 75);
+
 /// Render a file's diff as styled ratatui lines: syntect syntax highlighting on
 /// the code, AI-highlight comments inline (`▸` above the line they start on), a
 /// severity gutter bar (`▍`) on covered lines, and open review-thread comments
@@ -1077,27 +1080,42 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
         };
         targets.push(target);
 
-        // Open review-thread comments, shown inline below the line they're on.
+        // Open review-thread comments, shown inline below the line they're on,
+        // on a tinted background with a magenta left bar so they stand out.
         if let Some(ln) = cur_new {
             if let Some(ths) = threads_at.get(&ln) {
-                for th in ths {
-                    out.push(Line::from(Span::styled(
-                        "  💬 thread".to_string(),
-                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-                    )));
+                let bg = Style::default().bg(COMMENT_BG);
+                // Trailing pad so the line's background fills the row into a band
+                // (a Line's bg only covers the cells it occupies).
+                let bar = || Span::styled("▌ ", Style::default().fg(Color::Magenta));
+                let pad = || Span::raw(" ".repeat(160));
+                let mut push = |spans: Vec<Span<'static>>| {
+                    let mut s = spans;
+                    s.push(pad());
+                    out.push(Line::from(s).style(bg));
                     targets.push(None);
+                };
+                for th in ths {
+                    push(vec![
+                        bar(),
+                        Span::styled(
+                            "💬 thread",
+                            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                        ),
+                    ]);
                     for c in &th.comments {
-                        out.push(Line::from(Span::styled(
-                            format!("    @{}", c.author.login),
-                            Style::default().fg(Color::Cyan),
-                        )));
-                        targets.push(None);
+                        push(vec![
+                            bar(),
+                            Span::styled(
+                                format!("@{}", c.author.login),
+                                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                            ),
+                        ]);
                         for l in crate::wrap(&c.body, 72) {
-                            out.push(Line::from(Span::styled(
-                                format!("      {l}"),
-                                Style::default().fg(Color::Gray),
-                            )));
-                            targets.push(None);
+                            push(vec![
+                                bar(),
+                                Span::styled(format!("  {l}"), Style::default().fg(Color::White)),
+                            ]);
                         }
                     }
                 }
