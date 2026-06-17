@@ -1,0 +1,107 @@
+name: CLI Release
+
+# Builds the `marrow` CLI binary for macOS/Linux/Windows and attaches the
+# tarballs, checksums, and a generated Homebrew formula to a GitHub release.
+#
+# Independent of the desktop app's `release.yml` (which uses `v*` tags): the CLI
+# versions separately, so it uses its own `cli-v*` tags, e.g. `cli-v0.1.0-alpha.1`.
+on:
+  push:
+    tags:
+      - "cli-v*"
+  workflow_dispatch: # build-only smoke test (no release upload)
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14 # Apple Silicon
+            target: aarch64-apple-darwin
+          - runner: macos-13 # Intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          key: ${{ matrix.target }}
+
+      # `-p marrow-cli` builds only the CLI + its deps — not the Tauri desktop
+      # crate — so no webkit/system deps are needed on the runners.
+      - name: Build
+        working-directory: app/src-tauri
+        run: cargo build -p marrow-cli --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          NAME="marrow-${{ matrix.target }}"
+          STAGE="$RUNNER_TEMP/$NAME"
+          mkdir -p "$STAGE"
+          cp "app/src-tauri/target/${{ matrix.target }}/release/marrow" "$STAGE/"
+          cp LICENSE "$STAGE/" 2>/dev/null || true
+          cp app/src-tauri/crates/cli/README.md "$STAGE/README.md" 2>/dev/null || true
+          mkdir -p dist
+          tar -czf "dist/$NAME.tar.gz" -C "$STAGE" .
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          NAME="marrow-${{ matrix.target }}"
+          STAGE="$RUNNER_TEMP/$NAME"
+          mkdir -p "$STAGE"
+          cp "app/src-tauri/target/${{ matrix.target }}/release/marrow.exe" "$STAGE/"
+          cp LICENSE "$STAGE/" 2>/dev/null || true
+          mkdir -p dist
+          (cd "$STAGE" && 7z a "$GITHUB_WORKSPACE/dist/$NAME.zip" .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marrow-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums + Homebrew formula
+        run: |
+          VERSION="${GITHUB_REF_NAME#cli-v}"
+          (cd dist && sha256sum marrow-* > SHA256SUMS && cat SHA256SUMS)
+          bash .github/scripts/gen-homebrew-formula.sh "$VERSION" dist "$GITHUB_REPOSITORY" > dist/marrow.rb
+          echo "--- generated formula ---" && cat dist/marrow.rb
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist/marrow-*.tar.gz
+            dist/marrow-*.zip
+            dist/SHA256SUMS
+            dist/marrow.rb

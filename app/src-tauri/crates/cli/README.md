@@ -14,11 +14,17 @@ built on the shared `marrow-core` crate (no Tauri, no webview).
 ## Install
 
 ```bash
+# Homebrew (macOS / Linux):
+brew tap besendorfer/marrow
+brew install marrow
+
+# Cargo (from crates.io):
 cargo install marrow-cli
 ```
 
-The crate is published as `marrow-cli` (the bare `marrow` name is taken on
-crates.io), but it installs a command named **`marrow`**.
+Or download a prebuilt binary from the `cli-v*` GitHub releases. The crate is
+published as `marrow-cli` (the bare `marrow` name is taken on crates.io), but it
+installs a command named **`marrow`**.
 
 ## Setup
 

@@ -29,20 +29,25 @@ Or browse [all releases](https://github.com/Besendorfer/marrow/releases).
 
 ## Terminal (CLI/TUI)
 
-Marrow also ships as a terminal app -- the same fetch/classify/review workflow in an interactive TUI, built on the same core (no webview).
+Marrow also ships as a terminal app -- the same fetch/classify/review workflow in an interactive TUI, built on the same core (no webview). It installs a command named **`marrow`**.
 
 ```bash
-# From a clone (works today):
-cargo install --path app/src-tauri/crates/cli
+# Homebrew (macOS / Linux):
+brew tap besendorfer/marrow
+brew install marrow
 
-# From crates.io (once published — the crate is `marrow-cli`, the command is `marrow`):
-cargo install marrow-cli
+# Prebuilt binary: download a tarball for your platform from the CLI releases
+# (tags starting `cli-v`) and put `marrow` on your PATH.
+
+# Cargo (builds from source):
+cargo install marrow-cli            # crates.io  (add --version 0.1.0-alpha.1 while pre-release)
+cargo install --path app/src-tauri/crates/cli   # from a clone
 
 marrow init        # scaffold ~/.config/marrow/config
 marrow review <pr> # fetch + classify, then open the TUI
 ```
 
-`<pr>` is a URL, `owner/repo/pull/N`, or `owner/repo#N`. See [the CLI readme](app/src-tauri/crates/cli/README.md) for the full command list.
+`<pr>` is a URL, `owner/repo/pull/N`, or `owner/repo#N`. See [the CLI readme](app/src-tauri/crates/cli/README.md) for the full command list. Homebrew needs the tap to exist -- see [PUBLISHING.md](PUBLISHING.md).
 
 ## How it works
 
