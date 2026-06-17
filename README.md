@@ -76,8 +76,9 @@ marrow review <pr> # fetch + classify, then open the TUI
 
 You'll need:
 
-- A **Claude model** -- either:
-  - A Claude model name (e.g. `claude-sonnet-4-6`) with the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed, **or**
+- A **Claude model** -- any one of:
+  - A model name (e.g. `claude-sonnet-4-6`) + an **Anthropic API key** (`ANTHROPIC_API_KEY` or the `anthropic_api_key` setting) -- simplest, no AWS or extra CLI, **or**
+  - A model name with the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed, **or**
   - An AWS Bedrock model ARN with AWS credentials configured (env vars, `~/.aws/credentials`, or SSO)
 - A **GitHub personal access token** (or `GH_TOKEN` / `GITHUB_TOKEN` environment variable)
 

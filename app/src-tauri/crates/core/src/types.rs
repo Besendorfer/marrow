@@ -87,6 +87,10 @@ pub struct Settings {
     pub github_token: String,
     #[serde(default)]
     pub aws_profile: String,
+    /// Anthropic API key for the direct-API backend (used when `model` is a
+    /// model name and this/`ANTHROPIC_API_KEY` is set). No AWS/CLI needed.
+    #[serde(default)]
+    pub anthropic_api_key: String,
     #[serde(default = "default_true")]
     pub filter_older: bool,
     #[serde(default = "default_true")]

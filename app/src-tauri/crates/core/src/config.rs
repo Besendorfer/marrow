@@ -90,6 +90,7 @@ fn default_settings() -> Settings {
         model: String::new(),
         github_token: String::new(),
         aws_profile: String::new(),
+        anthropic_api_key: String::new(),
         filter_older: true,
         filter_team: true,
         view_mode: "split".to_string(),
@@ -113,6 +114,7 @@ pub fn load_settings() -> Settings {
     let mut model = String::new();
     let mut github_token = String::new();
     let mut aws_profile = String::new();
+    let mut anthropic_api_key = String::new();
     let mut filter_older = true;
     let mut filter_team = true;
     let mut view_mode = "split".to_string();
@@ -127,6 +129,8 @@ pub fn load_settings() -> Settings {
             github_token = val.to_string();
         } else if let Some(val) = line.strip_prefix("aws_profile=") {
             aws_profile = val.to_string();
+        } else if let Some(val) = line.strip_prefix("anthropic_api_key=") {
+            anthropic_api_key = val.to_string();
         } else if let Some(val) = line.strip_prefix("filter_older=") {
             filter_older = val == "true";
         } else if let Some(val) = line.strip_prefix("filter_team=") {
@@ -146,6 +150,7 @@ pub fn load_settings() -> Settings {
         model,
         github_token,
         aws_profile,
+        anthropic_api_key,
         filter_older,
         filter_team,
         view_mode,
@@ -168,6 +173,9 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     }
     if !settings.aws_profile.is_empty() {
         content.push_str(&format!("aws_profile={}\n", settings.aws_profile));
+    }
+    if !settings.anthropic_api_key.is_empty() {
+        content.push_str(&format!("anthropic_api_key={}\n", settings.anthropic_api_key));
     }
     content.push_str(&format!("filter_older={}\n", settings.filter_older));
     content.push_str(&format!("filter_team={}\n", settings.filter_team));
@@ -209,6 +217,18 @@ pub fn resolve_github_token(settings: &Settings) -> Option<String> {
     }
 
     None
+}
+
+/// Resolve the Anthropic API key: config file > ANTHROPIC_API_KEY env. Returns
+/// None if unset (then the backend falls back to the `claude` CLI).
+pub fn resolve_anthropic_api_key(settings: &Settings) -> Option<String> {
+    if !settings.anthropic_api_key.is_empty() {
+        return Some(settings.anthropic_api_key.clone());
+    }
+    match env::var("ANTHROPIC_API_KEY") {
+        Ok(key) if !key.is_empty() => Some(key),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +280,15 @@ mod tests {
 
         let _ = fs::remove_dir_all(&old);
         let _ = fs::remove_dir_all(&new);
+    }
+
+    #[test]
+    fn anthropic_key_resolves_from_config_field() {
+        // A config-file key short-circuits before any env lookup, so this is
+        // deterministic regardless of the test environment's ANTHROPIC_API_KEY.
+        let mut s = default_settings();
+        s.anthropic_api_key = "sk-ant-from-config".to_string();
+        assert_eq!(resolve_anthropic_api_key(&s).as_deref(), Some("sk-ant-from-config"));
     }
 
     #[test]

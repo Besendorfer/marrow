@@ -38,7 +38,7 @@ fn emit_progress(
 
 pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_>) -> Result<ReviewManifest, String> {
     if settings.model.is_empty() {
-        return Err("No model configured. Set a Bedrock ARN or Claude model name in Settings.".to_string());
+        return Err("No model configured. Set `model` to a Claude model name (e.g. claude-sonnet-4-6) with an Anthropic API key or the `claude` CLI, or to an AWS Bedrock model ARN.".to_string());
     }
 
     let token = resolve_github_token(settings);
@@ -92,7 +92,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
 
     // Step 3: AI classification
     emit_progress(app, 3, "Classifying files with AI", FetchStatus::Running, None, None);
-    let ai = AiBackend::new(&settings.model, &settings.aws_profile).await?;
+    let ai = AiBackend::new(
+        &settings.model,
+        &settings.aws_profile,
+        crate::config::resolve_anthropic_api_key(settings).as_deref(),
+    )
+    .await?;
 
     let classification_prompt =
         build_classification_prompt(&pr_title, &file_list, &full_diff);

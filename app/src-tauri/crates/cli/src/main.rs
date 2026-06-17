@@ -16,7 +16,9 @@ use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::as_24_bit_terminal_escaped;
 
-use marrow_core::config::{app_config_dir, config_path, load_settings, resolve_github_token};
+use marrow_core::config::{
+    app_config_dir, config_path, load_settings, resolve_anthropic_api_key, resolve_github_token,
+};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
 use marrow_core::types::{FetchProgress, FetchStatus, FileDiff, Highlight, ReviewManifest, ReviewThread};
@@ -791,9 +793,13 @@ const CONFIG_TEMPLATE: &str = "\
 # Marrow config — https://github.com/Besendorfer/marrow
 # GitHub personal access token (optional for public repos; or set GH_TOKEN / GITHUB_TOKEN).
 github_token=
-# Claude model name (e.g. claude-sonnet-4-6) or an AWS Bedrock model ARN.
+# AI model. Either a Claude model name (e.g. claude-sonnet-4-6) or an AWS
+# Bedrock model ARN.
 model=
-# AWS profile name (only used with Bedrock ARNs).
+# Simplest AI setup: an Anthropic API key (or set ANTHROPIC_API_KEY). Used with
+# a model name; no AWS or `claude` CLI needed. Get one at console.anthropic.com.
+anthropic_api_key=
+# AWS profile name (only used with a Bedrock ARN model).
 aws_profile=
 ";
 
@@ -836,11 +842,23 @@ fn settings_cmd() {
         Some(t) if !t.is_empty() => paint(&format!("set ({}…)", &t.chars().take(4).collect::<String>()), GREEN),
         _ => paint("not set", RED),
     };
-    println!("model:        {}", if s.model.is_empty() { paint("(none)", RED) } else { s.model.clone() });
-    println!("github_token: {token_status}");
-    println!("aws_profile:  {}", if s.aws_profile.is_empty() { paint("(none)", DIM) } else { s.aws_profile.clone() });
-    println!("view_mode:    {}", s.view_mode);
-    println!("hunk_filter:  {}", s.hunk_filter);
+    let anthropic_key = resolve_anthropic_api_key(&s);
+    let anthropic_status = match &anthropic_key {
+        Some(k) if !k.is_empty() => paint("set", GREEN),
+        _ => paint("not set", DIM),
+    };
+    // Which backend a `marrow review` would use with this config.
+    let backend = marrow_core::ai::choose_backend(&s.model, anthropic_key.as_deref());
+    println!("model:          {}", if s.model.is_empty() { paint("(none)", RED) } else { s.model.clone() });
+    println!("github_token:   {token_status}");
+    println!("anthropic_key:  {anthropic_status}");
+    println!("aws_profile:    {}", if s.aws_profile.is_empty() { paint("(none)", DIM) } else { s.aws_profile.clone() });
+    println!(
+        "ai backend:     {}",
+        if s.model.is_empty() { paint("(model not set)", RED) } else { backend.label().to_string() }
+    );
+    println!("view_mode:      {}", s.view_mode);
+    println!("hunk_filter:    {}", s.hunk_filter);
 }
 
 // ── tiny ANSI + wrapping helpers (no extra deps) ─────────────────────────────

@@ -15,6 +15,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [model, setModel] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [awsProfile, setAwsProfile] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
   const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -30,6 +31,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setModel(s.model);
         setGithubToken(s.github_token || "");
         setAwsProfile(s.aws_profile || "");
+        setAnthropicKey(s.anthropic_api_key || "");
         setCurrentSettings(s);
       });
       setSaved(false);
@@ -45,6 +47,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           model: model.trim(),
           github_token: githubToken.trim(),
           aws_profile: awsProfile.trim(),
+          anthropic_api_key: anthropicKey.trim(),
           filter_older: currentSettings?.filter_older ?? true,
           filter_team: currentSettings?.filter_team ?? true,
           view_mode: currentSettings?.view_mode ?? "split",
@@ -76,8 +79,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             Claude Model
           </label>
           <p className="settings-hint">
-            A Claude model name (e.g. <code>claude-sonnet-4-6</code>) to use
-            via the <code>claude</code> CLI, or a Bedrock ARN for AWS.
+            A Claude model name (e.g. <code>claude-sonnet-4-6</code>) used with
+            an Anthropic API key or the <code>claude</code> CLI, or a Bedrock
+            ARN for AWS.
           </p>
           <input
             id="model"
@@ -91,6 +95,33 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             placeholder="claude-sonnet-4-6 or arn:aws:bedrock:..."
             spellCheck={false}
           />
+
+          {!model.trim().startsWith("arn:") && (
+            <>
+              <label className="settings-label" htmlFor="anthropic-key">
+                Anthropic API Key
+              </label>
+              <p className="settings-hint">
+                Calls the Anthropic API directly — no AWS or <code>claude</code>{" "}
+                CLI needed. Falls back to <code>ANTHROPIC_API_KEY</code>, then to
+                the <code>claude</code> CLI if unset. Get one at{" "}
+                <code>console.anthropic.com</code>.
+              </p>
+              <input
+                id="anthropic-key"
+                className="settings-input"
+                type="password"
+                value={anthropicKey}
+                onChange={(e) => {
+                  setAnthropicKey(e.target.value);
+                  setSaved(false);
+                }}
+                placeholder="sk-ant-..."
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </>
+          )}
 
           {model.trim().startsWith("arn:") && (
             <>
