@@ -17,8 +17,11 @@ resolver = "2"
 # Shared metadata the published crates (marrow, marrow-core) inherit via
 # `<field>.workspace = true`. The desktop `relevant-reviews` package keeps its
 # own explicit fields and isn't published.
+# Pre-release: claims the crates.io names (marrow-core, marrow-cli) without
+# burning a stable 0.1.0. Pre-releases aren't selected by `cargo install` or
+# `^` deps without an explicit `--version`, so casual users won't get this build.
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/Besendorfer/marrow"
