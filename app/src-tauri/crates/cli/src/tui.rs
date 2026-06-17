@@ -102,6 +102,9 @@ struct App<'a> {
     /// (folds reset when the selected file changes).
     collapsed: HashSet<usize>,
     collapsed_file: Option<usize>,
+    /// Show the whole file (head content, added lines tinted) instead of just
+    /// the diff. A view preference that persists across files.
+    full_file: bool,
     /// Last action result, shown in the header.
     status: Option<String>,
 }
@@ -139,6 +142,7 @@ impl<'a> App<'a> {
             threads_autoloaded: false,
             collapsed: HashSet::new(),
             collapsed_file: None,
+            full_file: false,
             status: None,
         };
         app.rebuild_rows();
@@ -344,22 +348,23 @@ impl<'a> App<'a> {
             Rendered { lines, ..Default::default() }
         } else if let Some(i) = file_idx {
             let file = self.files[i];
-            if file.unified_diff.is_empty() {
+            // Open review threads on this file, shown inline. Carry each thread's
+            // global index so the inline rows can map back for replies.
+            let file_threads: Vec<(usize, &ReviewThread)> = self
+                .threads
+                .as_ref()
+                .map(|ts| {
+                    ts.iter()
+                        .enumerate()
+                        .filter(|(_, t)| t.path == file.path && !t.is_resolved)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if self.full_file {
+                full_file_lines_for(file, &file_threads)
+            } else if file.unified_diff.is_empty() {
                 Rendered::message("(no diff)")
             } else {
-                // Open review threads on this file, shown inline in the diff.
-                // Carry each thread's global index so the inline rows can map
-                // back to `self.threads` for replies.
-                let file_threads: Vec<(usize, &ReviewThread)> = self
-                    .threads
-                    .as_ref()
-                    .map(|ts| {
-                        ts.iter()
-                            .enumerate()
-                            .filter(|(_, t)| t.path == file.path && !t.is_resolved)
-                            .collect()
-                    })
-                    .unwrap_or_default();
                 diff_lines_for(file, &file_threads, &self.collapsed)
             }
         } else {
@@ -424,6 +429,16 @@ impl<'a> App<'a> {
             }
             self.cache_idx = None; // rebuild with the new fold state
         }
+    }
+
+    /// Toggle between the diff and the whole file (file view only).
+    fn toggle_full_file(&mut self) {
+        if !matches!(self.current_row(), Some(Row::File(_))) {
+            return;
+        }
+        self.full_file = !self.full_file;
+        self.cursor = 0;
+        self.cache_idx = None; // rebuild in the new mode
     }
 
     /// Fold all hunks, or unfold them all if every hunk is already folded.
@@ -545,6 +560,7 @@ impl<'a> App<'a> {
                 KeyCode::Char('{') => self.prev_hunk(),
                 KeyCode::Char('z') => self.toggle_fold(),
                 KeyCode::Char('Z') => self.toggle_fold_all(),
+                KeyCode::Char('a') => self.toggle_full_file(),
                 KeyCode::Char('n') => self.next_finding(),
                 KeyCode::Char('N') => self.prev_finding(),
                 KeyCode::Char('t') => self.toggle_filter(),
@@ -1121,8 +1137,11 @@ impl<'a> App<'a> {
         } else if is_threads {
             " Threads ".to_string()
         } else {
+            let suffix = if self.full_file { "  · full file" } else { "" };
             self.selected()
-                .map(|file| format!(" {}  +{} -{} ", file.path, file.additions, file.deletions))
+                .map(|file| {
+                    format!(" {}  +{} -{}{} ", file.path, file.additions, file.deletions, suffix)
+                })
                 .unwrap_or_else(|| " (no file) ".to_string())
         };
 
@@ -1186,6 +1205,91 @@ impl Rendered {
             ..Default::default()
         }
     }
+
+    /// Push one row, keeping the parallel target / thread vectors in lockstep.
+    fn row(&mut self, line: Line<'static>, target: Option<CommentTarget>, thread: Option<usize>) {
+        self.lines.push(line);
+        self.targets.push(target);
+        self.thread_at_row.push(thread);
+    }
+
+    /// Append the `▸` AI-annotation rows for any highlights starting at `ln`.
+    fn push_annotations(&mut self, starts: &HashMap<u64, Vec<&Highlight>>, ln: u64) {
+        let Some(hs) = starts.get(&ln) else { return };
+        for h in hs {
+            let c = sev_color(&h.severity);
+            let loc = if h.start_line == h.end_line {
+                format!("L{}", h.start_line)
+            } else {
+                format!("L{}-{}", h.start_line, h.end_line)
+            };
+            self.finding_rows.push(self.lines.len());
+            self.row(
+                Line::from(vec![
+                    Span::styled(
+                        format!("▸ {loc} "),
+                        Style::default().fg(c).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(h.comment.clone(), Style::default().fg(c)),
+                ]),
+                None,
+                None,
+            );
+        }
+    }
+
+    /// Append the inline `💬` block for the threads anchored at one line, each
+    /// row tagged with its thread index so `r` can reply to it.
+    fn push_thread_block(&mut self, ths: &[(usize, &ReviewThread)]) {
+        let bg = Style::default().bg(COMMENT_BG);
+        let bar = || Span::styled("▌ ", Style::default().fg(Color::Magenta));
+        // Trailing pad so the bg fills the row into a band (a Line's bg only
+        // covers the cells it occupies).
+        let pad = || Span::raw(" ".repeat(160));
+        for (gi, th) in ths {
+            let gi = Some(*gi);
+            self.row(
+                Line::from(vec![
+                    bar(),
+                    Span::styled(
+                        "💬 thread",
+                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    ),
+                    pad(),
+                ])
+                .style(bg),
+                None,
+                gi,
+            );
+            for c in &th.comments {
+                self.row(
+                    Line::from(vec![
+                        bar(),
+                        Span::styled(
+                            format!("@{}", c.author.login),
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        ),
+                        pad(),
+                    ])
+                    .style(bg),
+                    None,
+                    gi,
+                );
+                for l in crate::wrap(&c.body, 72) {
+                    self.row(
+                        Line::from(vec![
+                            bar(),
+                            Span::styled(format!("  {l}"), Style::default().fg(Color::White)),
+                            pad(),
+                        ])
+                        .style(bg),
+                        None,
+                        gi,
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Background tint for inline review-comment blocks (a muted dark purple).
@@ -1208,44 +1312,14 @@ fn diff_lines_for(
     threads: &[(usize, &ReviewThread)],
     collapsed: &HashSet<usize>,
 ) -> Rendered {
-    // new-side line → highlights starting there, and lines covered by any (for
-    // the gutter bar, keeping the highest severity).
-    let mut starts: HashMap<u64, Vec<&Highlight>> = HashMap::new();
-    let mut covered: HashMap<u64, Color> = HashMap::new();
-    // new-side line → review threads anchored there (shown inline), each paired
-    // with its global index in `App::threads` so inline rows can map back.
-    let mut threads_at: HashMap<u64, Vec<(usize, &ReviewThread)>> = HashMap::new();
-    for &(gi, t) in threads {
-        if let Some(l) = t.line {
-            threads_at.entry(l).or_default().push((gi, t));
-        }
-    }
-    for h in &file.highlights {
-        starts.entry(h.start_line).or_default().push(h);
-        let c = sev_color(&h.severity);
-        for ln in h.start_line..=h.end_line {
-            covered
-                .entry(ln)
-                .and_modify(|cur| {
-                    if sev_rank(c) > sev_rank(*cur) {
-                        *cur = c;
-                    }
-                })
-                .or_insert(c);
-        }
-    }
-
+    let (starts, covered, threads_at) = build_line_meta(file, threads);
     // Body-line count per hunk (for the `⋯ N lines` fold marker).
     let body_counts = hunk_body_counts(&file.unified_diff);
 
     let (ps, _) = crate::highlighter();
     let syntax = crate::syntax_for(ps, &file.path);
 
-    let mut out: Vec<Line> = Vec::new();
-    let mut hunk_rows: Vec<usize> = Vec::new();
-    let mut finding_rows: Vec<usize> = Vec::new();
-    let mut targets: Vec<Option<CommentTarget>> = Vec::new();
-    let mut thread_at_row: Vec<Option<usize>> = Vec::new();
+    let mut r = Rendered::default();
     let mut new_ln: Option<u64> = None;
     let mut old_ln: Option<u64> = None;
     // Current hunk index (None before the first `@@`).
@@ -1256,7 +1330,7 @@ fn diff_lines_for(
             new_ln = crate::hunk_new_start(line);
             let idx = hunk_idx.map_or(0, |i| i + 1);
             hunk_idx = Some(idx);
-            hunk_rows.push(out.len());
+            r.hunk_rows.push(r.lines.len());
             let mut spans =
                 vec![Span::styled(line.to_string(), Style::default().fg(Color::Cyan))];
             if collapsed.contains(&idx) {
@@ -1266,9 +1340,7 @@ fn diff_lines_for(
                     Style::default().fg(Color::DarkGray),
                 ));
             }
-            out.push(Line::from(spans));
-            targets.push(None);
-            thread_at_row.push(None);
+            r.row(Line::from(spans), None, None);
             continue;
         }
 
@@ -1283,12 +1355,11 @@ fn diff_lines_for(
             Some('-') => ('-', &line[1..], false, Color::Red),
             Some(' ') => (' ', &line[1..], true, Color::DarkGray),
             _ => {
-                out.push(Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(Color::DarkGray),
-                )));
-                targets.push(None);
-                thread_at_row.push(None);
+                r.row(
+                    Line::from(Span::styled(line.to_string(), Style::default().fg(Color::DarkGray))),
+                    None,
+                    None,
+                );
                 continue;
             }
         };
@@ -1297,23 +1368,7 @@ fn diff_lines_for(
 
         // Annotation comment(s) above the line they start on.
         if let Some(ln) = cur_new {
-            if let Some(hs) = starts.get(&ln) {
-                for h in hs {
-                    let c = sev_color(&h.severity);
-                    let loc = if h.start_line == h.end_line {
-                        format!("L{}", h.start_line)
-                    } else {
-                        format!("L{}-{}", h.start_line, h.end_line)
-                    };
-                    finding_rows.push(out.len());
-                    out.push(Line::from(vec![
-                        Span::styled(format!("▸ {loc} "), Style::default().fg(c).add_modifier(Modifier::BOLD)),
-                        Span::styled(h.comment.clone(), Style::default().fg(c)),
-                    ]));
-                    targets.push(None);
-                    thread_at_row.push(None);
-                }
-            }
+            r.push_annotations(&starts, ln);
         }
 
         // Faint full-width background tint so added/removed lines stand out from
@@ -1330,14 +1385,14 @@ fn diff_lines_for(
         }
         spans.push(Span::styled(marker.to_string(), Style::default().fg(marker_color)));
         spans.extend(highlight_spans(rest, syntax));
-        let code_row = out.len();
-        match line_bg {
+        let code_row = r.lines.len();
+        let row_line = match line_bg {
             Some(bg) => {
                 spans.push(Span::raw(" ".repeat(200)));
-                out.push(Line::from(spans).style(Style::default().bg(bg)));
+                Line::from(spans).style(Style::default().bg(bg))
             }
-            None => out.push(Line::from(spans)),
-        }
+            None => Line::from(spans),
+        };
 
         // Comment target: removed lines map to the old side, everything else
         // (added/context) to the new side.
@@ -1345,67 +1400,17 @@ fn diff_lines_for(
             '-' => old_ln.map(|line| CommentTarget { line, side: "LEFT" }),
             _ => new_ln.map(|line| CommentTarget { line, side: "RIGHT" }),
         };
-        targets.push(target);
-        thread_at_row.push(None);
+        r.row(row_line, target, None);
 
-        // Open review-thread comments, shown inline below the line they're on,
-        // on a tinted background with a magenta left bar so they stand out.
+        // Open review-thread comments inline below the line they're on.
         if let Some(ln) = cur_new {
             if let Some(ths) = threads_at.get(&ln) {
                 // The anchored code line replies to the first thread on it, so
                 // `r` works with the cursor on the code or on the 💬 block.
                 if let Some((gi, _)) = ths.first() {
-                    thread_at_row[code_row] = Some(*gi);
+                    r.thread_at_row[code_row] = Some(*gi);
                 }
-                let bg = Style::default().bg(COMMENT_BG);
-                // Trailing pad so the line's background fills the row into a band
-                // (a Line's bg only covers the cells it occupies).
-                let bar = || Span::styled("▌ ", Style::default().fg(Color::Magenta));
-                let pad = || Span::raw(" ".repeat(160));
-                let mut push = |spans: Vec<Span<'static>>, ti: Option<usize>| {
-                    let mut s = spans;
-                    s.push(pad());
-                    out.push(Line::from(s).style(bg));
-                    targets.push(None);
-                    thread_at_row.push(ti);
-                };
-                for (gi, th) in ths {
-                    let gi = Some(*gi);
-                    push(
-                        vec![
-                            bar(),
-                            Span::styled(
-                                "💬 thread",
-                                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-                            ),
-                        ],
-                        gi,
-                    );
-                    for c in &th.comments {
-                        push(
-                            vec![
-                                bar(),
-                                Span::styled(
-                                    format!("@{}", c.author.login),
-                                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                                ),
-                            ],
-                            gi,
-                        );
-                        for l in crate::wrap(&c.body, 72) {
-                            push(
-                                vec![
-                                    bar(),
-                                    Span::styled(
-                                        format!("  {l}"),
-                                        Style::default().fg(Color::White),
-                                    ),
-                                ],
-                                gi,
-                            );
-                        }
-                    }
-                }
+                r.push_thread_block(ths);
             }
         }
 
@@ -1431,7 +1436,116 @@ fn diff_lines_for(
             }
         }
     }
-    Rendered { lines: out, hunk_rows, finding_rows, targets, thread_at_row }
+    r
+}
+
+/// Render the whole new file (`head_content`), syntax-highlighted, with the
+/// diff's added lines tinted and the same AI gutter / annotations and inline
+/// threads as the diff view. Every line is new-side, so any line is commentable.
+fn full_file_lines_for(file: &FileDiff, threads: &[(usize, &ReviewThread)]) -> Rendered {
+    if file.head_content.is_empty() {
+        return Rendered::message("(full file unavailable)");
+    }
+    let (starts, covered, threads_at) = build_line_meta(file, threads);
+    let added = added_new_lines(&file.unified_diff);
+
+    let (ps, _) = crate::highlighter();
+    let syntax = crate::syntax_for(ps, &file.path);
+
+    let mut r = Rendered::default();
+    for (i, code) in file.head_content.lines().enumerate() {
+        let ln = (i + 1) as u64;
+        r.push_annotations(&starts, ln);
+
+        let mut spans: Vec<Span> = Vec::new();
+        match covered.get(&ln) {
+            Some(&c) => spans.push(Span::styled("▍", Style::default().fg(c))),
+            None => spans.push(Span::raw(" ")),
+        }
+        spans.push(Span::raw(" ")); // marker column (blank — no +/- in full file)
+        spans.extend(highlight_spans(code, syntax));
+        let code_row = r.lines.len();
+        let row_line = if added.contains(&ln) {
+            spans.push(Span::raw(" ".repeat(200)));
+            Line::from(spans).style(Style::default().bg(ADD_BG))
+        } else {
+            Line::from(spans)
+        };
+        r.row(row_line, Some(CommentTarget { line: ln, side: "RIGHT" }), None);
+
+        if let Some(ths) = threads_at.get(&ln) {
+            if let Some((gi, _)) = ths.first() {
+                r.thread_at_row[code_row] = Some(*gi);
+            }
+            r.push_thread_block(ths);
+        }
+    }
+    r
+}
+
+/// Build the new-side line lookups shared by the diff and full-file renderers:
+/// highlights starting at a line, the gutter color covering a line (highest
+/// severity wins), and review threads anchored at a line (with global index).
+#[allow(clippy::type_complexity)]
+fn build_line_meta<'a>(
+    file: &'a FileDiff,
+    threads: &[(usize, &'a ReviewThread)],
+) -> (
+    HashMap<u64, Vec<&'a Highlight>>,
+    HashMap<u64, Color>,
+    HashMap<u64, Vec<(usize, &'a ReviewThread)>>,
+) {
+    let mut starts: HashMap<u64, Vec<&Highlight>> = HashMap::new();
+    let mut covered: HashMap<u64, Color> = HashMap::new();
+    let mut threads_at: HashMap<u64, Vec<(usize, &ReviewThread)>> = HashMap::new();
+    for &(gi, t) in threads {
+        if let Some(l) = t.line {
+            threads_at.entry(l).or_default().push((gi, t));
+        }
+    }
+    for h in &file.highlights {
+        starts.entry(h.start_line).or_default().push(h);
+        let c = sev_color(&h.severity);
+        for ln in h.start_line..=h.end_line {
+            covered
+                .entry(ln)
+                .and_modify(|cur| {
+                    if sev_rank(c) > sev_rank(*cur) {
+                        *cur = c;
+                    }
+                })
+                .or_insert(c);
+        }
+    }
+    (starts, covered, threads_at)
+}
+
+/// The set of new-side line numbers the diff adds (`+` lines), so the full-file
+/// view can tint them.
+fn added_new_lines(unified_diff: &str) -> HashSet<u64> {
+    let mut added = HashSet::new();
+    let mut new_ln: Option<u64> = None;
+    for line in unified_diff.lines() {
+        if line.starts_with("@@") {
+            new_ln = crate::hunk_new_start(line);
+            continue;
+        }
+        match line.chars().next() {
+            Some('+') => {
+                if let Some(n) = new_ln {
+                    added.insert(n);
+                    new_ln = Some(n + 1);
+                }
+            }
+            Some(' ') => {
+                if let Some(n) = new_ln {
+                    new_ln = Some(n + 1);
+                }
+            }
+            _ => {} // '-' is old-side only; other lines don't advance new side
+        }
+    }
+    added
 }
 
 /// Count the body lines (everything that isn't a `@@` header) in each hunk, in
@@ -1548,6 +1662,7 @@ fn render_help(f: &mut Frame) {
         Line::from("  n / N        next / prev finding"),
         Line::from(""),
         head("View"),
+        Line::from("  a            toggle full file / diff"),
         Line::from("  z / Z        fold hunk / all hunks"),
         Line::from("  /            search in file"),
         Line::from("  t            filter low-risk"),
@@ -2143,6 +2258,58 @@ mod tests {
         press(&mut app, KeyCode::Char('Z')); // all folded → unfold all
         app.sync_cache();
         assert!(app.collapsed.is_empty(), "second Z unfolds everything");
+    }
+
+    #[test]
+    fn added_new_lines_finds_plus_lines() {
+        // hunk 1: L1 ctx, L2 added, L3 ctx; hunk 2: L10 ctx, L11 added.
+        let diff = "@@ -1,2 +1,3 @@\n a\n+b\n c\n@@ -9,1 +10,2 @@\n d\n+e\n";
+        let got = added_new_lines(diff);
+        assert!(got.contains(&2) && got.contains(&11), "added lines found");
+        assert!(!got.contains(&1) && !got.contains(&3), "context lines excluded");
+    }
+
+    #[test]
+    fn full_file_shows_all_lines_and_tints_additions() {
+        let mut f = file("pkg/whole.go", "high", "@@ -1,2 +1,3 @@\n one\n+two\n three\n");
+        f.head_content = "one\ntwo\nthree\n".to_string();
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+
+        press(&mut app, KeyCode::Char('a')); // toggle to full file
+        app.sync_cache();
+        assert!(app.full_file);
+        let text = lines_text(&app);
+        assert!(
+            text.contains("one") && text.contains("two") && text.contains("three"),
+            "whole file shown"
+        );
+        // Rows map 1:1 to file lines here; L2 ("two") is the added line.
+        assert_eq!(app.diff_cache[0].style.bg, None, "unchanged line not tinted");
+        assert_eq!(app.diff_cache[1].style.bg, Some(ADD_BG), "added line tinted");
+        // Every line is commentable on the new side.
+        assert_eq!(app.targets.len(), app.diff_cache.len(), "targets parallel to lines");
+        let t0 = app.targets[0].unwrap();
+        assert_eq!((t0.side, t0.line), ("RIGHT", 1));
+        // Title reflects the mode.
+        let out = render_to_string(&mut app, 100, 20);
+        assert!(out.contains("full file"), "title indicates full-file mode");
+
+        press(&mut app, KeyCode::Char('a')); // toggle back to the diff
+        app.sync_cache();
+        assert!(!app.full_file);
+        assert!(lines_text(&app).contains("@@ -1,2 +1,3 @@"), "diff header back");
+    }
+
+    #[test]
+    fn full_file_unavailable_without_head_content() {
+        let f = file("pkg/x.go", "high", "@@ -1,1 +1,2 @@\n a\n+b\n"); // head_content empty
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.full_file = true;
+        app.sync_cache();
+        assert!(lines_text(&app).contains("full file unavailable"));
     }
 
     #[test]
