@@ -15,8 +15,9 @@ built on the shared `marrow-core` crate (no Tauri, no webview).
 
 ```bash
 # Homebrew (macOS / Linux):
-brew tap besendorfer/marrow
+brew tap besendorfer/tap
 brew install marrow
+# (untrusted-tap error? run: brew trust besendorfer/tap)
 
 # Cargo (from crates.io):
 cargo install marrow-cli
