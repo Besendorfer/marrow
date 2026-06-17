@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -66,6 +66,8 @@ struct App<'a> {
     /// Focused row in the main pane; the view scrolls to keep it visible.
     cursor: u16,
     view_top: u16,
+    /// Last-rendered viewport height, for half-page / page jumps.
+    viewport_h: u16,
     /// Rendered main pane for the current selection (built lazily, not per
     /// frame), plus the row indices of hunk headers and AI findings for jumps,
     /// and a per-row comment target (None for non-commentable rows).
@@ -109,6 +111,7 @@ impl<'a> App<'a> {
             list_state: ListState::default(),
             cursor: 0,
             view_top: 0,
+            viewport_h: 20,
             diff_cache: Vec::new(),
             hunk_rows: Vec::new(),
             finding_rows: Vec::new(),
@@ -406,6 +409,14 @@ impl<'a> App<'a> {
         self.cursor = self.cursor.saturating_sub(n);
     }
 
+    fn half_page(&self) -> u16 {
+        (self.viewport_h / 2).max(1)
+    }
+
+    fn full_page(&self) -> u16 {
+        self.viewport_h.max(1)
+    }
+
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         loop {
             terminal.draw(|f| self.ui(f))?;
@@ -424,7 +435,7 @@ impl<'a> App<'a> {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            if self.on_key(key.code) {
+            if self.on_key(key.code, key.modifiers) {
                 break;
             }
         }
@@ -432,7 +443,8 @@ impl<'a> App<'a> {
     }
 
     /// Handle one key press. Returns true when the app should quit.
-    fn on_key(&mut self, code: KeyCode) -> bool {
+    fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
         match self.mode {
             Mode::Normal => match code {
                 KeyCode::Char('q') => return true,
@@ -450,6 +462,15 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('j') | KeyCode::Down => self.cursor_down(1),
                 KeyCode::Char('k') | KeyCode::Up => self.cursor_up(1),
+                // Bulk navigation.
+                KeyCode::Char('d') if ctrl => self.cursor_down(self.half_page()),
+                KeyCode::Char('u') if ctrl => self.cursor_up(self.half_page()),
+                KeyCode::Char('f') if ctrl => self.cursor_down(self.full_page()),
+                KeyCode::Char('b') if ctrl => self.cursor_up(self.full_page()),
+                KeyCode::PageDown => self.cursor_down(self.full_page()),
+                KeyCode::PageUp => self.cursor_up(self.full_page()),
+                KeyCode::Home => self.cursor = 0,
+                KeyCode::End => self.cursor = self.diff_line_count().saturating_sub(1),
                 KeyCode::Char('g') => self.cursor = 0,
                 KeyCode::Char('G') => self.cursor = self.diff_line_count().saturating_sub(1),
                 KeyCode::Char(']') | KeyCode::Tab => self.select_step(true),
@@ -996,6 +1017,7 @@ impl<'a> App<'a> {
         // block's title row).
         let total = self.diff_cache.len() as u16;
         let inner_h = area.height.saturating_sub(1).max(1);
+        self.viewport_h = inner_h;
         if total > 0 {
             self.cursor = self.cursor.min(total - 1);
         }
@@ -1319,7 +1341,9 @@ fn render_help(f: &mut Frame) {
     let head = |s| Line::from(Span::styled(s, Style::default().add_modifier(Modifier::BOLD)));
     let lines = vec![
         head("Navigation"),
-        Line::from("  j / k        scroll"),
+        Line::from("  j / k        line down / up"),
+        Line::from("  ^d / ^u      half page down / up"),
+        Line::from("  PgDn / PgUp  page down / up"),
         Line::from("  g / G        top / bottom"),
         Line::from("  ] / [        next / prev item"),
         Line::from("  } / {        next / prev hunk"),
@@ -1390,6 +1414,10 @@ mod tests {
         app.list_state.select(Some(pos));
         app.cache_idx = None;
         app.sync_cache();
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> bool {
+        app.on_key(code, KeyModifiers::NONE)
     }
 
     fn file(path: &str, risk: &str, diff: &str) -> FileDiff {
@@ -1600,32 +1628,32 @@ mod tests {
         let m = manifest();
         let mut app = App::new(&m);
         // R → verb picker → approve → message input.
-        assert!(!app.on_key(KeyCode::Char('R')));
+        assert!(!press(&mut app, KeyCode::Char('R')));
         assert!(matches!(app.mode, Mode::ReviewPick));
-        app.on_key(KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('a'));
         assert!(matches!(app.mode, Mode::ReviewInput));
         assert_eq!(app.review_event, "APPROVE");
         // Typing accumulates the message.
         for c in "lgtm".chars() {
-            app.on_key(KeyCode::Char(c));
+            press(&mut app, KeyCode::Char(c));
         }
         assert_eq!(app.review_input, "lgtm");
         // Esc backs out without submitting; q then quits.
-        app.on_key(KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
-        assert!(app.on_key(KeyCode::Char('q')));
+        assert!(press(&mut app, KeyCode::Char('q')));
     }
 
     #[test]
     fn request_changes_requires_message() {
         let m = manifest();
         let mut app = App::new(&m);
-        app.on_key(KeyCode::Char('R'));
-        app.on_key(KeyCode::Char('r')); // REQUEST_CHANGES
+        press(&mut app, KeyCode::Char('R'));
+        press(&mut app, KeyCode::Char('r')); // REQUEST_CHANGES
         assert!(matches!(app.mode, Mode::ReviewInput));
         // Submitting empty hits the guard before any network call: stays in
         // input with an error status.
-        app.on_key(KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::ReviewInput));
         assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
     }
@@ -1653,20 +1681,20 @@ mod tests {
         let mut app = App::new(&m);
         app.sync_cache();
         // Cursor on the hunk header → not commentable.
-        app.on_key(KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('c'));
         assert!(matches!(app.mode, Mode::Normal));
         assert!(app.status.as_deref().unwrap_or("").contains("not a commentable"));
         // Move to the context line → opens comment input with the right target.
         app.cursor_down(1);
-        app.on_key(KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('c'));
         assert!(matches!(app.mode, Mode::CommentInput));
         let t = app.pending_comment.unwrap();
         assert_eq!((t.side, t.line), ("RIGHT", 5));
         // Submitting empty hits the guard before any network call.
-        app.on_key(KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::CommentInput));
         assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
-        app.on_key(KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
     }
 
@@ -1694,11 +1722,11 @@ mod tests {
         app.threads = Some(vec![thread(false, "pkg/a.go", 10, "fix")]);
         select_threads(&mut app);
         app.cursor = 0;
-        app.on_key(KeyCode::Char('r'));
+        press(&mut app, KeyCode::Char('r'));
         assert!(matches!(app.mode, Mode::ReplyInput));
         assert_eq!(app.pending_thread, Some(0));
         // Submitting empty hits the guard before any network call.
-        app.on_key(KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::ReplyInput));
         assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
     }
@@ -1735,10 +1763,10 @@ mod tests {
         app.sync_cache();
         // Anchor on the first added line (row 1 = L1), extend to row 3 (L3).
         app.cursor = 1;
-        app.on_key(KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('v'));
         assert_eq!(app.selection_anchor, Some(1));
         app.cursor = 3;
-        app.on_key(KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('c'));
         assert!(matches!(app.mode, Mode::CommentInput));
         let end = app.pending_comment.unwrap();
         let start = app.pending_comment_start.unwrap();
@@ -1754,9 +1782,34 @@ mod tests {
         let mut app = App::new(&m);
         app.sync_cache();
         app.cursor = 1;
-        app.on_key(KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('v'));
         assert_eq!(app.selection_anchor, Some(1));
-        app.on_key(KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('v'));
         assert_eq!(app.selection_anchor, None);
+    }
+
+    #[test]
+    fn bulk_navigation() {
+        let mut diff = String::from("@@ -1,0 +1,40 @@\n");
+        for i in 0..40 {
+            diff.push_str(&format!("+line{i}\n"));
+        }
+        let f = file("pkg/big.go", "high", &diff);
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+        app.viewport_h = 20; // simulate a rendered viewport
+        let last = app.diff_cache.len() as u16 - 1;
+
+        app.on_key(KeyCode::Char('d'), KeyModifiers::CONTROL); // half page down
+        assert_eq!(app.cursor, 10);
+        press(&mut app, KeyCode::PageDown); // full page down
+        assert_eq!(app.cursor, 30);
+        press(&mut app, KeyCode::End); // bottom
+        assert_eq!(app.cursor, last);
+        app.on_key(KeyCode::Char('u'), KeyModifiers::CONTROL); // half page up
+        assert_eq!(app.cursor, last - 10);
+        press(&mut app, KeyCode::Home); // top
+        assert_eq!(app.cursor, 0);
     }
 }
