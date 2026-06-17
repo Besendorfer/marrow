@@ -1,7 +1,16 @@
+# Published as `marrow-cli` because the bare `marrow` name is taken on
+# crates.io; the installed binary is still `marrow` (see [[bin]] below).
 [package]
-name = "marrow"
-version = "0.1.0"
-edition = "2021"
+name = "marrow-cli"
+description = "Surface the parts of a GitHub PR that matter — an AI-assisted PR review TUI for the terminal."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["github", "pull-request", "code-review", "cli", "tui"]
+categories = ["command-line-utilities", "development-tools"]
 
 # The `marrow` terminal frontend. A thin CLI over marrow-core — no Tauri.
 [[bin]]
@@ -9,7 +18,10 @@ name = "marrow"
 path = "src/main.rs"
 
 [dependencies]
-marrow-core = { path = "../core" }
+# Path for local builds; version is required so the crate is publishable to
+# crates.io (publish marrow-core first). Keep this in lockstep with the
+# workspace version on every release.
+marrow-core = { path = "../core", version = "0.1.0-alpha.1" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json = "1"
