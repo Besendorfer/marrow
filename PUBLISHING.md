@@ -84,20 +84,32 @@ Review and **publish the draft release**, then the tarball download links work.
 
 ### Homebrew tap (one-time setup)
 
-`brew install besendorfer/marrow/marrow` requires a tap repo named
-**`homebrew-marrow`** (Homebrew maps `besendorfer/marrow` → `homebrew-marrow`):
+The tap lives in a repo named **`homebrew-marrow`** (Homebrew maps the tap
+`besendorfer/marrow` → the repo `homebrew-marrow`):
 
 1. Create the repo `Besendorfer/homebrew-marrow`.
 2. After each CLI release, copy the generated `marrow.rb` from the release into
    `Formula/marrow.rb` in that repo and push.
 
-Then:
+Users then install with the short name after a one-time tap:
 
 ```bash
-brew install besendorfer/marrow/marrow   # or: brew tap besendorfer/marrow && brew install marrow
+brew tap besendorfer/marrow
+brew install marrow
+# (or, without tapping first: brew install besendorfer/marrow/marrow)
 ```
 
 > Future automation: have `cli-release.yml` push `marrow.rb` to the tap repo
 > directly (needs a `HOMEBREW_TAP_TOKEN` secret with write access to the tap).
 > For now the formula is generated and attached to the release for a manual
 > copy — no secret required.
+
+### Bare `brew install marrow` (homebrew-core, later)
+
+To drop the tap entirely and get `brew install marrow`, submit the formula to
+[homebrew-core](https://github.com/Homebrew/homebrew-core). That requires a
+**stable** release (not a pre-release), enough **notability** (real usage —
+core rejects brand-new projects), the bare name `marrow` being free in core, and
+a **build-from-source** formula (`depends_on "rust"`; core doesn't ship our
+prebuilt binaries). Worth doing post-`0.1.0` once Marrow has some traction;
+until then the tap is the path.

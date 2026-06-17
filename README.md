@@ -33,7 +33,8 @@ Marrow also ships as a terminal app -- the same fetch/classify/review workflow i
 
 ```bash
 # Homebrew (macOS / Linux):
-brew install besendorfer/marrow/marrow
+brew tap besendorfer/marrow
+brew install marrow
 
 # Prebuilt binary: download a tarball for your platform from the CLI releases
 # (tags starting `cli-v`) and put `marrow` on your PATH.
