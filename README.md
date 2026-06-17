@@ -27,6 +27,23 @@ Or browse [all releases](https://github.com/Besendorfer/marrow/releases).
 
 > The app is signed and notarized by Apple. After downloading the `.dmg`, open it and drag "Marrow" to your Applications folder. Auto-updates are built in -- you'll be notified when new versions are available.
 
+## Terminal (CLI/TUI)
+
+Marrow also ships as a terminal app -- the same fetch/classify/review workflow in an interactive TUI, built on the same core (no webview).
+
+```bash
+# From a clone (works today):
+cargo install --path app/src-tauri/crates/cli
+
+# From crates.io (once published — the crate is `marrow-cli`, the command is `marrow`):
+cargo install marrow-cli
+
+marrow init        # scaffold ~/.config/marrow/config
+marrow review <pr> # fetch + classify, then open the TUI
+```
+
+`<pr>` is a URL, `owner/repo/pull/N`, or `owner/repo#N`. See [the CLI readme](app/src-tauri/crates/cli/README.md) for the full command list.
+
 ## How it works
 
 1. **Fetch** -- pulls PR metadata, file list, and diff via the GitHub REST API

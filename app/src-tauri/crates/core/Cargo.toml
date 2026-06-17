@@ -1,7 +1,13 @@
 [package]
 name = "marrow-core"
-version = "0.1.0"
-edition = "2021"
+description = "Core library for Marrow: GitHub PR fetch, diff, and AI relevance classification."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["github", "pull-request", "code-review", "diff"]
+categories = ["development-tools"]
 
 # Frontend-agnostic core: GitHub client, fetch/diff pipeline, AI classification,
 # config + caching. No Tauri, no UI — shared by the desktop app and the CLI.
