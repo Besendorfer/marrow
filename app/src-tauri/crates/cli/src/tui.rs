@@ -81,8 +81,12 @@ struct App<'a> {
     /// The pending review verb while typing its message (ReviewInput mode).
     review_event: &'static str,
     review_input: String,
-    /// The line being commented on while in CommentInput mode.
+    /// The line (range end) being commented on while in CommentInput mode, and
+    /// the range start for a multi-line comment (None = single line).
     pending_comment: Option<CommentTarget>,
+    pending_comment_start: Option<CommentTarget>,
+    /// Anchor row of an active line selection (`v`); the range is anchor..cursor.
+    selection_anchor: Option<u16>,
     /// Review threads (None = not loaded yet), the per-row thread index for the
     /// threads view, and the thread being replied to (ReplyInput mode).
     threads: Option<Vec<ReviewThread>>,
@@ -117,6 +121,8 @@ impl<'a> App<'a> {
             review_event: "",
             review_input: String::new(),
             pending_comment: None,
+            pending_comment_start: None,
+            selection_anchor: None,
             threads: None,
             thread_at_row: Vec::new(),
             pending_thread: None,
@@ -246,6 +252,7 @@ impl<'a> App<'a> {
             if Self::is_selectable(&self.rows[i]) {
                 self.list_state.select(Some(i));
                 self.cursor = 0;
+                self.selection_anchor = None;
                 return;
             }
         }
@@ -428,7 +435,19 @@ impl<'a> App<'a> {
     fn on_key(&mut self, code: KeyCode) -> bool {
         match self.mode {
             Mode::Normal => match code {
-                KeyCode::Char('q') | KeyCode::Esc => return true,
+                KeyCode::Char('q') => return true,
+                KeyCode::Esc => {
+                    // Esc cancels an active selection; otherwise it quits.
+                    if self.selection_anchor.take().is_none() {
+                        return true;
+                    }
+                }
+                KeyCode::Char('v') => {
+                    if matches!(self.current_row(), Some(Row::File(_))) {
+                        self.selection_anchor =
+                            if self.selection_anchor.is_some() { None } else { Some(self.cursor) };
+                    }
+                }
                 KeyCode::Char('j') | KeyCode::Down => self.cursor_down(1),
                 KeyCode::Char('k') | KeyCode::Up => self.cursor_up(1),
                 KeyCode::Char('g') => self.cursor = 0,
@@ -514,15 +533,43 @@ impl<'a> App<'a> {
         if !matches!(self.current_row(), Some(Row::File(_))) {
             return;
         }
-        match self.targets.get(self.cursor as usize).copied().flatten() {
-            Some(target) => {
-                self.pending_comment = Some(target);
-                self.review_input.clear();
-                self.status = None;
-                self.mode = Mode::CommentInput;
+        let cursor_t = self.targets.get(self.cursor as usize).copied().flatten();
+        // (end, start) — start is the lower line of a same-side selection.
+        let (end, start) = if let Some(anchor) = self.selection_anchor {
+            let anchor_t = self.targets.get(anchor as usize).copied().flatten();
+            match (anchor_t, cursor_t) {
+                (Some(a), Some(b)) if a.side == b.side => {
+                    if a.line <= b.line {
+                        (b, Some(a))
+                    } else {
+                        (a, Some(b))
+                    }
+                }
+                (Some(_), Some(_)) => {
+                    self.status = Some("error: selection spans both sides".to_string());
+                    return;
+                }
+                _ => {
+                    self.status = Some("not a commentable selection".to_string());
+                    return;
+                }
             }
-            None => self.status = Some("not a commentable line".to_string()),
-        }
+        } else {
+            match cursor_t {
+                Some(t) => (t, None),
+                None => {
+                    self.status = Some("not a commentable line".to_string());
+                    return;
+                }
+            }
+        };
+        // Collapse to a single line if the range is one line.
+        self.pending_comment = Some(end);
+        self.pending_comment_start = start.filter(|s| s.line != end.line);
+        self.selection_anchor = None;
+        self.review_input.clear();
+        self.status = None;
+        self.mode = Mode::CommentInput;
     }
 
     /// Post the inline comment as a new review thread. Blocks the UI briefly.
@@ -538,6 +585,10 @@ impl<'a> App<'a> {
                 self.mode = Mode::Normal;
                 return;
             }
+        };
+        let (start_line, start_side) = match self.pending_comment_start {
+            Some(s) => (Some(s.line), Some(s.side)),
+            None => (None, None),
         };
         let path = match self.selected() {
             Some(f) => f.path.clone(),
@@ -565,11 +616,23 @@ impl<'a> App<'a> {
                 .get_pull_request_id(&parsed.owner, &parsed.repo, parsed.number)
                 .await?;
             github
-                .create_review_thread(&pr_id, &body, &path, target.line, target.side, None, None)
+                .create_review_thread(
+                    &pr_id,
+                    &body,
+                    &path,
+                    target.line,
+                    target.side,
+                    start_line,
+                    start_side,
+                )
                 .await
         });
+        let span = match start_line {
+            Some(sl) => format!("{}:{sl}-{}", target.side, target.line),
+            None => format!("{}:{}", target.side, target.line),
+        };
         self.status = Some(match result {
-            Ok(_) => format!("✓ comment added on {}:{}", target.side, target.line),
+            Ok(_) => format!("✓ comment added on {span}"),
             Err(e) => format!("error: {e}"),
         });
         self.mode = Mode::Normal;
@@ -853,12 +916,18 @@ impl<'a> App<'a> {
                 Span::styled("▏  (Enter submit · Esc cancel)", Style::default().fg(Color::DarkGray)),
             ])),
             _ => {
-                let hint = if matches!(self.current_row(), Some(Row::Threads)) {
-                    " r reply · x resolve · T reload · ]/[ view · ? help · q quit "
+                if let Some(anchor) = self.selection_anchor {
+                    let n = anchor.abs_diff(self.cursor) + 1;
+                    let hint = format!(" SELECT {n} lines · j/k extend · c comment · v/Esc cancel ");
+                    Paragraph::new(hint).style(Style::default().fg(Color::Yellow))
                 } else {
-                    " ]/[ file · n/N find · c comment · R review · T threads · / search · ? help · q quit "
-                };
-                Paragraph::new(hint).style(Style::default().fg(Color::DarkGray))
+                    let hint = if matches!(self.current_row(), Some(Row::Threads)) {
+                        " r reply · x resolve · T reload · ]/[ view · ? help · q quit "
+                    } else {
+                        " ]/[ file · n/N find · c comment · v select · R review · T threads · ? help · q quit "
+                    };
+                    Paragraph::new(hint).style(Style::default().fg(Color::DarkGray))
+                }
             }
         };
         f.render_widget(footer, rows[2]);
@@ -937,11 +1006,19 @@ impl<'a> App<'a> {
         }
         self.view_top = self.view_top.min(total.saturating_sub(inner_h));
 
-        // Highlight the cursor line in the diff/threads pane (not the overview).
+        // Highlight the selection range and the cursor line (diff/threads only).
         let mut lines = self.diff_cache.clone();
         if !is_overview {
+            if let Some(anchor) = self.selection_anchor {
+                let (lo, hi) = (anchor.min(self.cursor), anchor.max(self.cursor));
+                for r in lo..=hi {
+                    if let Some(line) = lines.get_mut(r as usize) {
+                        line.style = Style::default().bg(SELECT_BG);
+                    }
+                }
+            }
             if let Some(line) = lines.get_mut(self.cursor as usize) {
-                line.style = Style::default().bg(Color::Rgb(45, 50, 60));
+                line.style = Style::default().bg(CURSOR_BG);
             }
         }
 
@@ -975,6 +1052,9 @@ impl Rendered {
 
 /// Background tint for inline review-comment blocks (a muted dark purple).
 const COMMENT_BG: Color = Color::Rgb(52, 42, 75);
+/// Cursor-line background, and the line-selection range background.
+const CURSOR_BG: Color = Color::Rgb(45, 50, 60);
+const SELECT_BG: Color = Color::Rgb(38, 48, 70);
 
 /// Render a file's diff as styled ratatui lines: syntect syntax highlighting on
 /// the code, AI-highlight comments inline (`▸` above the line they start on), a
@@ -1251,6 +1331,7 @@ fn render_help(f: &mut Frame) {
         Line::from(""),
         head("Actions"),
         Line::from("  c            comment on the cursor line"),
+        Line::from("  v            select a line range, then c"),
         Line::from("  R            submit a review"),
         Line::from(""),
         head("Threads"),
@@ -1643,5 +1724,39 @@ mod tests {
         app.cache_idx = None;
         app.sync_cache();
         assert!(!lines_text(&app).contains("already handled"), "resolved threads stay out of the diff");
+    }
+
+    #[test]
+    fn v_toggles_selection_and_sets_range() {
+        // Three added lines → new-side L1, L2, L3 (all RIGHT).
+        let f = file("pkg/m.go", "high", "@@ -1,0 +1,3 @@\n+a\n+b\n+c\n");
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+        // Anchor on the first added line (row 1 = L1), extend to row 3 (L3).
+        app.cursor = 1;
+        app.on_key(KeyCode::Char('v'));
+        assert_eq!(app.selection_anchor, Some(1));
+        app.cursor = 3;
+        app.on_key(KeyCode::Char('c'));
+        assert!(matches!(app.mode, Mode::CommentInput));
+        let end = app.pending_comment.unwrap();
+        let start = app.pending_comment_start.unwrap();
+        assert_eq!((start.side, start.line), ("RIGHT", 1), "range start");
+        assert_eq!((end.side, end.line), ("RIGHT", 3), "range end");
+        assert_eq!(app.selection_anchor, None, "selection consumed");
+    }
+
+    #[test]
+    fn v_pressed_twice_clears_selection() {
+        let f = file("pkg/m.go", "high", "@@ -1,0 +1,3 @@\n+a\n+b\n+c\n");
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+        app.cursor = 1;
+        app.on_key(KeyCode::Char('v'));
+        assert_eq!(app.selection_anchor, Some(1));
+        app.on_key(KeyCode::Char('v'));
+        assert_eq!(app.selection_anchor, None);
     }
 }
