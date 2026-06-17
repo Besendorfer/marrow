@@ -59,3 +59,45 @@ cargo publish -p marrow-cli
 
 The stable announce version is just the first non-pre-release publish (e.g.
 `0.1.0`). Do that once the AI-backend first-run friction is resolved.
+
+## Prebuilt binaries + Homebrew
+
+Prebuilt `marrow` binaries are built by `.github/workflows/cli-release.yml`,
+which is independent of the desktop app's `release.yml` (that uses `v*` tags).
+The CLI uses its own **`cli-v*`** tags so the two version independently.
+
+To cut a CLI binary release:
+
+```bash
+git tag cli-v0.1.0-alpha.1
+git push origin cli-v0.1.0-alpha.1
+```
+
+The workflow builds for macOS (arm64 + Intel), Linux (x86_64), and Windows
+(x86_64), then attaches to a **draft** GitHub release:
+
+- `marrow-<target>.tar.gz` / `.zip`
+- `SHA256SUMS`
+- `marrow.rb` — a ready-to-use Homebrew formula with the real checksums
+
+Review and **publish the draft release**, then the tarball download links work.
+
+### Homebrew tap (one-time setup)
+
+`brew install besendorfer/marrow/marrow` requires a tap repo named
+**`homebrew-marrow`** (Homebrew maps `besendorfer/marrow` → `homebrew-marrow`):
+
+1. Create the repo `Besendorfer/homebrew-marrow`.
+2. After each CLI release, copy the generated `marrow.rb` from the release into
+   `Formula/marrow.rb` in that repo and push.
+
+Then:
+
+```bash
+brew install besendorfer/marrow/marrow   # or: brew tap besendorfer/marrow && brew install marrow
+```
+
+> Future automation: have `cli-release.yml` push `marrow.rb` to the tap repo
+> directly (needs a `HOMEBREW_TAP_TOKEN` secret with write access to the tap).
+> For now the formula is generated and attached to the release for a manual
+> copy — no secret required.
