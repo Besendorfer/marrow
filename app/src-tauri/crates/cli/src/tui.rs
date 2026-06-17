@@ -98,6 +98,10 @@ struct App<'a> {
     pending_thread: Option<usize>,
     /// Whether we've tried the one-time startup thread load (for inline comments).
     threads_autoloaded: bool,
+    /// Collapsed hunk indices for the current file, and which file they apply to
+    /// (folds reset when the selected file changes).
+    collapsed: HashSet<usize>,
+    collapsed_file: Option<usize>,
     /// Last action result, shown in the header.
     status: Option<String>,
 }
@@ -133,6 +137,8 @@ impl<'a> App<'a> {
             diff_thread_at_row: Vec::new(),
             pending_thread: None,
             threads_autoloaded: false,
+            collapsed: HashSet::new(),
+            collapsed_file: None,
             status: None,
         };
         app.rebuild_rows();
@@ -323,6 +329,13 @@ impl<'a> App<'a> {
         let is_overview = matches!(self.current_row(), Some(Row::Overview));
         let is_threads = matches!(self.current_row(), Some(Row::Threads));
         let file_idx = self.selected_file_idx();
+        // Folds belong to a single file; drop them when the file changes. (A
+        // fold toggle invalidates the cache without changing file_idx, so this
+        // doesn't clobber an active fold.)
+        if file_idx != self.collapsed_file {
+            self.collapsed.clear();
+            self.collapsed_file = file_idx;
+        }
         let rendered = if is_overview {
             self.build_overview()
         } else if is_threads {
@@ -347,7 +360,7 @@ impl<'a> App<'a> {
                             .collect()
                     })
                     .unwrap_or_default();
-                diff_lines_for(file, &file_threads)
+                diff_lines_for(file, &file_threads, &self.collapsed)
             }
         } else {
             Rendered::default()
@@ -386,6 +399,49 @@ impl<'a> App<'a> {
         if let Some(r) = Self::jump_prev(&self.finding_rows, self.cursor) {
             self.cursor = r;
         }
+    }
+
+    /// The hunk index the cursor is in: the last hunk header at or before it.
+    /// (`hunk_rows` holds every hunk's header row, in order, so its position is
+    /// the hunk index.)
+    fn cursor_hunk(&self) -> Option<usize> {
+        let c = self.cursor as usize;
+        self.hunk_rows.iter().rposition(|&r| r <= c)
+    }
+
+    /// Fold / unfold the hunk under the cursor (file view only). Re-renders and
+    /// parks the cursor on the (now-folded) header so it stays in view.
+    fn toggle_fold(&mut self) {
+        if !matches!(self.current_row(), Some(Row::File(_))) {
+            return;
+        }
+        if let Some(h) = self.cursor_hunk() {
+            if !self.collapsed.remove(&h) {
+                self.collapsed.insert(h);
+            }
+            if let Some(&row) = self.hunk_rows.get(h) {
+                self.cursor = row as u16;
+            }
+            self.cache_idx = None; // rebuild with the new fold state
+        }
+    }
+
+    /// Fold all hunks, or unfold them all if every hunk is already folded.
+    fn toggle_fold_all(&mut self) {
+        if !matches!(self.current_row(), Some(Row::File(_))) {
+            return;
+        }
+        let n = self.hunk_rows.len();
+        if n == 0 {
+            return;
+        }
+        if self.collapsed.len() == n {
+            self.collapsed.clear();
+        } else {
+            self.collapsed = (0..n).collect();
+        }
+        self.cursor = 0;
+        self.cache_idx = None;
     }
 
     /// Case-insensitive search forward from `start`, wrapping. Returns the row.
@@ -487,6 +543,8 @@ impl<'a> App<'a> {
                 KeyCode::Char('[') | KeyCode::BackTab => self.select_step(false),
                 KeyCode::Char('}') => self.next_hunk(),
                 KeyCode::Char('{') => self.prev_hunk(),
+                KeyCode::Char('z') => self.toggle_fold(),
+                KeyCode::Char('Z') => self.toggle_fold_all(),
                 KeyCode::Char('n') => self.next_finding(),
                 KeyCode::Char('N') => self.prev_finding(),
                 KeyCode::Char('t') => self.toggle_filter(),
@@ -1143,8 +1201,13 @@ const DEL_BG: Color = Color::Rgb(52, 28, 30);
 /// the code, AI-highlight comments inline (`▸` above the line they start on), a
 /// severity gutter bar (`▍`) on covered lines, and open review-thread comments
 /// inline (`💬` below the line). Also records the row indices of hunk headers
-/// and findings for jump navigation.
-fn diff_lines_for(file: &FileDiff, threads: &[(usize, &ReviewThread)]) -> Rendered {
+/// and findings for jump navigation. Hunks whose index is in `collapsed` render
+/// as just their `@@` header with a `⋯ N lines` fold marker.
+fn diff_lines_for(
+    file: &FileDiff,
+    threads: &[(usize, &ReviewThread)],
+    collapsed: &HashSet<usize>,
+) -> Rendered {
     // new-side line → highlights starting there, and lines covered by any (for
     // the gutter bar, keeping the highest severity).
     let mut starts: HashMap<u64, Vec<&Highlight>> = HashMap::new();
@@ -1172,6 +1235,9 @@ fn diff_lines_for(file: &FileDiff, threads: &[(usize, &ReviewThread)]) -> Render
         }
     }
 
+    // Body-line count per hunk (for the `⋯ N lines` fold marker).
+    let body_counts = hunk_body_counts(&file.unified_diff);
+
     let (ps, _) = crate::highlighter();
     let syntax = crate::syntax_for(ps, &file.path);
 
@@ -1182,14 +1248,33 @@ fn diff_lines_for(file: &FileDiff, threads: &[(usize, &ReviewThread)]) -> Render
     let mut thread_at_row: Vec<Option<usize>> = Vec::new();
     let mut new_ln: Option<u64> = None;
     let mut old_ln: Option<u64> = None;
+    // Current hunk index (None before the first `@@`).
+    let mut hunk_idx: Option<usize> = None;
     for line in file.unified_diff.lines() {
         if line.starts_with("@@") {
             old_ln = hunk_old_start(line);
             new_ln = crate::hunk_new_start(line);
+            let idx = hunk_idx.map_or(0, |i| i + 1);
+            hunk_idx = Some(idx);
             hunk_rows.push(out.len());
-            out.push(Line::from(Span::styled(line.to_string(), Style::default().fg(Color::Cyan))));
+            let mut spans =
+                vec![Span::styled(line.to_string(), Style::default().fg(Color::Cyan))];
+            if collapsed.contains(&idx) {
+                let n = body_counts.get(idx).copied().unwrap_or(0);
+                spans.push(Span::styled(
+                    format!("  ⋯ {n} lines"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            out.push(Line::from(spans));
             targets.push(None);
             thread_at_row.push(None);
+            continue;
+        }
+
+        // Inside a collapsed hunk: hide the body. (Line counters reset at the
+        // next `@@`, so skipping here doesn't affect later hunks.)
+        if hunk_idx.is_some_and(|i| collapsed.contains(&i)) {
             continue;
         }
 
@@ -1349,6 +1434,20 @@ fn diff_lines_for(file: &FileDiff, threads: &[(usize, &ReviewThread)]) -> Render
     Rendered { lines: out, hunk_rows, finding_rows, targets, thread_at_row }
 }
 
+/// Count the body lines (everything that isn't a `@@` header) in each hunk, in
+/// order, for the collapsed `⋯ N lines` marker.
+fn hunk_body_counts(unified_diff: &str) -> Vec<usize> {
+    let mut counts: Vec<usize> = Vec::new();
+    for line in unified_diff.lines() {
+        if line.starts_with("@@") {
+            counts.push(0);
+        } else if let Some(last) = counts.last_mut() {
+            *last += 1;
+        }
+    }
+    counts
+}
+
 /// Parse the old-side start line from a hunk header: `@@ -a,b +c,d @@` -> a.
 fn hunk_old_start(header: &str) -> Option<u64> {
     header
@@ -1449,6 +1548,7 @@ fn render_help(f: &mut Frame) {
         Line::from("  n / N        next / prev finding"),
         Line::from(""),
         head("View"),
+        Line::from("  z / Z        fold hunk / all hunks"),
         Line::from("  /            search in file"),
         Line::from("  t            filter low-risk"),
         Line::from(""),
@@ -1991,5 +2091,71 @@ mod tests {
         assert_eq!(app.cursor, last - 10);
         press(&mut app, KeyCode::Home); // top
         assert_eq!(app.cursor, 0);
+    }
+
+    const TWO_HUNKS: &str =
+        "@@ -1,2 +1,3 @@\n line1\n+added_a\n line2\n@@ -10,2 +11,3 @@\n line10\n+added_b\n line11\n";
+
+    #[test]
+    fn body_counts_per_hunk() {
+        let diff = "@@ -1,2 +1,3 @@\n a\n+b\n c\n@@ -9,1 +10,1 @@\n-x\n+y\n";
+        assert_eq!(hunk_body_counts(diff), vec![3, 2]);
+    }
+
+    #[test]
+    fn fold_collapses_hunk_body() {
+        let f = file("pkg/multi.go", "high", TWO_HUNKS);
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+        assert!(lines_text(&app).contains("added_a"), "body visible before fold");
+
+        // Cursor in the first hunk, fold it.
+        app.cursor = app.hunk_rows[0] as u16;
+        press(&mut app, KeyCode::Char('z'));
+        app.sync_cache();
+        let text = lines_text(&app);
+        assert!(!text.contains("added_a"), "first hunk body hidden");
+        assert!(text.contains("⋯ 3 lines"), "fold marker shows the line count");
+        assert!(text.contains("added_b"), "the other hunk stays visible");
+        // Cursor parks on the folded header so it stays in view.
+        assert_eq!(app.cursor as usize, app.hunk_rows[0]);
+
+        // Pressing z again unfolds it.
+        press(&mut app, KeyCode::Char('z'));
+        app.sync_cache();
+        assert!(lines_text(&app).contains("added_a"), "body back after unfold");
+    }
+
+    #[test]
+    fn fold_all_toggles_every_hunk() {
+        let f = file("pkg/multi.go", "high", TWO_HUNKS);
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+
+        press(&mut app, KeyCode::Char('Z'));
+        app.sync_cache();
+        let text = lines_text(&app);
+        assert!(!text.contains("added_a") && !text.contains("added_b"), "all bodies hidden");
+        assert_eq!(app.collapsed.len(), 2);
+
+        press(&mut app, KeyCode::Char('Z')); // all folded → unfold all
+        app.sync_cache();
+        assert!(app.collapsed.is_empty(), "second Z unfolds everything");
+    }
+
+    #[test]
+    fn folds_reset_on_file_switch() {
+        let m = manifest(); // two files
+        let mut app = App::new(&m);
+        app.sync_cache();
+        app.cursor = app.hunk_rows[0] as u16;
+        press(&mut app, KeyCode::Char('z'));
+        app.sync_cache();
+        assert!(!app.collapsed.is_empty(), "folded on the first file");
+        app.select_step(true); // switch to the next file
+        app.sync_cache();
+        assert!(app.collapsed.is_empty(), "folds cleared on file switch");
     }
 }
