@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ─── Relevant Reviews (rr) ───────────────────────────────────────────────────
+# ─── Marrow (rr) ───────────────────────────────────────────────────
 # Fetches a GitHub PR, uses AI to classify which files contain relevant changes
-# (business logic, infrastructure), and opens them in the Relevant Reviews app.
+# (business logic, infrastructure), and opens them in the Marrow app.
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +32,7 @@ Arguments:
 Options:
   --list-only        Only list classified files, don't open the app
   --manifest-only    Build manifest and print its path, don't open any viewer
-  --vscode           Open diffs in VSCode instead of the Relevant Reviews app
+  --vscode           Open diffs in VSCode instead of the Marrow app
   --help             Show this help message
 
 Examples:
@@ -571,18 +571,18 @@ if [[ "$USE_VSCODE" == true ]]; then
 
   echo "Done! Opened ${OPENED} diff tabs in VSCode."
 else
-  # Launch the Relevant Reviews desktop app
+  # Launch the Marrow desktop app
   APP_BINARY="$SCRIPT_DIR/app/src-tauri/target/release/relevant-reviews"
-  APP_BUNDLE="$SCRIPT_DIR/app/src-tauri/target/release/bundle/macos/Relevant Reviews.app"
+  APP_BUNDLE="$SCRIPT_DIR/app/src-tauri/target/release/bundle/macos/Marrow.app"
 
   if [[ -d "$APP_BUNDLE" ]]; then
-    echo "Opening Relevant Reviews app..."
+    echo "Opening Marrow app..."
     open "$APP_BUNDLE" --args "$MANIFEST_PATH"
   elif [[ -x "$APP_BINARY" ]]; then
-    echo "Opening Relevant Reviews app..."
+    echo "Opening Marrow app..."
     "$APP_BINARY" "$MANIFEST_PATH" &
   else
-    echo "Error: Relevant Reviews app not found." >&2
+    echo "Error: Marrow app not found." >&2
     echo "Build it with: cd $SCRIPT_DIR/app && cargo tauri build" >&2
     echo ""
     echo "Falling back to VSCode..."
