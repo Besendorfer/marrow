@@ -90,9 +90,11 @@ struct App<'a> {
     /// Anchor row of an active line selection (`v`); the range is anchor..cursor.
     selection_anchor: Option<u16>,
     /// Review threads (None = not loaded yet), the per-row thread index for the
-    /// threads view, and the thread being replied to (ReplyInput mode).
+    /// threads view, the per-row thread index for the inline diff (so `r` can
+    /// reply to a thread shown in the diff), and the thread being replied to.
     threads: Option<Vec<ReviewThread>>,
     thread_at_row: Vec<Option<usize>>,
+    diff_thread_at_row: Vec<Option<usize>>,
     pending_thread: Option<usize>,
     /// Whether we've tried the one-time startup thread load (for inline comments).
     threads_autoloaded: bool,
@@ -128,6 +130,7 @@ impl<'a> App<'a> {
             selection_anchor: None,
             threads: None,
             thread_at_row: Vec::new(),
+            diff_thread_at_row: Vec::new(),
             pending_thread: None,
             threads_autoloaded: false,
             status: None,
@@ -315,6 +318,7 @@ impl<'a> App<'a> {
         }
         self.cache_idx = sel;
         self.thread_at_row = Vec::new();
+        self.diff_thread_at_row = Vec::new();
         // Compute the view kind without holding a borrow across the build.
         let is_overview = matches!(self.current_row(), Some(Row::Overview));
         let is_threads = matches!(self.current_row(), Some(Row::Threads));
@@ -331,11 +335,16 @@ impl<'a> App<'a> {
                 Rendered::message("(no diff)")
             } else {
                 // Open review threads on this file, shown inline in the diff.
-                let file_threads: Vec<&ReviewThread> = self
+                // Carry each thread's global index so the inline rows can map
+                // back to `self.threads` for replies.
+                let file_threads: Vec<(usize, &ReviewThread)> = self
                     .threads
                     .as_ref()
                     .map(|ts| {
-                        ts.iter().filter(|t| t.path == file.path && !t.is_resolved).collect()
+                        ts.iter()
+                            .enumerate()
+                            .filter(|(_, t)| t.path == file.path && !t.is_resolved)
+                            .collect()
                     })
                     .unwrap_or_default();
                 diff_lines_for(file, &file_threads)
@@ -347,6 +356,7 @@ impl<'a> App<'a> {
         self.hunk_rows = rendered.hunk_rows;
         self.finding_rows = rendered.finding_rows;
         self.targets = rendered.targets;
+        self.diff_thread_at_row = rendered.thread_at_row;
     }
 
     fn jump_next(rows: &[usize], from: u16) -> Option<u16> {
@@ -744,12 +754,17 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Start a reply to the thread under the cursor (threads view only).
+    /// Start a reply to the thread under the cursor — either in the Threads view
+    /// or on an inline thread shown in a file's diff.
     fn begin_reply(&mut self) {
-        if !matches!(self.current_row(), Some(Row::Threads)) {
-            return;
-        }
-        if let Some(idx) = self.current_thread() {
+        let idx = match self.current_row() {
+            Some(Row::Threads) => self.current_thread(),
+            Some(Row::File(_)) => {
+                self.diff_thread_at_row.get(self.cursor as usize).copied().flatten()
+            }
+            _ => None,
+        };
+        if let Some(idx) = idx {
             self.pending_thread = Some(idx);
             self.review_input.clear();
             self.status = None;
@@ -1062,6 +1077,9 @@ struct Rendered {
     hunk_rows: Vec<usize>,
     finding_rows: Vec<usize>,
     targets: Vec<Option<CommentTarget>>,
+    /// Parallel to `lines`: the global `threads` index of the inline thread a row
+    /// belongs to (the anchored code line and its 💬 block), else None.
+    thread_at_row: Vec<Option<usize>>,
 }
 
 impl Rendered {
@@ -1090,16 +1108,17 @@ const DEL_BG: Color = Color::Rgb(52, 28, 30);
 /// severity gutter bar (`▍`) on covered lines, and open review-thread comments
 /// inline (`💬` below the line). Also records the row indices of hunk headers
 /// and findings for jump navigation.
-fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
+fn diff_lines_for(file: &FileDiff, threads: &[(usize, &ReviewThread)]) -> Rendered {
     // new-side line → highlights starting there, and lines covered by any (for
     // the gutter bar, keeping the highest severity).
     let mut starts: HashMap<u64, Vec<&Highlight>> = HashMap::new();
     let mut covered: HashMap<u64, Color> = HashMap::new();
-    // new-side line → review threads anchored there (shown inline).
-    let mut threads_at: HashMap<u64, Vec<&ReviewThread>> = HashMap::new();
-    for t in threads {
+    // new-side line → review threads anchored there (shown inline), each paired
+    // with its global index in `App::threads` so inline rows can map back.
+    let mut threads_at: HashMap<u64, Vec<(usize, &ReviewThread)>> = HashMap::new();
+    for &(gi, t) in threads {
         if let Some(l) = t.line {
-            threads_at.entry(l).or_default().push(t);
+            threads_at.entry(l).or_default().push((gi, t));
         }
     }
     for h in &file.highlights {
@@ -1124,6 +1143,7 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
     let mut hunk_rows: Vec<usize> = Vec::new();
     let mut finding_rows: Vec<usize> = Vec::new();
     let mut targets: Vec<Option<CommentTarget>> = Vec::new();
+    let mut thread_at_row: Vec<Option<usize>> = Vec::new();
     let mut new_ln: Option<u64> = None;
     let mut old_ln: Option<u64> = None;
     for line in file.unified_diff.lines() {
@@ -1133,6 +1153,7 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
             hunk_rows.push(out.len());
             out.push(Line::from(Span::styled(line.to_string(), Style::default().fg(Color::Cyan))));
             targets.push(None);
+            thread_at_row.push(None);
             continue;
         }
 
@@ -1146,6 +1167,7 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
                     Style::default().fg(Color::DarkGray),
                 )));
                 targets.push(None);
+                thread_at_row.push(None);
                 continue;
             }
         };
@@ -1168,6 +1190,7 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
                         Span::styled(h.comment.clone(), Style::default().fg(c)),
                     ]));
                     targets.push(None);
+                    thread_at_row.push(None);
                 }
             }
         }
@@ -1186,6 +1209,7 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
         }
         spans.push(Span::styled(marker.to_string(), Style::default().fg(marker_color)));
         spans.extend(highlight_spans(rest, syntax));
+        let code_row = out.len();
         match line_bg {
             Some(bg) => {
                 spans.push(Span::raw(" ".repeat(200)));
@@ -1201,43 +1225,63 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
             _ => new_ln.map(|line| CommentTarget { line, side: "RIGHT" }),
         };
         targets.push(target);
+        thread_at_row.push(None);
 
         // Open review-thread comments, shown inline below the line they're on,
         // on a tinted background with a magenta left bar so they stand out.
         if let Some(ln) = cur_new {
             if let Some(ths) = threads_at.get(&ln) {
+                // The anchored code line replies to the first thread on it, so
+                // `r` works with the cursor on the code or on the 💬 block.
+                if let Some((gi, _)) = ths.first() {
+                    thread_at_row[code_row] = Some(*gi);
+                }
                 let bg = Style::default().bg(COMMENT_BG);
                 // Trailing pad so the line's background fills the row into a band
                 // (a Line's bg only covers the cells it occupies).
                 let bar = || Span::styled("▌ ", Style::default().fg(Color::Magenta));
                 let pad = || Span::raw(" ".repeat(160));
-                let mut push = |spans: Vec<Span<'static>>| {
+                let mut push = |spans: Vec<Span<'static>>, ti: Option<usize>| {
                     let mut s = spans;
                     s.push(pad());
                     out.push(Line::from(s).style(bg));
                     targets.push(None);
+                    thread_at_row.push(ti);
                 };
-                for th in ths {
-                    push(vec![
-                        bar(),
-                        Span::styled(
-                            "💬 thread",
-                            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-                        ),
-                    ]);
-                    for c in &th.comments {
-                        push(vec![
+                for (gi, th) in ths {
+                    let gi = Some(*gi);
+                    push(
+                        vec![
                             bar(),
                             Span::styled(
-                                format!("@{}", c.author.login),
-                                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                                "💬 thread",
+                                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
                             ),
-                        ]);
-                        for l in crate::wrap(&c.body, 72) {
-                            push(vec![
+                        ],
+                        gi,
+                    );
+                    for c in &th.comments {
+                        push(
+                            vec![
                                 bar(),
-                                Span::styled(format!("  {l}"), Style::default().fg(Color::White)),
-                            ]);
+                                Span::styled(
+                                    format!("@{}", c.author.login),
+                                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                                ),
+                            ],
+                            gi,
+                        );
+                        for l in crate::wrap(&c.body, 72) {
+                            push(
+                                vec![
+                                    bar(),
+                                    Span::styled(
+                                        format!("  {l}"),
+                                        Style::default().fg(Color::White),
+                                    ),
+                                ],
+                                gi,
+                            );
                         }
                     }
                 }
@@ -1266,7 +1310,7 @@ fn diff_lines_for(file: &FileDiff, threads: &[&ReviewThread]) -> Rendered {
             }
         }
     }
-    Rendered { lines: out, hunk_rows, finding_rows, targets }
+    Rendered { lines: out, hunk_rows, finding_rows, targets, thread_at_row }
 }
 
 /// Parse the old-side start line from a hunk header: `@@ -a,b +c,d @@` -> a.
@@ -1379,7 +1423,7 @@ fn render_help(f: &mut Frame) {
         Line::from(""),
         head("Threads"),
         Line::from("  T            load / open threads"),
-        Line::from("  r            reply to the thread"),
+        Line::from("  r            reply (threads view or 💬 in diff)"),
         Line::from("  x            resolve / reopen"),
         Line::from(""),
         Line::from("  ?            toggle this help"),
@@ -1761,6 +1805,34 @@ mod tests {
         assert!(text.contains('💬'), "inline comment marker");
         assert!(text.contains("@alice"), "author");
         assert!(text.contains("needs a guard here"), "comment body");
+    }
+
+    #[test]
+    fn reply_from_diff_targets_inline_thread() {
+        let m = manifest(); // default selects pkg/high.go (L1 ctx, L2 added)
+        let mut app = App::new(&m);
+        // Two threads; the one on high.go is at global index 1.
+        app.threads = Some(vec![
+            thread(false, "pkg/other.go", 3, "elsewhere"),
+            thread(false, "pkg/high.go", 2, "needs a guard here"),
+        ]);
+        app.cache_idx = None;
+        app.sync_cache();
+        // The anchored code line (new-side L2) maps to thread index 1.
+        let code_row = app
+            .diff_thread_at_row
+            .iter()
+            .position(|t| *t == Some(1))
+            .expect("inline thread row recorded");
+        app.cursor = code_row as u16;
+        press(&mut app, KeyCode::Char('r'));
+        assert!(matches!(app.mode, Mode::ReplyInput));
+        assert_eq!(app.pending_thread, Some(1));
+        // A line with no inline thread does not start a reply.
+        app.mode = Mode::Normal;
+        app.cursor = 0; // hunk header
+        press(&mut app, KeyCode::Char('r'));
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]
