@@ -977,16 +977,21 @@ impl<'a> App<'a> {
                 ))),
                 Row::File(i) => {
                     let file = self.files[*i];
-                    let (label, color) = match file.risk_level.as_str() {
-                        "high" => ("HIGH", Color::Red),
-                        "low" => ("low ", Color::Green),
-                        _ => ("med ", Color::Yellow),
+                    // Risk is kept as the filename color (no HIGH/med/low text);
+                    // churn shows additions/deletions.
+                    let color = match file.risk_level.as_str() {
+                        "high" => Color::Red,
+                        "low" => Color::Green,
+                        _ => Color::Yellow,
                     };
                     ListItem::new(Line::from(vec![
                         Span::raw("  "),
-                        Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                        Span::raw(" "),
-                        Span::raw(short_path(&file.path)),
+                        Span::styled(short_path(&file.path, 22), Style::default().fg(color)),
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("+{} -{}", file.additions, file.deletions),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]))
                 }
             })
@@ -1299,13 +1304,12 @@ fn risk_rank(risk: &str) -> u8 {
 }
 
 /// Truncate a long path from the left for the narrow sidebar (char-safe).
-fn short_path(path: &str) -> String {
-    const MAX: usize = 34;
+fn short_path(path: &str, max: usize) -> String {
     let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= MAX {
+    if chars.len() <= max {
         return path.to_string();
     }
-    let tail: String = chars[chars.len() - (MAX - 1)..].iter().collect();
+    let tail: String = chars[chars.len() - (max - 1)..].iter().collect();
     format!("…{tail}")
 }
 
@@ -1485,7 +1489,7 @@ mod tests {
         let mut app = App::new(&m);
         let out = render_to_string(&mut app, 100, 20);
         assert!(out.contains("marrow"), "header missing");
-        assert!(out.contains("HIGH"), "risk badge missing");
+        assert!(out.contains("+1 -0"), "sidebar churn missing");
         assert!(out.contains("high.go"), "selected file path missing");
         assert!(out.contains("@@ -1,1 +1,2 @@"), "diff hunk missing");
         assert!(out.contains("q quit"), "footer missing");
