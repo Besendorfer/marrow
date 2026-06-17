@@ -18,7 +18,7 @@ use ratatui::{DefaultTerminal, Frame};
 use syntect::easy::HighlightLines;
 use syntect::parsing::SyntaxReference;
 
-use marrow_core::types::{FileDiff, Highlight, ReviewManifest};
+use marrow_core::types::{FileDiff, Highlight, ReviewManifest, ReviewThread};
 
 /// Enter the alternate screen, run the viewer, and always restore the terminal.
 pub fn run(manifest: &ReviewManifest) -> io::Result<()> {
@@ -40,6 +40,8 @@ enum Mode {
     ReviewInput,
     /// Typing an inline comment on the cursor line.
     CommentInput,
+    /// Typing a reply to the thread under the cursor.
+    ReplyInput,
 }
 
 /// A commentable diff line: the file line number and the side it's on.
@@ -52,6 +54,7 @@ struct CommentTarget {
 /// A sidebar row. Group headers are display-only (not selectable).
 enum Row {
     Overview,
+    Threads,
     Group(String),
     File(usize), // index into App::files
 }
@@ -80,6 +83,11 @@ struct App<'a> {
     review_input: String,
     /// The line being commented on while in CommentInput mode.
     pending_comment: Option<CommentTarget>,
+    /// Review threads (None = not loaded yet), the per-row thread index for the
+    /// threads view, and the thread being replied to (ReplyInput mode).
+    threads: Option<Vec<ReviewThread>>,
+    thread_at_row: Vec<Option<usize>>,
+    pending_thread: Option<usize>,
     /// Last action result, shown in the header.
     status: Option<String>,
 }
@@ -107,6 +115,9 @@ impl<'a> App<'a> {
             review_event: "",
             review_input: String::new(),
             pending_comment: None,
+            threads: None,
+            thread_at_row: Vec::new(),
+            pending_thread: None,
             status: None,
         };
         app.rebuild_rows();
@@ -150,7 +161,7 @@ impl<'a> App<'a> {
     fn build_rows(&self) -> Vec<Row> {
         let filter_low = self.filter_low;
         let keep = |f: &FileDiff| !filter_low || f.risk_level != "low";
-        let mut rows = vec![Row::Overview];
+        let mut rows = vec![Row::Overview, Row::Threads];
 
         if self.manifest.change_groups.is_empty() {
             for (i, f) in self.files.iter().enumerate() {
@@ -290,17 +301,26 @@ impl<'a> App<'a> {
             return;
         }
         self.cache_idx = sel;
-        let rendered = match self.current_row() {
-            Some(Row::Overview) => self.build_overview(),
-            Some(Row::File(i)) => {
-                let file = self.files[*i];
-                if file.unified_diff.is_empty() {
-                    Rendered::message("(no diff)")
-                } else {
-                    diff_lines_for(file)
-                }
+        self.thread_at_row = Vec::new();
+        // Compute the view kind without holding a borrow across the build.
+        let is_overview = matches!(self.current_row(), Some(Row::Overview));
+        let is_threads = matches!(self.current_row(), Some(Row::Threads));
+        let file_idx = self.selected_file_idx();
+        let rendered = if is_overview {
+            self.build_overview()
+        } else if is_threads {
+            let (lines, thread_at_row) = self.build_threads_view();
+            self.thread_at_row = thread_at_row;
+            Rendered { lines, ..Default::default() }
+        } else if let Some(i) = file_idx {
+            let file = self.files[i];
+            if file.unified_diff.is_empty() {
+                Rendered::message("(no diff)")
+            } else {
+                diff_lines_for(file)
             }
-            _ => Rendered::default(),
+        } else {
+            Rendered::default()
         };
         self.diff_cache = rendered.lines;
         self.hunk_rows = rendered.hunk_rows;
@@ -407,6 +427,9 @@ impl<'a> App<'a> {
                     self.mode = Mode::ReviewPick;
                 }
                 KeyCode::Char('c') => self.begin_comment(),
+                KeyCode::Char('T') => self.open_threads(),
+                KeyCode::Char('r') => self.begin_reply(),
+                KeyCode::Char('x') => self.toggle_resolve(),
                 KeyCode::Char('/') => {
                     self.mode = Mode::Search;
                     self.search_input.clear();
@@ -447,6 +470,15 @@ impl<'a> App<'a> {
             },
             Mode::CommentInput => match code {
                 KeyCode::Enter => self.submit_comment(),
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    self.review_input.pop();
+                }
+                KeyCode::Char(c) => self.review_input.push(c),
+                _ => {}
+            },
+            Mode::ReplyInput => match code {
+                KeyCode::Enter => self.submit_reply(),
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Backspace => {
                     self.review_input.pop();
@@ -522,6 +554,182 @@ impl<'a> App<'a> {
             Err(e) => format!("error: {e}"),
         });
         self.mode = Mode::Normal;
+    }
+
+    /// Render the review threads into lines, plus a per-row thread index so the
+    /// cursor knows which thread it's on.
+    fn build_threads_view(&self) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
+        let mut lines: Vec<Line> = Vec::new();
+        let mut rows: Vec<Option<usize>> = Vec::new();
+        let threads = match &self.threads {
+            Some(t) => t,
+            None => {
+                lines.push(Line::from(Span::styled(
+                    "Press T to load review threads.",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                rows.push(None);
+                return (lines, rows);
+            }
+        };
+        if threads.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No review threads.",
+                Style::default().fg(Color::DarkGray),
+            )));
+            rows.push(None);
+            return (lines, rows);
+        }
+        for (ti, th) in threads.iter().enumerate() {
+            let (state, color) = if th.is_resolved {
+                ("resolved", Color::Green)
+            } else {
+                ("open", Color::Yellow)
+            };
+            let loc = th.line.map(|l| format!(":{l}")).unwrap_or_default();
+            let outdated = if th.is_outdated { "  (outdated)" } else { "" };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{state} "), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{}{}", th.path, loc), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(outdated.to_string(), Style::default().fg(Color::DarkGray)),
+            ]));
+            rows.push(Some(ti));
+            for c in &th.comments {
+                lines.push(Line::from(Span::styled(
+                    format!("  @{}", c.author.login),
+                    Style::default().fg(Color::Cyan),
+                )));
+                rows.push(Some(ti));
+                for l in crate::wrap(&c.body, 76) {
+                    lines.push(Line::from(format!("    {l}")));
+                    rows.push(Some(ti));
+                }
+            }
+            lines.push(Line::from(""));
+            rows.push(None);
+        }
+        (lines, rows)
+    }
+
+    fn current_thread(&self) -> Option<usize> {
+        self.thread_at_row.get(self.cursor as usize).copied().flatten()
+    }
+
+    /// Load threads (if needed) and switch to the threads view.
+    fn open_threads(&mut self) {
+        self.ensure_threads_loaded();
+        if let Some(pos) = self.rows.iter().position(|r| matches!(r, Row::Threads)) {
+            self.list_state.select(Some(pos));
+            self.cursor = 0;
+            self.cache_idx = None; // threads may have just loaded
+        }
+    }
+
+    fn ensure_threads_loaded(&mut self) {
+        if self.threads.is_some() {
+            return;
+        }
+        let Some((github, pr)) = self.github_and_pr() else {
+            return;
+        };
+        match block_on(github.get_review_threads(&pr.owner, &pr.repo, pr.number)) {
+            Ok(t) => {
+                self.status = Some(format!("loaded {} thread(s)", t.len()));
+                self.threads = Some(t);
+            }
+            Err(e) => self.status = Some(format!("error: {e}")),
+        }
+    }
+
+    /// Start a reply to the thread under the cursor (threads view only).
+    fn begin_reply(&mut self) {
+        if !matches!(self.current_row(), Some(Row::Threads)) {
+            return;
+        }
+        if let Some(idx) = self.current_thread() {
+            self.pending_thread = Some(idx);
+            self.review_input.clear();
+            self.status = None;
+            self.mode = Mode::ReplyInput;
+        }
+    }
+
+    fn submit_reply(&mut self) {
+        let body = self.review_input.clone();
+        if body.trim().is_empty() {
+            self.status = Some("error: reply needs a message".to_string());
+            return;
+        }
+        let comment_id = self
+            .pending_thread
+            .and_then(|i| self.threads.as_ref()?.get(i))
+            .and_then(|th| th.comments.first())
+            .map(|c| c.id.clone());
+        let comment_id = match comment_id {
+            Some(id) => id,
+            None => {
+                self.status = Some("error: thread has no comment to reply to".to_string());
+                self.mode = Mode::Normal;
+                return;
+            }
+        };
+        let Some((github, pr)) = self.github_and_pr() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let result = block_on(async move {
+            let pr_id = github.get_pull_request_id(&pr.owner, &pr.repo, pr.number).await?;
+            github.reply_to_review_thread(&pr_id, &comment_id, &body).await
+        });
+        self.status = Some(match result {
+            Ok(_) => "✓ reply posted".to_string(),
+            Err(e) => format!("error: {e}"),
+        });
+        self.mode = Mode::Normal;
+    }
+
+    /// Resolve / reopen the thread under the cursor (threads view only).
+    fn toggle_resolve(&mut self) {
+        if !matches!(self.current_row(), Some(Row::Threads)) {
+            return;
+        }
+        let idx = match self.current_thread() {
+            Some(i) => i,
+            None => return,
+        };
+        let (thread_id, want) = match self.threads.as_ref().and_then(|t| t.get(idx)) {
+            Some(th) => (th.id.clone(), !th.is_resolved),
+            None => return,
+        };
+        let Some((github, _pr)) = self.github_and_pr() else {
+            return;
+        };
+        match block_on(github.resolve_review_thread(&thread_id, want)) {
+            Ok(now) => {
+                if let Some(th) = self.threads.as_mut().and_then(|t| t.get_mut(idx)) {
+                    th.is_resolved = now;
+                }
+                self.status = Some(if now { "✓ resolved".into() } else { "✓ reopened".into() });
+                self.cache_idx = None; // re-render the new state
+            }
+            Err(e) => self.status = Some(format!("error: {e}")),
+        }
+    }
+
+    fn github_and_pr(
+        &mut self,
+    ) -> Option<(marrow_core::github::GithubClient, marrow_core::pr_parser::ParsedPrRef)> {
+        let settings = marrow_core::config::load_settings();
+        let github = marrow_core::github::GithubClient::new(
+            marrow_core::config::resolve_github_token(&settings),
+        );
+        match marrow_core::pr_parser::parse_pr_ref(&self.manifest.pr_url) {
+            Ok(p) => Some((github, p)),
+            Err(e) => {
+                self.status = Some(format!("error: {e}"));
+                None
+            }
+        }
     }
 
     fn begin_review(&mut self, event: &'static str) {
@@ -620,10 +828,19 @@ impl<'a> App<'a> {
                     Span::styled("▏  (Enter submit · Esc cancel)", Style::default().fg(Color::DarkGray)),
                 ]))
             }
-            _ => Paragraph::new(
-                " ]/[ file · }/{ hunk · n/N find · c comment · R review · / search · t filter · ? help · q quit ",
-            )
-            .style(Style::default().fg(Color::DarkGray)),
+            Mode::ReplyInput => Paragraph::new(Line::from(vec![
+                Span::styled(" reply: ", Style::default().fg(Color::Yellow)),
+                Span::raw(self.review_input.clone()),
+                Span::styled("▏  (Enter submit · Esc cancel)", Style::default().fg(Color::DarkGray)),
+            ])),
+            _ => {
+                let hint = if matches!(self.current_row(), Some(Row::Threads)) {
+                    " r reply · x resolve · T reload · ]/[ view · ? help · q quit "
+                } else {
+                    " ]/[ file · n/N find · c comment · R review · T threads · / search · ? help · q quit "
+                };
+                Paragraph::new(hint).style(Style::default().fg(Color::DarkGray))
+            }
         };
         f.render_widget(footer, rows[2]);
 
@@ -639,6 +856,10 @@ impl<'a> App<'a> {
             .map(|row| match row {
                 Row::Overview => ListItem::new(Line::from(Span::styled(
                     "Overview",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ))),
+                Row::Threads => ListItem::new(Line::from(Span::styled(
+                    "Threads",
                     Style::default().add_modifier(Modifier::BOLD),
                 ))),
                 Row::Group(label) => ListItem::new(Line::from(Span::styled(
@@ -672,9 +893,11 @@ impl<'a> App<'a> {
 
     fn render_diff(&mut self, f: &mut Frame, area: Rect) {
         let is_overview = matches!(self.current_row(), Some(Row::Overview));
-        let is_file = matches!(self.current_row(), Some(Row::File(_)));
+        let is_threads = matches!(self.current_row(), Some(Row::Threads));
         let title = if is_overview {
             " Overview ".to_string()
+        } else if is_threads {
+            " Threads ".to_string()
         } else {
             self.selected()
                 .map(|file| format!(" {}  +{} -{} ", file.path, file.additions, file.deletions))
@@ -695,9 +918,9 @@ impl<'a> App<'a> {
         }
         self.view_top = self.view_top.min(total.saturating_sub(inner_h));
 
-        // Highlight the cursor line in the diff (not the overview prose).
+        // Highlight the cursor line in the diff/threads pane (not the overview).
         let mut lines = self.diff_cache.clone();
-        if is_file {
+        if !is_overview {
             if let Some(line) = lines.get_mut(self.cursor as usize) {
                 line.style = Style::default().bg(Color::Rgb(45, 50, 60));
             }
@@ -959,6 +1182,11 @@ fn render_help(f: &mut Frame) {
         Line::from("  c            comment on the cursor line"),
         Line::from("  R            submit a review"),
         Line::from(""),
+        head("Threads"),
+        Line::from("  T            load / open threads"),
+        Line::from("  r            reply to the thread"),
+        Line::from("  x            resolve / reopen"),
+        Line::from(""),
         Line::from("  ?            toggle this help"),
         Line::from("  q / Esc      quit"),
     ];
@@ -972,9 +1200,45 @@ fn render_help(f: &mut Frame) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marrow_core::types::ChangeGroup;
+    use marrow_core::types::{ChangeGroup, CommentAuthor, ReviewComment};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    fn thread(resolved: bool, path: &str, line: u64, comment: &str) -> ReviewThread {
+        ReviewThread {
+            id: "t1".into(),
+            is_resolved: resolved,
+            is_outdated: false,
+            path: path.into(),
+            line: Some(line),
+            original_line: Some(line),
+            diff_hunk: String::new(),
+            comments: vec![ReviewComment {
+                id: "c1".into(),
+                body: comment.into(),
+                author: CommentAuthor { login: "alice".into(), avatar_url: String::new() },
+                created_at: String::new(),
+                updated_at: String::new(),
+                url: String::new(),
+                reactions: Vec::new(),
+            }],
+        }
+    }
+
+    fn lines_text(app: &App) -> String {
+        app.diff_cache
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn select_threads(app: &mut App) {
+        let pos = app.rows.iter().position(|r| matches!(r, Row::Threads)).unwrap();
+        app.list_state.select(Some(pos));
+        app.cache_idx = None;
+        app.sync_cache();
+    }
 
     fn file(path: &str, risk: &str, diff: &str) -> FileDiff {
         FileDiff {
@@ -1078,9 +1342,12 @@ mod tests {
         assert_eq!(app.selected().map(|f| f.path.as_str()), Some("pkg/low.go"));
         app.select_step(true);
         assert_eq!(app.selected().map(|f| f.path.as_str()), Some("pkg/low.go"));
-        // Backward past the first file reaches the overview (no file selected).
-        app.select_step(false);
-        app.select_step(false);
+        // Backward steps pass through the files, the Threads row, then the
+        // Overview (no file selected).
+        app.select_step(false); // low.go → high.go
+        app.select_step(false); // high.go → Threads
+        assert!(matches!(app.current_row(), Some(Row::Threads)));
+        app.select_step(false); // Threads → Overview
         assert!(matches!(app.current_row(), Some(Row::Overview)));
         assert_eq!(app.selected_file_idx(), None);
     }
@@ -1110,7 +1377,8 @@ mod tests {
         let mut m = manifest();
         m.summary = "This PR adds a flag.".into();
         let mut app = App::new(&m);
-        app.select_step(false); // first file → overview
+        app.select_step(false); // first file → Threads
+        app.select_step(false); // Threads → Overview
         let out = render_to_string(&mut app, 100, 20);
         assert!(out.contains("2 files"), "risk counts missing");
         assert!(out.contains("This PR adds a flag"), "summary missing");
@@ -1248,5 +1516,38 @@ mod tests {
         assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
         app.on_key(KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn threads_view_maps_rows_and_state() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        app.threads = Some(vec![thread(false, "pkg/a.go", 10, "please fix this")]);
+        select_threads(&mut app);
+        let text = lines_text(&app);
+        assert!(text.contains("open"), "state shown");
+        assert!(text.contains("pkg/a.go:10"), "path:line shown");
+        assert!(text.contains("@alice"), "author shown");
+        assert!(text.contains("please fix this"), "comment body shown");
+        // The header row maps to thread 0; the cursor resolves to it.
+        assert_eq!(app.thread_at_row.first().copied().flatten(), Some(0));
+        app.cursor = 0;
+        assert_eq!(app.current_thread(), Some(0));
+    }
+
+    #[test]
+    fn reply_flow_guards_empty() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        app.threads = Some(vec![thread(false, "pkg/a.go", 10, "fix")]);
+        select_threads(&mut app);
+        app.cursor = 0;
+        app.on_key(KeyCode::Char('r'));
+        assert!(matches!(app.mode, Mode::ReplyInput));
+        assert_eq!(app.pending_thread, Some(0));
+        // Submitting empty hits the guard before any network call.
+        app.on_key(KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::ReplyInput));
+        assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
     }
 }
