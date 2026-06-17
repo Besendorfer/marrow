@@ -1,7 +1,14 @@
 use crate::bedrock::BedrockClient;
+use crate::types::Settings;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+/// OpenAI's default API base; also the shape OpenRouter / Groq / Together / many
+/// local servers (Ollama, LM Studio) speak.
+const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+/// Google Gemini's OpenAI-compatible endpoint.
+const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
 /// Extract a JSON array from text that may contain markdown fences or preamble.
 pub fn extract_json_array(text: &str) -> Result<serde_json::Value, String> {
@@ -42,40 +49,84 @@ pub fn extract_json_array(text: &str) -> Result<serde_json::Value, String> {
     ))
 }
 
-/// Which backend a (model, api-key) pair resolves to. Pure decision, separated
-/// from construction so it's testable without hitting AWS/network.
+/// The AI provider a config resolves to. A pure decision, separated from
+/// construction so it's testable without hitting AWS/network.
 #[derive(Debug, PartialEq, Eq)]
-pub enum BackendChoice {
+pub enum Provider {
     Bedrock,
     Anthropic,
     ClaudeCli,
+    OpenAi,
+    Gemini,
+    /// Generic OpenAI-compatible endpoint (OpenRouter, a local server, …).
+    OpenAiCompatible,
 }
 
-impl BackendChoice {
+impl Provider {
     /// Human-readable label for `marrow settings`.
     pub fn label(&self) -> &'static str {
         match self {
-            BackendChoice::Bedrock => "bedrock",
-            BackendChoice::Anthropic => "anthropic-api",
-            BackendChoice::ClaudeCli => "claude-cli",
+            Provider::Bedrock => "bedrock",
+            Provider::Anthropic => "anthropic-api",
+            Provider::ClaudeCli => "claude-cli",
+            Provider::OpenAi => "openai",
+            Provider::Gemini => "gemini",
+            Provider::OpenAiCompatible => "openai-compatible",
         }
     }
 }
 
-/// Decide the backend: an `arn:` model → Bedrock; otherwise an Anthropic API
-/// key (config or env) → the direct Anthropic API; otherwise the `claude` CLI.
-pub fn choose_backend(model: &str, anthropic_key: Option<&str>) -> BackendChoice {
+/// Resolve the provider. An explicit `provider_override` wins; otherwise
+/// auto-detect: `arn:` → Bedrock; a custom base URL → OpenAI-compatible;
+/// `gpt`/`o1`/`o3`/`o4`/`chatgpt` → OpenAI; `gemini` → Gemini; else (claude*/
+/// unknown) → Anthropic if a key is present, else the `claude` CLI.
+pub fn choose_provider(
+    model: &str,
+    provider_override: &str,
+    has_base_url: bool,
+    has_anthropic_key: bool,
+) -> Provider {
+    match provider_override.trim().to_ascii_lowercase().as_str() {
+        "anthropic" => return Provider::Anthropic,
+        "openai" => return Provider::OpenAi,
+        "gemini" | "google" => return Provider::Gemini,
+        "bedrock" => return Provider::Bedrock,
+        "claude-cli" | "claude_cli" | "cli" => return Provider::ClaudeCli,
+        "openai-compatible" | "compatible" | "openrouter" => return Provider::OpenAiCompatible,
+        _ => {} // empty or unrecognized → fall through to auto-detect
+    }
+
     if model.starts_with("arn:") {
-        BackendChoice::Bedrock
-    } else if anthropic_key.is_some_and(|k| !k.is_empty()) {
-        BackendChoice::Anthropic
+        return Provider::Bedrock;
+    }
+    if has_base_url {
+        return Provider::OpenAiCompatible;
+    }
+    let m = model.to_ascii_lowercase();
+    if ["gpt", "o1", "o3", "o4", "chatgpt"].iter().any(|p| m.starts_with(p)) {
+        return Provider::OpenAi;
+    }
+    if m.starts_with("gemini") {
+        return Provider::Gemini;
+    }
+    if has_anthropic_key {
+        Provider::Anthropic
     } else {
-        BackendChoice::ClaudeCli
+        Provider::ClaudeCli
     }
 }
 
-/// AI backend that dispatches to AWS Bedrock (ARN model IDs), the Anthropic API
-/// (a model name + API key), or the `claude` CLI (a model name, no key).
+/// The provider a full `Settings` resolves to (reads keys/base-url from config +
+/// env). Used for construction and for the `marrow settings` display.
+pub fn provider_for_settings(s: &Settings) -> Provider {
+    let has_anthropic = crate::config::resolve_anthropic_api_key(s).is_some();
+    let has_base_url = crate::config::resolve_openai_base_url(s).is_some();
+    choose_provider(&s.model, &s.provider, has_base_url, has_anthropic)
+}
+
+/// AI backend that dispatches to AWS Bedrock, the Anthropic API, an
+/// OpenAI-compatible endpoint (OpenAI / Gemini / OpenRouter / local), or the
+/// `claude` CLI. See [`choose_provider`] for the dispatch rule.
 pub enum AiBackend {
     Bedrock {
         client: BedrockClient,
@@ -85,31 +136,81 @@ pub enum AiBackend {
         api_key: String,
         model: String,
     },
+    OpenAiCompatible {
+        base_url: String,
+        api_key: String,
+        model: String,
+    },
     ClaudeCli {
         model: String,
     },
 }
 
 impl AiBackend {
-    /// Create a backend from the model string and an optional Anthropic API key.
-    /// See [`choose_backend`] for the dispatch rule.
-    pub async fn new(
-        model: &str,
-        aws_profile: &str,
-        anthropic_key: Option<&str>,
-    ) -> Result<Self, String> {
-        match choose_backend(model, anthropic_key) {
-            BackendChoice::Bedrock => {
-                let region = crate::bedrock::region_from_arn(model)?;
-                let client = BedrockClient::new(&region, aws_profile).await?;
-                Ok(AiBackend::Bedrock { client, model_arn: model.to_string() })
+    /// Build a backend from a full `Settings` (resolving keys/base-url from
+    /// config + env).
+    pub async fn from_settings(s: &Settings) -> Result<Self, String> {
+        match provider_for_settings(s) {
+            Provider::Bedrock => {
+                let region = crate::bedrock::region_from_arn(&s.model)?;
+                let client = BedrockClient::new(&region, &s.aws_profile).await?;
+                Ok(AiBackend::Bedrock { client, model_arn: s.model.clone() })
             }
-            BackendChoice::Anthropic => Ok(AiBackend::Anthropic {
-                api_key: anthropic_key.unwrap_or_default().to_string(),
-                model: model.to_string(),
-            }),
-            BackendChoice::ClaudeCli => Ok(AiBackend::ClaudeCli { model: model.to_string() }),
+            Provider::Anthropic => {
+                let api_key = crate::config::resolve_anthropic_api_key(s).ok_or(
+                    "Anthropic provider selected but no API key. Set anthropic_api_key or ANTHROPIC_API_KEY (or install the `claude` CLI).",
+                )?;
+                Ok(AiBackend::Anthropic { api_key, model: s.model.clone() })
+            }
+            Provider::ClaudeCli => Ok(AiBackend::ClaudeCli { model: s.model.clone() }),
+            Provider::OpenAi => Self::openai_compatible(
+                s,
+                OPENAI_BASE_URL,
+                crate::config::resolve_openai_api_key(s),
+                "OpenAI",
+                "OPENAI_API_KEY",
+            ),
+            Provider::Gemini => Self::openai_compatible(
+                s,
+                GEMINI_BASE_URL,
+                crate::config::resolve_gemini_api_key(s),
+                "Gemini",
+                "GEMINI_API_KEY",
+            ),
+            Provider::OpenAiCompatible => {
+                let base_url = crate::config::resolve_openai_base_url(s).ok_or(
+                    "openai-compatible provider selected but no base URL. Set openai_base_url or OPENAI_BASE_URL.",
+                )?;
+                let base_url = base_url.trim_end_matches('/').to_string();
+                Self::openai_compatible_with_base(s, base_url, crate::config::resolve_openai_api_key(s))
+            }
         }
+    }
+
+    /// Helper: an OpenAI-compatible backend at a fixed `base_url` (OpenAI/Gemini).
+    fn openai_compatible(
+        s: &Settings,
+        base_url: &str,
+        api_key: Option<String>,
+        name: &str,
+        env_var: &str,
+    ) -> Result<Self, String> {
+        let api_key = api_key.ok_or_else(|| {
+            format!("{name} provider selected but no API key. Set the key in config or {env_var}.")
+        })?;
+        Ok(AiBackend::OpenAiCompatible { base_url: base_url.to_string(), api_key, model: s.model.clone() })
+    }
+
+    /// Helper: an OpenAI-compatible backend at a custom `base_url`.
+    fn openai_compatible_with_base(
+        s: &Settings,
+        base_url: String,
+        api_key: Option<String>,
+    ) -> Result<Self, String> {
+        let api_key = api_key.ok_or(
+            "openai-compatible provider needs an API key. Set openai_api_key or OPENAI_API_KEY.",
+        )?;
+        Ok(AiBackend::OpenAiCompatible { base_url, api_key, model: s.model.clone() })
     }
 
     /// Send a prompt to the AI and return the text response.
@@ -120,6 +221,9 @@ impl AiBackend {
             }
             AiBackend::Anthropic { api_key, model } => {
                 invoke_anthropic(api_key, model, prompt).await
+            }
+            AiBackend::OpenAiCompatible { base_url, api_key, model } => {
+                invoke_openai_compatible(base_url, api_key, model, prompt).await
             }
             AiBackend::ClaudeCli { model } => invoke_claude_cli(model, prompt).await,
         }
@@ -169,6 +273,48 @@ async fn invoke_anthropic(api_key: &str, model: &str, prompt: &str) -> Result<St
     if out.trim().is_empty() {
         let snippet: String = text.chars().take(500).collect();
         return Err(format!("Anthropic API returned no text content. Raw: {snippet}"));
+    }
+    Ok(out)
+}
+
+/// Call an OpenAI-compatible Chat Completions endpoint (OpenAI, Gemini's compat
+/// endpoint, OpenRouter, local servers). A single user message; `max_tokens` is
+/// omitted for the widest compatibility (incl. reasoning models).
+async fn invoke_openai_compatible(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": prompt }],
+    });
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("OpenAI-compatible request to {url} failed: {e}"))?;
+
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("OpenAI-compatible read failed: {e}"))?;
+    if !status.is_success() {
+        let snippet: String = text.chars().take(500).collect();
+        return Err(format!(
+            "OpenAI-compatible API error ({status}) from {url}: {snippet}. Check the API key, base URL, and that `{model}` is valid there."
+        ));
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("OpenAI-compatible API returned invalid JSON: {e}"))?;
+    let out = json["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string();
+    if out.trim().is_empty() {
+        let snippet: String = text.chars().take(500).collect();
+        return Err(format!("OpenAI-compatible API returned no content. Raw: {snippet}"));
     }
     Ok(out)
 }
@@ -270,23 +416,37 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
 mod tests {
     use super::*;
 
+    // (model, override, has_base_url, has_anthropic_key)
+    fn pick(model: &str, ov: &str, base: bool, anthropic: bool) -> Provider {
+        choose_provider(model, ov, base, anthropic)
+    }
+
     #[test]
-    fn arn_model_picks_bedrock() {
+    fn auto_detects_provider_from_model_name() {
         let arn = "arn:aws:bedrock:us-east-1:123:inference-profile/x";
-        assert_eq!(choose_backend(arn, None), BackendChoice::Bedrock);
-        // An ARN takes precedence even if an API key is present.
-        assert_eq!(choose_backend(arn, Some("sk-ant-xxx")), BackendChoice::Bedrock);
+        assert_eq!(pick(arn, "", false, true), Provider::Bedrock);
+        assert_eq!(pick("gpt-4o", "", false, false), Provider::OpenAi);
+        assert_eq!(pick("o3-mini", "", false, false), Provider::OpenAi);
+        assert_eq!(pick("gemini-2.0-flash", "", false, false), Provider::Gemini);
+        assert_eq!(pick("claude-sonnet-4-6", "", false, true), Provider::Anthropic);
+        // claude-family / unknown with no key falls back to the CLI.
+        assert_eq!(pick("claude-sonnet-4-6", "", false, false), Provider::ClaudeCli);
     }
 
     #[test]
-    fn model_name_with_key_picks_anthropic() {
-        assert_eq!(choose_backend("claude-sonnet-4-6", Some("sk-ant-xxx")), BackendChoice::Anthropic);
+    fn explicit_provider_overrides_detection() {
+        // A GPT model name forced to the compatible/openrouter path, etc.
+        assert_eq!(pick("gpt-4o", "openrouter", false, false), Provider::OpenAiCompatible);
+        assert_eq!(pick("claude-sonnet-4-6", "openai", false, true), Provider::OpenAi);
+        assert_eq!(pick("anything", "gemini", false, false), Provider::Gemini);
+        // Unrecognized override is ignored → auto-detect.
+        assert_eq!(pick("gpt-4o", "bogus", false, false), Provider::OpenAi);
     }
 
     #[test]
-    fn model_name_without_key_falls_back_to_cli() {
-        assert_eq!(choose_backend("claude-sonnet-4-6", None), BackendChoice::ClaudeCli);
-        // An empty key string is treated as "not set".
-        assert_eq!(choose_backend("claude-sonnet-4-6", Some("")), BackendChoice::ClaudeCli);
+    fn a_custom_base_url_implies_openai_compatible() {
+        assert_eq!(pick("some-local-model", "", true, false), Provider::OpenAiCompatible);
+        // But an ARN still wins over a stray base URL.
+        assert_eq!(pick("arn:aws:bedrock:...", "", true, false), Provider::Bedrock);
     }
 }

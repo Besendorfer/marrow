@@ -91,6 +91,10 @@ fn default_settings() -> Settings {
         github_token: String::new(),
         aws_profile: String::new(),
         anthropic_api_key: String::new(),
+        provider: String::new(),
+        openai_api_key: String::new(),
+        gemini_api_key: String::new(),
+        openai_base_url: String::new(),
         filter_older: true,
         filter_team: true,
         view_mode: "split".to_string(),
@@ -115,6 +119,10 @@ pub fn load_settings() -> Settings {
     let mut github_token = String::new();
     let mut aws_profile = String::new();
     let mut anthropic_api_key = String::new();
+    let mut provider = String::new();
+    let mut openai_api_key = String::new();
+    let mut gemini_api_key = String::new();
+    let mut openai_base_url = String::new();
     let mut filter_older = true;
     let mut filter_team = true;
     let mut view_mode = "split".to_string();
@@ -131,6 +139,14 @@ pub fn load_settings() -> Settings {
             aws_profile = val.to_string();
         } else if let Some(val) = line.strip_prefix("anthropic_api_key=") {
             anthropic_api_key = val.to_string();
+        } else if let Some(val) = line.strip_prefix("provider=") {
+            provider = val.to_string();
+        } else if let Some(val) = line.strip_prefix("openai_api_key=") {
+            openai_api_key = val.to_string();
+        } else if let Some(val) = line.strip_prefix("gemini_api_key=") {
+            gemini_api_key = val.to_string();
+        } else if let Some(val) = line.strip_prefix("openai_base_url=") {
+            openai_base_url = val.to_string();
         } else if let Some(val) = line.strip_prefix("filter_older=") {
             filter_older = val == "true";
         } else if let Some(val) = line.strip_prefix("filter_team=") {
@@ -151,6 +167,10 @@ pub fn load_settings() -> Settings {
         github_token,
         aws_profile,
         anthropic_api_key,
+        provider,
+        openai_api_key,
+        gemini_api_key,
+        openai_base_url,
         filter_older,
         filter_team,
         view_mode,
@@ -176,6 +196,18 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     }
     if !settings.anthropic_api_key.is_empty() {
         content.push_str(&format!("anthropic_api_key={}\n", settings.anthropic_api_key));
+    }
+    if !settings.provider.is_empty() {
+        content.push_str(&format!("provider={}\n", settings.provider));
+    }
+    if !settings.openai_api_key.is_empty() {
+        content.push_str(&format!("openai_api_key={}\n", settings.openai_api_key));
+    }
+    if !settings.gemini_api_key.is_empty() {
+        content.push_str(&format!("gemini_api_key={}\n", settings.gemini_api_key));
+    }
+    if !settings.openai_base_url.is_empty() {
+        content.push_str(&format!("openai_base_url={}\n", settings.openai_base_url));
     }
     content.push_str(&format!("filter_older={}\n", settings.filter_older));
     content.push_str(&format!("filter_team={}\n", settings.filter_team));
@@ -222,11 +254,32 @@ pub fn resolve_github_token(settings: &Settings) -> Option<String> {
 /// Resolve the Anthropic API key: config file > ANTHROPIC_API_KEY env. Returns
 /// None if unset (then the backend falls back to the `claude` CLI).
 pub fn resolve_anthropic_api_key(settings: &Settings) -> Option<String> {
-    if !settings.anthropic_api_key.is_empty() {
-        return Some(settings.anthropic_api_key.clone());
+    resolve_secret(&settings.anthropic_api_key, "ANTHROPIC_API_KEY")
+}
+
+/// Resolve the OpenAI (or OpenAI-compatible) API key: config > OPENAI_API_KEY.
+pub fn resolve_openai_api_key(settings: &Settings) -> Option<String> {
+    resolve_secret(&settings.openai_api_key, "OPENAI_API_KEY")
+}
+
+/// Resolve the Gemini API key: config > GEMINI_API_KEY.
+pub fn resolve_gemini_api_key(settings: &Settings) -> Option<String> {
+    resolve_secret(&settings.gemini_api_key, "GEMINI_API_KEY")
+}
+
+/// Resolve the OpenAI-compatible base URL: config > OPENAI_BASE_URL. None = use
+/// the provider's built-in default.
+pub fn resolve_openai_base_url(settings: &Settings) -> Option<String> {
+    resolve_secret(&settings.openai_base_url, "OPENAI_BASE_URL")
+}
+
+/// A config-field-or-env value: the field wins; else the env var if non-empty.
+fn resolve_secret(field: &str, env_var: &str) -> Option<String> {
+    if !field.is_empty() {
+        return Some(field.to_string());
     }
-    match env::var("ANTHROPIC_API_KEY") {
-        Ok(key) if !key.is_empty() => Some(key),
+    match env::var(env_var) {
+        Ok(v) if !v.is_empty() => Some(v),
         _ => None,
     }
 }

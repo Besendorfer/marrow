@@ -17,7 +17,8 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::as_24_bit_terminal_escaped;
 
 use marrow_core::config::{
-    app_config_dir, config_path, load_settings, resolve_anthropic_api_key, resolve_github_token,
+    app_config_dir, config_path, load_settings, resolve_anthropic_api_key, resolve_gemini_api_key,
+    resolve_github_token, resolve_openai_api_key, resolve_openai_base_url,
 };
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
@@ -791,14 +792,23 @@ async fn checks(pr: &str, json: bool) -> Result<(), String> {
 /// A commented starter config written by `marrow init` when none exists.
 const CONFIG_TEMPLATE: &str = "\
 # Marrow config — https://github.com/Besendorfer/marrow
-# GitHub personal access token (optional for public repos; or set GH_TOKEN / GITHUB_TOKEN).
+# (No inline comments on value lines — everything after `=` is the value.)
+# GitHub personal access token (optional for public repos; or GH_TOKEN / GITHUB_TOKEN).
 github_token=
-# AI model. Either a Claude model name (e.g. claude-sonnet-4-6) or an AWS
-# Bedrock model ARN.
+# AI model. The provider is auto-detected from the name: claude* -> Anthropic,
+# gpt*/o3* -> OpenAI, gemini* -> Gemini; or an AWS Bedrock model ARN.
 model=
-# Simplest AI setup: an Anthropic API key (or set ANTHROPIC_API_KEY). Used with
-# a model name; no AWS or `claude` CLI needed. Get one at console.anthropic.com.
+# API key for your model (or the matching env var). Set the one you need:
+#   anthropic_api_key  for claude*  (or ANTHROPIC_API_KEY)
+#   openai_api_key     for gpt*/o*  (or OPENAI_API_KEY)
+#   gemini_api_key     for gemini*  (or GEMINI_API_KEY)
 anthropic_api_key=
+openai_api_key=
+gemini_api_key=
+# Optional: override auto-detect. provider=openai-compatible (e.g. OpenRouter or
+# a local server) then set openai_base_url + openai_api_key.
+provider=
+openai_base_url=
 # AWS profile name (only used with a Bedrock ARN model).
 aws_profile=
 ";
@@ -842,16 +852,24 @@ fn settings_cmd() {
         Some(t) if !t.is_empty() => paint(&format!("set ({}…)", &t.chars().take(4).collect::<String>()), GREEN),
         _ => paint("not set", RED),
     };
-    let anthropic_key = resolve_anthropic_api_key(&s);
-    let anthropic_status = match &anthropic_key {
-        Some(k) if !k.is_empty() => paint("set", GREEN),
+    let key_status = |k: Option<String>| match k {
+        Some(v) if !v.is_empty() => paint("set", GREEN),
         _ => paint("not set", DIM),
     };
     // Which backend a `marrow review` would use with this config.
-    let backend = marrow_core::ai::choose_backend(&s.model, anthropic_key.as_deref());
+    let backend = marrow_core::ai::provider_for_settings(&s);
+    let base_url = resolve_openai_base_url(&s);
     println!("model:          {}", if s.model.is_empty() { paint("(none)", RED) } else { s.model.clone() });
-    println!("github_token:   {token_status}");
-    println!("anthropic_key:  {anthropic_status}");
+    println!("github_token:   {}", token_status);
+    println!("anthropic_key:  {}", key_status(resolve_anthropic_api_key(&s)));
+    println!("openai_key:     {}", key_status(resolve_openai_api_key(&s)));
+    println!("gemini_key:     {}", key_status(resolve_gemini_api_key(&s)));
+    if let Some(url) = &base_url {
+        println!("openai_base:    {url}");
+    }
+    if !s.provider.is_empty() {
+        println!("provider:       {} (override)", s.provider);
+    }
     println!("aws_profile:    {}", if s.aws_profile.is_empty() { paint("(none)", DIM) } else { s.aws_profile.clone() });
     println!(
         "ai backend:     {}",

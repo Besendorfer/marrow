@@ -16,6 +16,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [githubToken, setGithubToken] = useState("");
   const [awsProfile, setAwsProfile] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [geminiKey, setGeminiKey] = useState("");
+  const [provider, setProvider] = useState("");
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
   const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -32,6 +36,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setGithubToken(s.github_token || "");
         setAwsProfile(s.aws_profile || "");
         setAnthropicKey(s.anthropic_api_key || "");
+        setOpenaiKey(s.openai_api_key || "");
+        setGeminiKey(s.gemini_api_key || "");
+        setProvider(s.provider || "");
+        setOpenaiBaseUrl(s.openai_base_url || "");
         setCurrentSettings(s);
       });
       setSaved(false);
@@ -48,6 +56,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           github_token: githubToken.trim(),
           aws_profile: awsProfile.trim(),
           anthropic_api_key: anthropicKey.trim(),
+          openai_api_key: openaiKey.trim(),
+          gemini_api_key: geminiKey.trim(),
+          provider: provider.trim(),
+          openai_base_url: openaiBaseUrl.trim(),
           filter_older: currentSettings?.filter_older ?? true,
           filter_team: currentSettings?.filter_team ?? true,
           view_mode: currentSettings?.view_mode ?? "split",
@@ -79,9 +91,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             Claude Model
           </label>
           <p className="settings-hint">
-            A Claude model name (e.g. <code>claude-sonnet-4-6</code>) used with
-            an Anthropic API key or the <code>claude</code> CLI, or a Bedrock
-            ARN for AWS.
+            A model name — the provider is auto-detected:{" "}
+            <code>claude*</code> → Anthropic, <code>gpt*</code>/<code>o3*</code>{" "}
+            → OpenAI, <code>gemini*</code> → Gemini. Or a Bedrock ARN for AWS.
+            Set the matching API key below.
           </p>
           <input
             id="model"
@@ -102,10 +115,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 Anthropic API Key
               </label>
               <p className="settings-hint">
-                Calls the Anthropic API directly — no AWS or <code>claude</code>{" "}
-                CLI needed. Falls back to <code>ANTHROPIC_API_KEY</code>, then to
-                the <code>claude</code> CLI if unset. Get one at{" "}
-                <code>console.anthropic.com</code>.
+                For <code>claude*</code> models — calls the Anthropic API
+                directly (no AWS or <code>claude</code> CLI needed). Falls back to{" "}
+                <code>ANTHROPIC_API_KEY</code>, then the <code>claude</code> CLI.
               </p>
               <input
                 id="anthropic-key"
@@ -119,6 +131,90 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 placeholder="sk-ant-..."
                 spellCheck={false}
                 autoComplete="off"
+              />
+
+              <label className="settings-label" htmlFor="openai-key">
+                OpenAI API Key
+              </label>
+              <p className="settings-hint">
+                For <code>gpt*</code> / <code>o3*</code> models (or{" "}
+                <code>OPENAI_API_KEY</code>). Also used for OpenAI-compatible
+                endpoints below.
+              </p>
+              <input
+                id="openai-key"
+                className="settings-input"
+                type="password"
+                value={openaiKey}
+                onChange={(e) => {
+                  setOpenaiKey(e.target.value);
+                  setSaved(false);
+                }}
+                placeholder="sk-..."
+                spellCheck={false}
+                autoComplete="off"
+              />
+
+              <label className="settings-label" htmlFor="gemini-key">
+                Gemini API Key
+              </label>
+              <p className="settings-hint">
+                For <code>gemini*</code> models (or <code>GEMINI_API_KEY</code>).
+              </p>
+              <input
+                id="gemini-key"
+                className="settings-input"
+                type="password"
+                value={geminiKey}
+                onChange={(e) => {
+                  setGeminiKey(e.target.value);
+                  setSaved(false);
+                }}
+                placeholder="AIza..."
+                spellCheck={false}
+                autoComplete="off"
+              />
+
+              <label className="settings-label" htmlFor="provider">
+                Provider override
+              </label>
+              <p className="settings-hint">
+                Optional — leave blank to auto-detect from the model name. Set{" "}
+                <code>openai-compatible</code> for OpenRouter or a local server,
+                then fill in the base URL + OpenAI key.
+              </p>
+              <input
+                id="provider"
+                className="settings-input"
+                type="text"
+                value={provider}
+                onChange={(e) => {
+                  setProvider(e.target.value);
+                  setSaved(false);
+                }}
+                placeholder="(auto) · openai · gemini · openai-compatible"
+                spellCheck={false}
+              />
+
+              <label className="settings-label" htmlFor="openai-base-url">
+                OpenAI-compatible Base URL
+              </label>
+              <p className="settings-hint">
+                Optional — point at OpenRouter, a local server, etc. (or{" "}
+                <code>OPENAI_BASE_URL</code>). Setting it routes through the
+                OpenAI-compatible backend.
+              </p>
+              <input
+                id="openai-base-url"
+                className="settings-input"
+                type="text"
+                value={openaiBaseUrl}
+                onChange={(e) => {
+                  setOpenaiBaseUrl(e.target.value);
+                  setSaved(false);
+                }}
+                placeholder="https://openrouter.ai/api/v1"
+                spellCheck={false}
               />
             </>
           )}
