@@ -92,12 +92,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
 
     // Step 3: AI classification
     emit_progress(app, 3, "Classifying files with AI", FetchStatus::Running, None, None);
-    let ai = AiBackend::new(
-        &settings.model,
-        &settings.aws_profile,
-        crate::config::resolve_anthropic_api_key(settings).as_deref(),
-    )
-    .await?;
+    let ai = AiBackend::from_settings(settings).await?;
 
     let classification_prompt =
         build_classification_prompt(&pr_title, &file_list, &full_diff);

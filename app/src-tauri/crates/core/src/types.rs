@@ -91,6 +91,21 @@ pub struct Settings {
     /// model name and this/`ANTHROPIC_API_KEY` is set). No AWS/CLI needed.
     #[serde(default)]
     pub anthropic_api_key: String,
+    /// Explicit provider override (anthropic / openai / gemini / bedrock /
+    /// claude-cli / openai-compatible). Empty = auto-detect from the model name.
+    #[serde(default)]
+    pub provider: String,
+    /// OpenAI (and OpenAI-compatible: OpenRouter, local, …) API key.
+    #[serde(default)]
+    pub openai_api_key: String,
+    /// Google Gemini API key (used via Gemini's OpenAI-compatible endpoint).
+    #[serde(default)]
+    pub gemini_api_key: String,
+    /// Base URL for the OpenAI-compatible backend (e.g. OpenRouter or a local
+    /// server). Empty = OpenAI's default. Setting it implies an OpenAI-compatible
+    /// provider unless overridden.
+    #[serde(default)]
+    pub openai_base_url: String,
     #[serde(default = "default_true")]
     pub filter_older: bool,
     #[serde(default = "default_true")]

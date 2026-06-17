@@ -76,10 +76,12 @@ marrow review <pr> # fetch + classify, then open the TUI
 
 You'll need:
 
-- A **Claude model** -- any one of:
-  - A model name (e.g. `claude-sonnet-4-6`) + an **Anthropic API key** (`ANTHROPIC_API_KEY` or the `anthropic_api_key` setting) -- simplest, no AWS or extra CLI, **or**
-  - A model name with the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed, **or**
-  - An AWS Bedrock model ARN with AWS credentials configured (env vars, `~/.aws/credentials`, or SSO)
+- An **AI model + key**. The provider is auto-detected from the model name; set the matching API key (config setting or env var):
+  - `claude*` -> **Anthropic** (`anthropic_api_key` / `ANTHROPIC_API_KEY`), or just a model name with the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed
+  - `gpt*` / `o3*` -> **OpenAI** (`openai_api_key` / `OPENAI_API_KEY`)
+  - `gemini*` -> **Gemini** (`gemini_api_key` / `GEMINI_API_KEY`)
+  - an AWS **Bedrock** model ARN with AWS credentials configured (env vars, `~/.aws/credentials`, or SSO)
+  - **OpenRouter / a local server / any OpenAI-compatible endpoint** -- set `provider=openai-compatible` + `openai_base_url` + `openai_api_key`
 - A **GitHub personal access token** (or `GH_TOKEN` / `GITHUB_TOKEN` environment variable)
 
 ## Configuration

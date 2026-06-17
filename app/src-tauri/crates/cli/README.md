@@ -27,16 +27,21 @@ marrow init          # scaffold ~/.config/marrow/config
 marrow settings      # check resolved config (token source is masked)
 ```
 
-You'll need a GitHub token (in the config, or `GH_TOKEN` / `GITHUB_TOKEN`) and a
-Claude model. Simplest setup — no AWS, no extra CLI:
+You'll need a GitHub token (in the config, or `GH_TOKEN` / `GITHUB_TOKEN`) and an
+AI model + key. The **provider is auto-detected from the model name** — set the
+matching API key (config field or env var):
 
-- set `model` to a model name (e.g. `claude-sonnet-4-6`), and
-- set an Anthropic API key via `anthropic_api_key` in the config or the
-  `ANTHROPIC_API_KEY` env var ([console.anthropic.com](https://console.anthropic.com)).
+| Model name | Provider | Key |
+| --- | --- | --- |
+| `claude*` | Anthropic | `anthropic_api_key` / `ANTHROPIC_API_KEY` (or the `claude` CLI) |
+| `gpt*`, `o3*` | OpenAI | `openai_api_key` / `OPENAI_API_KEY` |
+| `gemini*` | Gemini | `gemini_api_key` / `GEMINI_API_KEY` |
+| `arn:aws:bedrock:…` | AWS Bedrock | AWS credentials + `aws_profile` |
 
-Alternatively, use a model name with the [`claude` CLI](https://docs.anthropic.com/en/docs/claude-cli)
-installed, or an AWS Bedrock model ARN with AWS credentials configured.
-`marrow settings` shows which backend your config resolves to.
+For **OpenRouter, a local server, or any OpenAI-compatible endpoint**, set
+`provider=openai-compatible`, `openai_base_url`, and `openai_api_key`. To
+override auto-detect, set `provider` explicitly. `marrow settings` shows which
+backend your config resolves to.
 
 ## Usage
 

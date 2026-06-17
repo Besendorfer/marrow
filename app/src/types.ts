@@ -148,6 +148,10 @@ export interface Settings {
   github_token: string;
   aws_profile: string;
   anthropic_api_key: string;
+  provider: string;
+  openai_api_key: string;
+  gemini_api_key: string;
+  openai_base_url: string;
   filter_older: boolean;
   filter_team: boolean;
   view_mode: DiffViewMode;
