@@ -662,6 +662,48 @@ function buildFullFileLines(content: string, type: "add" | "remove", lang: strin
   }));
 }
 
+// Render the whole new file (head content) as flat diff lines for "view full
+// file" on a modified file: every line is shown, with the lines the diff added
+// marked "add" (tinted) and the rest "context". AI highlights and review
+// threads still map by new-side line number.
+function buildModifiedFullFileLines(
+  headContent: string,
+  unifiedDiff: string,
+  lang: string | undefined
+): DiffLine[] {
+  if (!headContent) return [];
+
+  // New-side line numbers the diff adds.
+  const added = new Set<number>();
+  let newLine = 0;
+  for (const line of unifiedDiff.split("\n")) {
+    if (line.startsWith("@@")) {
+      const m = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (m) newLine = parseInt(m[1], 10);
+    } else if (line.startsWith("+")) {
+      added.add(newLine);
+      newLine++;
+    } else if (line.startsWith("-") || line.startsWith("\\")) {
+      // old-side only / "No newline" marker — no new-side advance
+    } else {
+      newLine++; // context
+    }
+  }
+
+  const lines = headContent.split("\n");
+  const htmlLines = highlightLines(headContent, lang);
+  return lines.map((line, idx) => {
+    const newLineNum = idx + 1;
+    return {
+      type: added.has(newLineNum) ? "add" : "context",
+      content: line,
+      html: htmlLines[idx] ?? escapeHtml(line),
+      oldLineNum: null,
+      newLineNum,
+    } as DiffLine;
+  });
+}
+
 const LINE_TINT_THRESHOLD = 50;
 
 function getHighlightForLine(
@@ -1304,6 +1346,8 @@ function SplitView({
 export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
+  // "View full file" toggle (modified files). Resets per file via the key prop.
+  const [fullFile, setFullFile] = useState(false);
   const diffContentRef = useRef<HTMLDivElement>(null);
 
   function handleLineMouseDown(line: number, side: "LEFT" | "RIGHT") {
@@ -1404,6 +1448,13 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
       useHunkView: false,
     };
   }, [file]);
+
+  // Whole-file lines, built lazily only when the "view full file" toggle is on.
+  const fullFileLines = useMemo(
+    () => (fullFile ? buildModifiedFullFileLines(file.head_content, file.unified_diff, lang) : []),
+    [fullFile, file, lang]
+  );
+  const canViewFullFile = file.diff_type === "modified" && !!file.head_content;
 
   // Low hunks start collapsed when significance is shown; state resets on file change
   // via the key prop on DiffViewer (see App.tsx)
@@ -1644,12 +1695,21 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
             {highlights.length} AI {highlights.length === 1 ? "note" : "notes"}
           </span>
         )}
+        {canViewFullFile && (
+          <button
+            className="hunk-toggle-all"
+            onClick={() => setFullFile((v) => !v)}
+            title={fullFile ? "Show only the changed hunks" : "Show the whole file with changes highlighted"}
+          >
+            {fullFile ? "View diff" : "View full file"}
+          </button>
+        )}
         {showHunkSignificance && highHunkCount > 0 && (
           <span className="hunk-high-summary">
             {highHunkCount} high-significance {highHunkCount === 1 ? "hunk" : "hunks"}
           </span>
         )}
-        {collapsedCount > 0 && (
+        {!fullFile && collapsedCount > 0 && (
           <>
             <span className="hunk-collapse-summary">
               {collapsedCount} {collapsedCount === 1 ? "hunk" : "hunks"} collapsed
@@ -1659,7 +1719,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
             </button>
           </>
         )}
-        {showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && (
+        {!fullFile && showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && (
           <button className="hunk-toggle-all" onClick={collapseAll}>
             Collapse All
           </button>
@@ -1695,7 +1755,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
         </div>
       )}
       <div className="diff-content" ref={diffContentRef}>
-        {useHunkView ? (
+        {!fullFile && useHunkView ? (
           viewMode === "unified" || file.diff_type !== "modified" ? (
             <UnifiedView
               hunks={hunks}
@@ -1750,7 +1810,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               <col />
             </colgroup>
             <tbody>
-              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
+              <UnifiedHunkLines lines={fullFile ? fullFileLines : diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
             </tbody>
           </table>
         )}
