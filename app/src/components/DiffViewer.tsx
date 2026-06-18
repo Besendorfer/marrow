@@ -1482,6 +1482,22 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
   // files rendered as hunks regardless of their add/modify badge.
   const canViewFullFile = useHunkView && !!file.head_content;
 
+  // A genuinely whole-new or whole-deleted file (no context lines, only one
+  // side) can't be shown side-by-side, so it forces unified. Everything else —
+  // including files mislabeled "added"/"removed" that are really modifications —
+  // respects the split/unified toggle. Decide from content, not `diff_type`.
+  const oneSidedFile = useMemo(() => {
+    let ctx = false;
+    let add = false;
+    let rem = false;
+    for (const l of diffLines) {
+      if (l.type === "context") ctx = true;
+      else if (l.type === "add") add = true;
+      else if (l.type === "remove") rem = true;
+    }
+    return !ctx && add !== rem;
+  }, [diffLines]);
+
   // Low hunks start collapsed when significance is shown; state resets on file change
   // via the key prop on DiffViewer (see App.tsx)
   const [collapsedHunks, setCollapsedHunks] = useState<Set<number>>(() => {
@@ -1782,7 +1798,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
       )}
       <div className="diff-content" ref={diffContentRef}>
         {fullFile || useHunkView ? (
-          viewMode === "unified" || file.diff_type !== "modified" ? (
+          viewMode === "unified" || oneSidedFile ? (
             <UnifiedView
               hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
