@@ -662,47 +662,65 @@ function buildFullFileLines(content: string, type: "add" | "remove", lang: strin
   }));
 }
 
-// Render the whole new file (head content) as flat diff lines for "view full
-// file" on a modified file: every line is shown, with the lines the diff added
-// marked "add" (tinted) and the rest "context". AI highlights and review
-// threads still map by new-side line number.
-function buildModifiedFullFileLines(
+// Expand a modified file's diff to the WHOLE file: keep the real additions and
+// removals (and their split/unified rendering), and fill in every unchanged
+// line from head_content as context — like GitHub's "expand all". Produces no
+// `@@` headers, so groupIntoHunks yields a single hunk the normal renderer
+// shows without a hunk header.
+function buildFullFileDiffLines(
   headContent: string,
   unifiedDiff: string,
   lang: string | undefined
 ): DiffLine[] {
   if (!headContent) return [];
+  const parsed = parseDiffLines(unifiedDiff, lang);
+  const newLines = headContent.split("\n");
+  const newHtml = highlightLines(headContent, lang);
 
-  // New-side line numbers the diff adds.
-  const added = new Set<number>();
-  let newLine = 0;
-  for (const line of unifiedDiff.split("\n")) {
-    if (line.startsWith("@@")) {
-      const m = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (m) newLine = parseInt(m[1], 10);
-    } else if (line.startsWith("+")) {
-      added.add(newLine);
-      newLine++;
-    } else if (line.startsWith("-") || line.startsWith("\\")) {
-      // old-side only / "No newline" marker — no new-side advance
+  const contextLine = (newLineNum: number, oldLineNum: number): DiffLine => ({
+    type: "context",
+    content: newLines[newLineNum - 1] ?? "",
+    html: newHtml[newLineNum - 1] ?? escapeHtml(newLines[newLineNum - 1] ?? ""),
+    oldLineNum,
+    newLineNum,
+  });
+
+  const out: DiffLine[] = [];
+  let nextNew = 1; // next unchanged new-side line to emit
+  let nextOld = 1; // its old-side counterpart (they advance together in gaps)
+
+  for (const e of parsed) {
+    if (e.type === "header") {
+      const m = e.content.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      const newStart = m ? parseInt(m[2], 10) : nextNew;
+      while (nextNew < newStart) {
+        out.push(contextLine(nextNew, nextOld));
+        nextNew++;
+        nextOld++;
+      }
+      continue; // don't emit the @@ header itself
+    }
+    out.push(e);
+    if (e.type === "add") {
+      nextNew = (e.newLineNum ?? nextNew) + 1;
+    } else if (e.type === "remove") {
+      nextOld = (e.oldLineNum ?? nextOld) + 1;
     } else {
-      newLine++; // context
+      nextNew = (e.newLineNum ?? nextNew) + 1;
+      nextOld = (e.oldLineNum ?? nextOld) + 1;
     }
   }
 
-  const lines = headContent.split("\n");
-  const htmlLines = highlightLines(headContent, lang);
-  return lines.map((line, idx) => {
-    const newLineNum = idx + 1;
-    return {
-      type: added.has(newLineNum) ? "add" : "context",
-      content: line,
-      html: htmlLines[idx] ?? escapeHtml(line),
-      oldLineNum: null,
-      newLineNum,
-    } as DiffLine;
-  });
+  while (nextNew <= newLines.length) {
+    out.push(contextLine(nextNew, nextOld));
+    nextNew++;
+    nextOld++;
+  }
+  return out;
 }
+
+// Shared empty set for "nothing collapsed" (full-file view never collapses).
+const NO_COLLAPSED: Set<number> = new Set();
 
 const LINE_TINT_THRESHOLD = 50;
 
@@ -1449,9 +1467,14 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
     };
   }, [file]);
 
-  // Whole-file lines, built lazily only when the "view full file" toggle is on.
-  const fullFileLines = useMemo(
-    () => (fullFile ? buildModifiedFullFileLines(file.head_content, file.unified_diff, lang) : []),
+  // Whole-file diff (real adds/removes + all context), built lazily only when
+  // the "view full file" toggle is on, then grouped into one hunk so it renders
+  // through the normal split/unified views.
+  const fullFileHunks = useMemo(
+    () =>
+      fullFile
+        ? groupIntoHunks(buildFullFileDiffLines(file.head_content, file.unified_diff, lang), [])
+        : [],
     [fullFile, file, lang]
   );
   const canViewFullFile = file.diff_type === "modified" && !!file.head_content;
@@ -1755,12 +1778,12 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
         </div>
       )}
       <div className="diff-content" ref={diffContentRef}>
-        {!fullFile && useHunkView ? (
+        {fullFile || useHunkView ? (
           viewMode === "unified" || file.diff_type !== "modified" ? (
             <UnifiedView
-              hunks={hunks}
+              hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
-              collapsedHunks={collapsedHunks}
+              collapsedHunks={fullFile ? NO_COLLAPSED : collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
               commentingOn={commentingOn}
@@ -1780,9 +1803,9 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
             />
           ) : (
             <SplitView
-              hunks={hunks}
+              hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
-              collapsedHunks={collapsedHunks}
+              collapsedHunks={fullFile ? NO_COLLAPSED : collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
               commentingOn={commentingOn}
@@ -1810,7 +1833,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               <col />
             </colgroup>
             <tbody>
-              <UnifiedHunkLines lines={fullFile ? fullFileLines : diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
+              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
             </tbody>
           </table>
         )}
