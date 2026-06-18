@@ -662,6 +662,66 @@ function buildFullFileLines(content: string, type: "add" | "remove", lang: strin
   }));
 }
 
+// Expand a modified file's diff to the WHOLE file: keep the real additions and
+// removals (and their split/unified rendering), and fill in every unchanged
+// line from head_content as context — like GitHub's "expand all". Produces no
+// `@@` headers, so groupIntoHunks yields a single hunk the normal renderer
+// shows without a hunk header.
+function buildFullFileDiffLines(
+  headContent: string,
+  unifiedDiff: string,
+  lang: string | undefined
+): DiffLine[] {
+  if (!headContent) return [];
+  const parsed = parseDiffLines(unifiedDiff, lang);
+  const newLines = headContent.split("\n");
+  const newHtml = highlightLines(headContent, lang);
+
+  const contextLine = (newLineNum: number, oldLineNum: number): DiffLine => ({
+    type: "context",
+    content: newLines[newLineNum - 1] ?? "",
+    html: newHtml[newLineNum - 1] ?? escapeHtml(newLines[newLineNum - 1] ?? ""),
+    oldLineNum,
+    newLineNum,
+  });
+
+  const out: DiffLine[] = [];
+  let nextNew = 1; // next unchanged new-side line to emit
+  let nextOld = 1; // its old-side counterpart (they advance together in gaps)
+
+  for (const e of parsed) {
+    if (e.type === "header") {
+      const m = e.content.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      const newStart = m ? parseInt(m[2], 10) : nextNew;
+      while (nextNew < newStart) {
+        out.push(contextLine(nextNew, nextOld));
+        nextNew++;
+        nextOld++;
+      }
+      continue; // don't emit the @@ header itself
+    }
+    out.push(e);
+    if (e.type === "add") {
+      nextNew = (e.newLineNum ?? nextNew) + 1;
+    } else if (e.type === "remove") {
+      nextOld = (e.oldLineNum ?? nextOld) + 1;
+    } else {
+      nextNew = (e.newLineNum ?? nextNew) + 1;
+      nextOld = (e.oldLineNum ?? nextOld) + 1;
+    }
+  }
+
+  while (nextNew <= newLines.length) {
+    out.push(contextLine(nextNew, nextOld));
+    nextNew++;
+    nextOld++;
+  }
+  return out;
+}
+
+// Shared empty set for "nothing collapsed" (full-file view never collapses).
+const NO_COLLAPSED: Set<number> = new Set();
+
 const LINE_TINT_THRESHOLD = 50;
 
 function getHighlightForLine(
@@ -1304,6 +1364,8 @@ function SplitView({
 export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
+  // "View full file" toggle (modified files). Resets per file via the key prop.
+  const [fullFile, setFullFile] = useState(false);
   const diffContentRef = useRef<HTMLDivElement>(null);
 
   function handleLineMouseDown(line: number, side: "LEFT" | "RIGHT") {
@@ -1404,6 +1466,37 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
       useHunkView: false,
     };
   }, [file]);
+
+  // Whole-file diff (real adds/removes + all context), built lazily only when
+  // the "view full file" toggle is on, then grouped into one hunk so it renders
+  // through the normal split/unified views.
+  const fullFileHunks = useMemo(
+    () =>
+      fullFile
+        ? groupIntoHunks(buildFullFileDiffLines(file.head_content, file.unified_diff, lang), [])
+        : [],
+    [fullFile, file, lang]
+  );
+  // Offer "view full file" whenever we're showing a partial (hunk) diff and
+  // have the new file content to expand into — this covers modified files and
+  // files rendered as hunks regardless of their add/modify badge.
+  const canViewFullFile = useHunkView && !!file.head_content;
+
+  // A genuinely whole-new or whole-deleted file (no context lines, only one
+  // side) can't be shown side-by-side, so it forces unified. Everything else —
+  // including files mislabeled "added"/"removed" that are really modifications —
+  // respects the split/unified toggle. Decide from content, not `diff_type`.
+  const oneSidedFile = useMemo(() => {
+    let ctx = false;
+    let add = false;
+    let rem = false;
+    for (const l of diffLines) {
+      if (l.type === "context") ctx = true;
+      else if (l.type === "add") add = true;
+      else if (l.type === "remove") rem = true;
+    }
+    return !ctx && add !== rem;
+  }, [diffLines]);
 
   // Low hunks start collapsed when significance is shown; state resets on file change
   // via the key prop on DiffViewer (see App.tsx)
@@ -1644,12 +1737,21 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
             {highlights.length} AI {highlights.length === 1 ? "note" : "notes"}
           </span>
         )}
+        {canViewFullFile && (
+          <button
+            className="hunk-toggle-all"
+            onClick={() => setFullFile((v) => !v)}
+            title={fullFile ? "Show only the changed hunks" : "Show the whole file with changes highlighted"}
+          >
+            {fullFile ? "View diff" : "View full file"}
+          </button>
+        )}
         {showHunkSignificance && highHunkCount > 0 && (
           <span className="hunk-high-summary">
             {highHunkCount} high-significance {highHunkCount === 1 ? "hunk" : "hunks"}
           </span>
         )}
-        {collapsedCount > 0 && (
+        {!fullFile && collapsedCount > 0 && (
           <>
             <span className="hunk-collapse-summary">
               {collapsedCount} {collapsedCount === 1 ? "hunk" : "hunks"} collapsed
@@ -1659,7 +1761,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
             </button>
           </>
         )}
-        {showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && (
+        {!fullFile && showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && (
           <button className="hunk-toggle-all" onClick={collapseAll}>
             Collapse All
           </button>
@@ -1695,12 +1797,12 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
         </div>
       )}
       <div className="diff-content" ref={diffContentRef}>
-        {useHunkView ? (
-          viewMode === "unified" || file.diff_type !== "modified" ? (
+        {fullFile || useHunkView ? (
+          viewMode === "unified" || oneSidedFile ? (
             <UnifiedView
-              hunks={hunks}
+              hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
-              collapsedHunks={collapsedHunks}
+              collapsedHunks={fullFile ? NO_COLLAPSED : collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
               commentingOn={commentingOn}
@@ -1720,9 +1822,9 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
             />
           ) : (
             <SplitView
-              hunks={hunks}
+              hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
-              collapsedHunks={collapsedHunks}
+              collapsedHunks={fullFile ? NO_COLLAPSED : collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
               commentingOn={commentingOn}
