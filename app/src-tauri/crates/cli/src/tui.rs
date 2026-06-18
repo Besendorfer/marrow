@@ -59,6 +59,16 @@ enum Row {
     File(usize), // index into App::files
 }
 
+/// A file's "viewed" state relative to its current diff. `Stale` means the
+/// file was marked viewed earlier but its diff has changed since (the stored
+/// hash no longer matches), so the mark no longer covers what's on screen.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum ViewedStatus {
+    Unviewed,
+    Viewed,
+    Stale,
+}
+
 struct App<'a> {
     manifest: &'a ReviewManifest,
     files: Vec<&'a FileDiff>,
@@ -105,6 +115,13 @@ struct App<'a> {
     /// Show the whole file (head content, added lines tinted) instead of just
     /// the diff. A view preference that persists across files.
     full_file: bool,
+    /// Files marked viewed: path -> the file's `diff_hash` when it was marked.
+    /// Loaded from local state on startup and persisted on every toggle (same
+    /// on-disk file the GUI reads). A stored hash that no longer matches the
+    /// file's current hash means the file changed since it was viewed (stale).
+    viewed: HashMap<String, String>,
+    /// PR node id, looked up lazily and cached for GitHub viewed-state sync.
+    pr_node_id: Option<String>,
     /// Last action result, shown in the header.
     status: Option<String>,
 }
@@ -114,6 +131,12 @@ impl<'a> App<'a> {
         // Relevance order: high risk first (matches `marrow diff`).
         let mut files: Vec<&FileDiff> = manifest.files.iter().collect();
         files.sort_by_key(|f| risk_rank(&f.risk_level));
+        // Restore previously-viewed files from the shared local state file.
+        let viewed = marrow_core::pr_parser::parse_pr_ref(&manifest.pr_url)
+            .ok()
+            .and_then(|p| marrow_core::viewed_state::load_viewed_state(&p.owner, &p.repo, p.number))
+            .map(|s| s.files)
+            .unwrap_or_default();
         let mut app = Self {
             manifest,
             files,
@@ -143,6 +166,8 @@ impl<'a> App<'a> {
             collapsed: HashSet::new(),
             collapsed_file: None,
             full_file: false,
+            viewed,
+            pr_node_id: None,
             status: None,
         };
         app.rebuild_rows();
@@ -288,6 +313,19 @@ impl<'a> App<'a> {
         lines.push(Line::from(Span::styled(
             format!("{} files · {hi} high · {me} med · {lo} low", self.files.len()),
             Style::default().add_modifier(Modifier::BOLD),
+        )));
+        let viewed = self
+            .files
+            .iter()
+            .filter(|f| self.viewed_status(&f.path, &f.diff_hash) == ViewedStatus::Viewed)
+            .count();
+        lines.push(Line::from(Span::styled(
+            format!("{viewed}/{} viewed", self.files.len()),
+            Style::default().fg(if viewed == self.files.len() && viewed > 0 {
+                Color::Green
+            } else {
+                Color::DarkGray
+            }),
         )));
         lines.push(Line::from(""));
 
@@ -570,6 +608,7 @@ impl<'a> App<'a> {
                     self.mode = Mode::ReviewPick;
                 }
                 KeyCode::Char('c') => self.begin_comment(),
+                KeyCode::Char('V') => self.toggle_viewed(),
                 KeyCode::Char('T') => self.open_threads(),
                 // Manual refresh: pull comments/replies from others in place.
                 KeyCode::F(5) => self.refresh_threads(),
@@ -960,6 +999,62 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Viewed state of a file path, given the file's current `diff_hash`.
+    fn viewed_status(&self, path: &str, diff_hash: &str) -> ViewedStatus {
+        match self.viewed.get(path) {
+            Some(h) if h == diff_hash => ViewedStatus::Viewed,
+            Some(_) => ViewedStatus::Stale,
+            None => ViewedStatus::Unviewed,
+        }
+    }
+
+    /// Toggle the selected file's "viewed" mark: flip local state, persist it,
+    /// and best-effort sync to GitHub. A stale mark (file changed since viewed)
+    /// re-marks at the current hash; staying on the file. No-ops off a file row.
+    fn toggle_viewed(&mut self) {
+        let (path, hash) = match self.selected() {
+            Some(f) => (f.path.clone(), f.diff_hash.clone()),
+            None => return,
+        };
+        let now_viewed = self.viewed_status(&path, &hash) != ViewedStatus::Viewed;
+        if now_viewed {
+            self.viewed.insert(path.clone(), hash);
+        } else {
+            self.viewed.remove(&path);
+        }
+        self.persist_viewed();
+        self.cache_idx = None; // refresh the overview's viewed count if shown
+        let verb = if now_viewed { "viewed" } else { "unviewed" };
+        self.status = Some(match self.sync_viewed_to_github(&path, now_viewed) {
+            Ok(()) => format!("✓ {verb}: {}", short_path(&path, 28)),
+            Err(e) => format!("{verb} (local only): {e}"),
+        });
+    }
+
+    /// Write the current viewed set to the shared local state file.
+    fn persist_viewed(&self) {
+        if let Ok(p) = marrow_core::pr_parser::parse_pr_ref(&self.manifest.pr_url) {
+            let state =
+                marrow_core::viewed_state::ViewedFileState { files: self.viewed.clone() };
+            let _ = marrow_core::viewed_state::save_viewed_state(&p.owner, &p.repo, p.number, &state);
+        }
+    }
+
+    /// Mirror a viewed toggle to GitHub's per-file "Viewed" checkbox, looking up
+    /// and caching the PR node id on first use. Errors are surfaced (the local
+    /// mark still stands) rather than aborting the toggle.
+    fn sync_viewed_to_github(&mut self, path: &str, viewed: bool) -> Result<(), String> {
+        let Some((github, pr)) = self.github_and_pr() else {
+            return Err("no PR ref".to_string());
+        };
+        if self.pr_node_id.is_none() {
+            self.pr_node_id =
+                Some(block_on(github.get_pull_request_id(&pr.owner, &pr.repo, pr.number))?);
+        }
+        let pr_id = self.pr_node_id.clone().expect("set above");
+        block_on(github.mark_file_viewed(&pr_id, path, viewed))
+    }
+
     fn begin_review(&mut self, event: &'static str) {
         self.review_event = event;
         self.review_input.clear();
@@ -1070,7 +1165,7 @@ impl<'a> App<'a> {
                     let hint = if matches!(self.current_row(), Some(Row::Threads)) {
                         " r reply · x resolve · T reload · ]/[ view · ? help · q quit "
                     } else {
-                        " ]/[ file · n/N find · c comment · v select · R review · T threads · ? help · q quit "
+                        " ]/[ file · n/N find · V viewed · c comment · v select · R review · T threads · ? help · q quit "
                     };
                     Paragraph::new(hint).style(Style::default().fg(Color::DarkGray))
                 }
@@ -1109,9 +1204,22 @@ impl<'a> App<'a> {
                         "low" => Color::Green,
                         _ => Color::Yellow,
                     };
+                    // A leading glyph marks viewed (✓) / stale (~); viewed names
+                    // dim so unreviewed files stand out. The glyph keeps the same
+                    // 2-column width as the plain indent, so alignment holds.
+                    let status = self.viewed_status(&file.path, &file.diff_hash);
+                    let (glyph, glyph_color) = match status {
+                        ViewedStatus::Viewed => ("✓ ", Color::Green),
+                        ViewedStatus::Stale => ("~ ", Color::Yellow),
+                        ViewedStatus::Unviewed => ("  ", color),
+                    };
+                    let mut name_style = Style::default().fg(color);
+                    if status == ViewedStatus::Viewed {
+                        name_style = name_style.add_modifier(Modifier::DIM);
+                    }
                     ListItem::new(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(short_path(&file.path, 22), Style::default().fg(color)),
+                        Span::styled(glyph, Style::default().fg(glyph_color)),
+                        Span::styled(short_path(&file.path, 22), name_style),
                         Span::raw("  "),
                         Span::styled(format!("+{}", file.additions), Style::default().fg(Color::Green)),
                         Span::raw(" "),
@@ -1670,6 +1778,7 @@ fn render_help(f: &mut Frame) {
         head("Actions"),
         Line::from("  c            comment on the cursor line"),
         Line::from("  v            select a line range, then c"),
+        Line::from("  V            mark file viewed / unviewed"),
         Line::from("  R            submit a review"),
         Line::from(""),
         head("Threads"),
@@ -1877,6 +1986,36 @@ mod tests {
         let out = render_to_string(&mut app, 100, 20);
         assert!(out.contains("2 files"), "risk counts missing");
         assert!(out.contains("This PR adds a flag"), "summary missing");
+    }
+
+    #[test]
+    fn viewed_status_tracks_hash() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        // The manifest files have empty diff_hashes.
+        assert_eq!(app.viewed_status("pkg/high.go", ""), ViewedStatus::Unviewed);
+        // Stored hash matches the current one → viewed.
+        app.viewed.insert("pkg/high.go".into(), String::new());
+        assert_eq!(app.viewed_status("pkg/high.go", ""), ViewedStatus::Viewed);
+        // Stored hash differs from the current one → stale.
+        assert_eq!(app.viewed_status("pkg/high.go", "newhash"), ViewedStatus::Stale);
+    }
+
+    #[test]
+    fn sidebar_and_overview_show_viewed() {
+        let m = manifest();
+        let mut app = App::new(&m);
+        // Mark the high-risk file viewed (its diff_hash is empty).
+        app.viewed.insert("pkg/high.go".into(), String::new());
+        app.cache_idx = None;
+        let out = render_to_string(&mut app, 100, 20);
+        assert!(out.contains("✓"), "viewed glyph missing from sidebar");
+
+        // The overview reflects the count.
+        app.select_step(false); // first file → Threads
+        app.select_step(false); // Threads → Overview
+        let out = render_to_string(&mut app, 100, 20);
+        assert!(out.contains("1/2 viewed"), "overview viewed count missing");
     }
 
     #[test]

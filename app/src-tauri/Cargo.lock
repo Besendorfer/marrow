@@ -2819,7 +2819,7 @@ dependencies = [
 
 [[package]]
 name = "marrow-cli"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "chrono",
  "clap",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "marrow-core"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "aws-config",
  "aws-sdk-bedrockruntime",
