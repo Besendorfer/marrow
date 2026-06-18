@@ -1477,7 +1477,10 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
         : [],
     [fullFile, file, lang]
   );
-  const canViewFullFile = file.diff_type === "modified" && !!file.head_content;
+  // Offer "view full file" whenever we're showing a partial (hunk) diff and
+  // have the new file content to expand into — this covers modified files and
+  // files rendered as hunks regardless of their add/modify badge.
+  const canViewFullFile = useHunkView && !!file.head_content;
 
   // Low hunks start collapsed when significance is shown; state resets on file change
   // via the key prop on DiffViewer (see App.tsx)
