@@ -90,6 +90,13 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         .map(|f| (f.filename.clone(), (f.additions, f.deletions)))
         .collect();
 
+    // GitHub's authoritative per-file status (added/removed/modified/renamed/…),
+    // used to classify diff_type instead of guessing from content emptiness.
+    let status_by_path: HashMap<String, String> = pr_files
+        .iter()
+        .map(|f| (f.filename.clone(), f.status.clone()))
+        .collect();
+
     // Step 3: AI classification
     emit_progress(app, 3, "Classifying files with AI", FetchStatus::Running, None, None);
     let ai = AiBackend::from_settings(settings).await?;
@@ -226,13 +233,14 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         let base_content = base_result.as_deref().unwrap_or("").to_string();
         let head_content = head_result.as_deref().unwrap_or("").to_string();
 
-        let diff_type = if base_content.is_empty() && !head_content.is_empty() {
-            "added"
-        } else if !base_content.is_empty() && head_content.is_empty() {
-            "removed"
-        } else {
-            "modified"
-        };
+        // Classify from GitHub's status. Inferring from content emptiness is
+        // wrong for renames (the new path 404s at the base SHA → empty base)
+        // and for failed/oversized base fetches, which all look "added".
+        let diff_type = classify_diff_type(
+            status_by_path.get(path.as_str()).map(|s| s.as_str()),
+            base_content.is_empty(),
+            head_content.is_empty(),
+        );
 
         // Get the unified diff for this file, stripping the git header
         // For added/removed files, split large single hunks into smaller chunks
@@ -320,6 +328,31 @@ fn extract_per_file_diffs(
     }
 
     result
+}
+
+/// Map GitHub's per-file status to the app's `diff_type`. GitHub's status is
+/// authoritative ("added"/"removed"/"modified"/"renamed"/"copied"/"changed");
+/// renamed/copied/changed all have a base to diff against, so they're "modified".
+/// Falls back to content-emptiness only when the status is missing.
+fn classify_diff_type(
+    github_status: Option<&str>,
+    base_empty: bool,
+    head_empty: bool,
+) -> &'static str {
+    match github_status {
+        Some("added") => "added",
+        Some("removed") => "removed",
+        Some(_) => "modified",
+        None => {
+            if base_empty && !head_empty {
+                "added"
+            } else if !base_empty && head_empty {
+                "removed"
+            } else {
+                "modified"
+            }
+        }
+    }
 }
 
 /// Parse the full unified diff into a map of file_path -> diff_text.
@@ -851,4 +884,28 @@ fn strip_diff_header(diff: &str) -> String {
     }
 
     result.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_diff_type;
+
+    #[test]
+    fn github_status_is_authoritative() {
+        assert_eq!(classify_diff_type(Some("added"), true, false), "added");
+        assert_eq!(classify_diff_type(Some("removed"), false, true), "removed");
+        assert_eq!(classify_diff_type(Some("modified"), false, false), "modified");
+        // The bug: a renamed file's new path 404s at base → empty base content,
+        // but GitHub says "renamed" → modified, not "added".
+        assert_eq!(classify_diff_type(Some("renamed"), true, false), "modified");
+        assert_eq!(classify_diff_type(Some("copied"), true, false), "modified");
+        assert_eq!(classify_diff_type(Some("changed"), false, false), "modified");
+    }
+
+    #[test]
+    fn falls_back_to_content_when_status_missing() {
+        assert_eq!(classify_diff_type(None, true, false), "added");
+        assert_eq!(classify_diff_type(None, false, true), "removed");
+        assert_eq!(classify_diff_type(None, false, false), "modified");
+    }
 }
