@@ -176,8 +176,11 @@ function FileItem({
 }) {
   const isCritical =
     file.risk_level === "critical" || file.risk_level === "high";
+  const notRelevant = file.classification === "NOT_RELEVANT";
   return (
-    <div className={`file-item-wrapper ${isCritical ? "file-critical" : ""}`}>
+    <div
+      className={`file-item-wrapper ${isCritical ? "file-critical" : ""} ${notRelevant ? "file-not-relevant" : ""}`}
+    >
       <button
         className={`file-item ${selectedFile?.path === file.path ? "selected" : ""} ${isViewed ? "viewed" : ""} ${isStale ? "stale" : ""}`}
         onClick={() => onSelectFile(file)}
@@ -442,19 +445,29 @@ export function FileSidebar({
   };
 
   const [hideViewed, setHideViewed] = useState(true);
+  // NOT_RELEVANT files (tests, generated, presentational — judged noise by the
+  // AI) are hidden by default; this toggle reveals them on demand.
+  const [hideNotRelevant, setHideNotRelevant] = useState(true);
+
+  const notRelevantCount = useMemo(
+    () => files.filter((f) => f.classification === "NOT_RELEVANT").length,
+    [files],
+  );
 
   const visiblePaths = useMemo(() => {
     const needsViewedFilter = hideViewed;
+    const needsRelevanceFilter = hideNotRelevant && notRelevantCount > 0;
     const needsHunkFilter = showHunkSignificance && hunkFilter !== "all";
-    if (!needsViewedFilter && !needsHunkFilter) return null; // null = show all
+    if (!needsViewedFilter && !needsRelevanceFilter && !needsHunkFilter) return null; // null = show all
     const set = new Set<string>();
     for (const f of files) {
       if (needsViewedFilter && viewedFiles.has(f.path)) continue;
+      if (needsRelevanceFilter && f.classification === "NOT_RELEVANT") continue;
       if (needsHunkFilter && !fileMatchesHunkFilter(f, hunkFilter)) continue;
       set.add(f.path);
     }
     return set;
-  }, [files, viewedFiles, hideViewed, showHunkSignificance, hunkFilter]);
+  }, [files, viewedFiles, hideViewed, hideNotRelevant, notRelevantCount, showHunkSignificance, hunkFilter]);
 
   const isVisible = (f: { path: string }) => visiblePaths === null || visiblePaths.has(f.path);
 
@@ -545,6 +558,16 @@ export function FileSidebar({
         >
           {hideViewed ? "Show reviewed" : "Hide reviewed"}
           <span className="hide-viewed-count">{viewedCount}</span>
+        </button>
+      )}
+      {notRelevantCount > 0 && (
+        <button
+          className={`hide-viewed-toggle ${hideNotRelevant ? "active" : ""}`}
+          onClick={() => setHideNotRelevant((h) => !h)}
+          title="Files the AI judged not relevant to review"
+        >
+          {hideNotRelevant ? "Show not relevant" : "Hide not relevant"}
+          <span className="hide-viewed-count">{notRelevantCount}</span>
         </button>
       )}
       {showHunkSignificance && (

@@ -90,13 +90,6 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         .map(|f| (f.filename.clone(), (f.additions, f.deletions)))
         .collect();
 
-    // GitHub's authoritative per-file status (added/removed/modified/renamed/…),
-    // used to classify diff_type instead of guessing from content emptiness.
-    let status_by_path: HashMap<String, String> = pr_files
-        .iter()
-        .map(|f| (f.filename.clone(), f.status.clone()))
-        .collect();
-
     // Step 3: AI classification
     emit_progress(app, 3, "Classifying files with AI", FetchStatus::Running, None, None);
     let ai = AiBackend::from_settings(settings).await?;
@@ -116,128 +109,133 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         .filter(|c| c.classification == "RELEVANT")
         .collect();
 
-    if relevant.is_empty() {
-        return Ok(ReviewManifest {
-            pr_title,
-            pr_url,
-            pr_number,
-            base_ref,
-            head_ref,
-            base_sha,
-            head_sha,
-            summary: String::new(),
-            change_groups: vec![],
-            files: vec![],
-        });
-    }
-
-    // Step 4: AI highlight analysis + summary + grouping (parallel)
-    emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((0, 3)));
+    // NOT_RELEVANT files still go into the manifest (the UIs surface them behind
+    // a relevance filter); only the analysis below is scoped to the relevant
+    // subset, and it's skipped entirely when nothing is relevant — so a PR whose
+    // changes are all classified NOT_RELEVANT still lists its files instead of
+    // coming back empty.
     let per_file_diff_map = build_per_file_diff_map(&full_diff);
-    let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
-    let highlight_prompt = build_highlight_prompt(&pr_title, &per_file_diffs);
-
-    let summary_prompt = build_summary_prompt(&pr_title, &relevant);
-    let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
-
-    let mut ai_stream: FuturesUnordered<_> = [
-        ("highlights", ai.invoke(&highlight_prompt)),
-        ("summary", ai.invoke(&summary_prompt)),
-        ("grouping", ai.invoke(&grouping_prompt)),
-    ].into_iter().map(|(name, fut)| async move { (name, fut.await) }).collect();
-
-    let mut highlights_raw = Err("not started".to_string());
-    let mut summary_raw = Err("not started".to_string());
-    let mut grouping_raw = Err("not started".to_string());
-    let mut ai_done: u32 = 0;
-    while let Some((name, result)) = ai_stream.next().await {
-        ai_done += 1;
-        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((ai_done, 3)));
-        match name {
-            "highlights" => highlights_raw = result,
-            "summary" => summary_raw = result,
-            "grouping" => grouping_raw = result,
-            _ => {}
-        }
-    }
-    emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Done, None, None);
-
-    let highlights_raw = highlights_raw.unwrap_or_else(|_| "[]".to_string());
-
-    let highlights_json = extract_json_array(&highlights_raw).unwrap_or_else(|_| {
-        serde_json::Value::Array(vec![])
-    });
-
-    let highlight_results: Vec<HighlightResult> =
-        serde_json::from_value(highlights_json).unwrap_or_default();
-
-    let summary = summary_raw.unwrap_or_default();
-
-    let change_groups: Vec<ChangeGroup> = grouping_raw
-        .ok()
-        .and_then(|raw| extract_json_array(&raw).ok())
-        .and_then(|json| serde_json::from_value(json).ok())
-        .unwrap_or_default();
-
-    // Index highlights by file path
     let mut highlights_by_path: HashMap<String, Vec<Highlight>> = HashMap::new();
-    for h in highlight_results {
-        highlights_by_path
-            .entry(h.path.clone())
-            .or_default()
-            .push(Highlight {
-                start_line: h.start_line,
-                end_line: h.end_line,
-                severity: h.severity,
-                comment: h.comment,
-            });
-    }
+    let mut summary = String::new();
+    let mut change_groups: Vec<ChangeGroup> = Vec::new();
+    // Fetched full contents (base, head), keyed by path — only relevant files,
+    // so NOT_RELEVANT files show their diff but not a full-file view.
+    let mut content_by_path: HashMap<String, (String, String)> = HashMap::new();
 
-    // Step 5: Fetch file contents for all relevant files concurrently
-    let files_total = relevant.len() as u32;
-    emit_progress(app, 5, "Fetching file contents", FetchStatus::Running, None, Some((0, files_total)));
-    let content_futures: Vec<_> = relevant
-        .iter()
-        .map(|f| {
-            let path = f.path.clone();
-            let owner = parsed.owner.clone();
-            let repo = parsed.repo.clone();
-            let base = base_sha.clone();
-            let head = head_sha.clone();
-            let gh = &github;
-            async move {
-                let (base_content, head_content) = tokio::join!(
-                    gh.get_file_content(&owner, &repo, &path, &base),
-                    gh.get_file_content(&owner, &repo, &path, &head),
-                );
-                (path, base_content, head_content)
+    if !relevant.is_empty() {
+        // Step 4: AI highlight analysis + summary + grouping (parallel)
+        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((0, 3)));
+        let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
+        let highlight_prompt = build_highlight_prompt(&pr_title, &per_file_diffs);
+
+        let summary_prompt = build_summary_prompt(&pr_title, &relevant);
+        let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
+
+        let mut ai_stream: FuturesUnordered<_> = [
+            ("highlights", ai.invoke(&highlight_prompt)),
+            ("summary", ai.invoke(&summary_prompt)),
+            ("grouping", ai.invoke(&grouping_prompt)),
+        ].into_iter().map(|(name, fut)| async move { (name, fut.await) }).collect();
+
+        let mut highlights_raw = Err("not started".to_string());
+        let mut summary_raw = Err("not started".to_string());
+        let mut grouping_raw = Err("not started".to_string());
+        let mut ai_done: u32 = 0;
+        while let Some((name, result)) = ai_stream.next().await {
+            ai_done += 1;
+            emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((ai_done, 3)));
+            match name {
+                "highlights" => highlights_raw = result,
+                "summary" => summary_raw = result,
+                "grouping" => grouping_raw = result,
+                _ => {}
             }
-        })
-        .collect();
+        }
+        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Done, None, None);
 
-    let mut stream: FuturesUnordered<_> = content_futures.into_iter().collect();
-    let mut contents = Vec::with_capacity(files_total as usize);
-    let mut files_done: u32 = 0;
-    while let Some(result) = stream.next().await {
-        files_done += 1;
-        emit_progress(app, 5, "Fetching file contents", FetchStatus::Running, None, Some((files_done, files_total)));
-        contents.push(result);
+        let highlights_raw = highlights_raw.unwrap_or_else(|_| "[]".to_string());
+
+        let highlights_json = extract_json_array(&highlights_raw).unwrap_or_else(|_| {
+            serde_json::Value::Array(vec![])
+        });
+
+        let highlight_results: Vec<HighlightResult> =
+            serde_json::from_value(highlights_json).unwrap_or_default();
+
+        summary = summary_raw.unwrap_or_default();
+
+        change_groups = grouping_raw
+            .ok()
+            .and_then(|raw| extract_json_array(&raw).ok())
+            .and_then(|json| serde_json::from_value(json).ok())
+            .unwrap_or_default();
+
+        // Index highlights by file path
+        for h in highlight_results {
+            highlights_by_path
+                .entry(h.path.clone())
+                .or_default()
+                .push(Highlight {
+                    start_line: h.start_line,
+                    end_line: h.end_line,
+                    severity: h.severity,
+                    comment: h.comment,
+                });
+        }
+
+        // Step 5: Fetch file contents for all relevant files concurrently
+        let files_total = relevant.len() as u32;
+        emit_progress(app, 5, "Fetching file contents", FetchStatus::Running, None, Some((0, files_total)));
+        let content_futures: Vec<_> = relevant
+            .iter()
+            .map(|f| {
+                let path = f.path.clone();
+                let owner = parsed.owner.clone();
+                let repo = parsed.repo.clone();
+                let base = base_sha.clone();
+                let head = head_sha.clone();
+                let gh = &github;
+                async move {
+                    let (base_content, head_content) = tokio::join!(
+                        gh.get_file_content(&owner, &repo, &path, &base),
+                        gh.get_file_content(&owner, &repo, &path, &head),
+                    );
+                    (path, base_content, head_content)
+                }
+            })
+            .collect();
+
+        let mut stream: FuturesUnordered<_> = content_futures.into_iter().collect();
+        let mut files_done: u32 = 0;
+        while let Some((path, base_result, head_result)) = stream.next().await {
+            files_done += 1;
+            emit_progress(app, 5, "Fetching file contents", FetchStatus::Running, None, Some((files_done, files_total)));
+            content_by_path.insert(
+                path,
+                (
+                    base_result.as_deref().unwrap_or("").to_string(),
+                    head_result.as_deref().unwrap_or("").to_string(),
+                ),
+            );
+        }
+        emit_progress(app, 5, "Fetching file contents", FetchStatus::Done, None, None);
     }
-    emit_progress(app, 5, "Fetching file contents", FetchStatus::Done, None, None);
 
     // Step 6: Build the manifest
     emit_progress(app, 6, "Building review manifest", FetchStatus::Running, None, None);
     let mut file_diffs = Vec::new();
 
-    for (path, base_result, head_result) in &contents {
-        let base_content = base_result.as_deref().unwrap_or("").to_string();
-        let head_content = head_result.as_deref().unwrap_or("").to_string();
+    for pr_file in &pr_files {
+        let path = &pr_file.filename;
+        // Full content is only fetched for relevant files; others show their
+        // diff but fall back to "(full file unavailable)" in the viewer.
+        let (base_content, head_content) = content_by_path.get(path).cloned().unwrap_or_default();
 
-        // Classify from GitHub's status. Inferring from content emptiness is
-        // wrong for renames (the new path 404s at the base SHA → empty base)
-        // and for failed/oversized base fetches, which all look "added".
+        // GitHub's per-file status is authoritative for diff_type; content
+        // emptiness is only a fallback — and NOT_RELEVANT files have no fetched
+        // content, so the status is what we rely on for them.
         let diff_type = classify_diff_type(
-            status_by_path.get(path.as_str()).map(|s| s.as_str()),
+            Some(pr_file.status.as_str()),
             base_content.is_empty(),
             head_content.is_empty(),
         );
@@ -256,10 +254,22 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             })
             .unwrap_or_default();
 
-        let classification = classifications
+        // The AI's classification, or a NOT_RELEVANT default for any changed
+        // file the classifier omitted (so nothing silently disappears).
+        let (classification, reason, category, risk_level) = classifications
             .iter()
             .find(|c| c.path == *path)
-            .unwrap();
+            .map(|c| {
+                (
+                    c.classification.clone(),
+                    c.reason.clone(),
+                    c.category.clone(),
+                    c.risk_level.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                ("NOT_RELEVANT".to_string(), "not classified".to_string(), "N/A".to_string(), "low".to_string())
+            });
 
         let (additions, deletions) = file_stats.get(path).copied().unwrap_or((0, 0));
 
@@ -278,10 +288,10 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
 
         file_diffs.push(FileDiff {
             path: path.clone(),
-            classification: classification.classification.clone(),
-            reason: classification.reason.clone(),
-            category: classification.category.clone(),
-            risk_level: classification.risk_level.clone(),
+            classification,
+            reason,
+            category,
+            risk_level,
             diff_type: diff_type.to_string(),
             base_content,
             head_content,

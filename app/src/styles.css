@@ -644,6 +644,13 @@ body {
   border-left-color: var(--risk-critical);
 }
 
+/* NOT_RELEVANT files (only shown when the relevance filter is toggled on) are
+   dimmed to keep them visually subordinate to the review set. */
+.file-item-wrapper.file-not-relevant .file-name {
+  opacity: 0.55;
+  font-style: italic;
+}
+
 .file-item {
   display: flex;
   align-items: center;
