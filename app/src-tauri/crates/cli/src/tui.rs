@@ -124,6 +124,16 @@ struct App<'a> {
     pr_node_id: Option<String>,
     /// Last action result, shown in the header.
     status: Option<String>,
+    /// Wrap long lines (sidebar paths and diff code) instead of truncating.
+    /// Toggled with `w`; on by default. Wrapping is done when the cache is built
+    /// (one logical line → N rows), so cursor/scroll/target math stays row-based.
+    wrap: bool,
+    /// Width of the diff pane at the last `ui()` frame; the cache is (re)built to
+    /// this width so wrapped rows match the viewport.
+    content_width: u16,
+    /// The `content_width` the diff cache was last built at, so a resize (or a
+    /// wrap toggle) triggers a rebuild.
+    cache_width: u16,
 }
 
 impl<'a> App<'a> {
@@ -169,6 +179,12 @@ impl<'a> App<'a> {
             viewed,
             pr_node_id: None,
             status: None,
+            wrap: true,
+            // A wide default so caches built before the first frame (and in unit
+            // tests that call `sync_cache` directly) don't wrap short lines; the
+            // real width is set from the pane in `ui()`.
+            content_width: 200,
+            cache_width: 0,
         };
         app.rebuild_rows();
         // Land on the first (highest-risk) file rather than the overview header.
@@ -361,10 +377,13 @@ impl<'a> App<'a> {
     /// Rebuild the rendered diff (and its nav indices) when the selection changes.
     fn sync_cache(&mut self) {
         let sel = self.list_state.selected();
-        if self.cache_idx == sel {
+        // Rebuild on selection change or a width change (a resize / wrap toggle
+        // re-wraps the lines and re-pads the background bands).
+        if self.cache_idx == sel && self.cache_width == self.content_width {
             return;
         }
         self.cache_idx = sel;
+        self.cache_width = self.content_width;
         self.thread_at_row = Vec::new();
         self.diff_thread_at_row = Vec::new();
         // Compute the view kind without holding a borrow across the build.
@@ -398,12 +417,14 @@ impl<'a> App<'a> {
                         .collect()
                 })
                 .unwrap_or_default();
+            let width = self.content_width as usize;
+            let wrap = self.wrap;
             if self.full_file {
-                full_file_lines_for(file, &file_threads)
+                full_file_lines_for(file, &file_threads, width, wrap)
             } else if file.unified_diff.is_empty() {
                 Rendered::message("(no diff)")
             } else {
-                diff_lines_for(file, &file_threads, &self.collapsed)
+                diff_lines_for(file, &file_threads, &self.collapsed, width, wrap)
             }
         } else {
             Rendered::default()
@@ -477,6 +498,13 @@ impl<'a> App<'a> {
         self.full_file = !self.full_file;
         self.cursor = 0;
         self.cache_idx = None; // rebuild in the new mode
+    }
+
+    /// Toggle line wrapping (sidebar paths and diff code). Rebuilds the cache so
+    /// long lines re-flow; the cursor clamps to the new row count on next render.
+    fn toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        self.cache_idx = None; // force a rebuild with the new wrap state
     }
 
     /// Fold all hunks, or unfold them all if every hunk is already folded.
@@ -602,6 +630,7 @@ impl<'a> App<'a> {
                 KeyCode::Char('n') => self.next_finding(),
                 KeyCode::Char('N') => self.prev_finding(),
                 KeyCode::Char('t') => self.toggle_filter(),
+                KeyCode::Char('w') => self.toggle_wrap(),
                 KeyCode::Char('?') => self.mode = Mode::Help,
                 KeyCode::Char('R') => {
                     self.status = None;
@@ -1095,11 +1124,20 @@ impl<'a> App<'a> {
     }
 
     fn ui(&mut self, f: &mut Frame) {
-        self.sync_cache();
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
             .split(f.area());
+
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(40), Constraint::Min(1)])
+            .split(rows[1]);
+
+        // Build the cache to the current diff-pane width (so wrapped rows match
+        // the viewport) before laying anything out.
+        self.content_width = body[1].width;
+        self.sync_cache();
 
         let mut header = vec![
             Span::styled(
@@ -1113,11 +1151,6 @@ impl<'a> App<'a> {
             header.push(Span::styled(format!("   {s}"), Style::default().fg(color)));
         }
         f.render_widget(Paragraph::new(Line::from(header)), rows[0]);
-
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(40), Constraint::Min(1)])
-            .split(rows[1]);
 
         self.render_sidebar(f, body[0]);
         self.render_diff(f, body[1]);
@@ -1179,6 +1212,10 @@ impl<'a> App<'a> {
     }
 
     fn render_sidebar(&mut self, f: &mut Frame, area: Rect) {
+        let wrap = self.wrap;
+        // Path width budget: pane minus the right border, the cursor symbol, and
+        // the 2-col viewed glyph / indent.
+        let path_w = (area.width as usize).saturating_sub(4).max(1);
         let items: Vec<ListItem> = self
             .rows
             .iter()
@@ -1217,14 +1254,59 @@ impl<'a> App<'a> {
                     if status == ViewedStatus::Viewed {
                         name_style = name_style.add_modifier(Modifier::DIM);
                     }
-                    ListItem::new(Line::from(vec![
-                        Span::styled(glyph, Style::default().fg(glyph_color)),
-                        Span::styled(short_path(&file.path, 22), name_style),
-                        Span::raw("  "),
-                        Span::styled(format!("+{}", file.additions), Style::default().fg(Color::Green)),
-                        Span::raw(" "),
-                        Span::styled(format!("-{}", file.deletions), Style::default().fg(Color::Red)),
-                    ]))
+                    // Churn (+adds / -dels), built fresh per use.
+                    let churn = || {
+                        vec![
+                            Span::raw("  "),
+                            Span::styled(
+                                format!("+{}", file.additions),
+                                Style::default().fg(Color::Green),
+                            ),
+                            Span::raw(" "),
+                            Span::styled(
+                                format!("-{}", file.deletions),
+                                Style::default().fg(Color::Red),
+                            ),
+                        ]
+                    };
+                    if wrap {
+                        // Wrap the full path so nothing is cut off. Short paths
+                        // stay on one line (churn inline); long paths wrap, with
+                        // churn on its own indented final line.
+                        let chunks = wrap_chars(&file.path, path_w);
+                        if chunks.len() <= 1 {
+                            let mut spans = vec![
+                                Span::styled(glyph, Style::default().fg(glyph_color)),
+                                Span::styled(file.path.clone(), name_style),
+                            ];
+                            spans.extend(churn());
+                            ListItem::new(Line::from(spans))
+                        } else {
+                            let mut lines: Vec<Line> = chunks
+                                .iter()
+                                .enumerate()
+                                .map(|(j, ch)| {
+                                    let lead = if j == 0 {
+                                        Span::styled(glyph, Style::default().fg(glyph_color))
+                                    } else {
+                                        Span::raw("  ")
+                                    };
+                                    Line::from(vec![lead, Span::styled(ch.clone(), name_style)])
+                                })
+                                .collect();
+                            let mut tail = vec![Span::raw("  ")];
+                            tail.extend(churn());
+                            lines.push(Line::from(tail));
+                            ListItem::new(lines)
+                        }
+                    } else {
+                        let mut spans = vec![
+                            Span::styled(glyph, Style::default().fg(glyph_color)),
+                            Span::styled(short_path(&file.path, 22), name_style),
+                        ];
+                        spans.extend(churn());
+                        ListItem::new(Line::from(spans))
+                    }
                 }
             })
             .collect();
@@ -1301,6 +1383,12 @@ struct Rendered {
     /// Parallel to `lines`: the global `threads` index of the inline thread a row
     /// belongs to (the anchored code line and its 💬 block), else None.
     thread_at_row: Vec<Option<usize>>,
+    /// Blank padding the width of the line-number gutter, prepended to non-code
+    /// rows (annotations, threads, hunk headers) so they align under the code.
+    gutter_pad: String,
+    /// Full row width to wrap prose rows (AI annotations, thread comments) to
+    /// when wrapping is on; `None` leaves them on one (overflowing) row.
+    wrap_width: Option<usize>,
 }
 
 impl Rendered {
@@ -1321,9 +1409,17 @@ impl Rendered {
         self.thread_at_row.push(thread);
     }
 
+    /// A blank span the width of the line-number gutter, to align non-code rows.
+    fn gut(&self) -> Span<'static> {
+        Span::raw(self.gutter_pad.clone())
+    }
+
     /// Append the `▸` AI-annotation rows for any highlights starting at `ln`.
+    /// When wrapping is on, the comment wraps to the viewport width with
+    /// continuation rows indented under the `▸ {loc} ` prefix.
     fn push_annotations(&mut self, starts: &HashMap<u64, Vec<&Highlight>>, ln: u64) {
         let Some(hs) = starts.get(&ln) else { return };
+        let gut_w = self.gutter_pad.chars().count();
         for h in hs {
             let c = sev_color(&h.severity);
             let loc = if h.start_line == h.end_line {
@@ -1331,18 +1427,28 @@ impl Rendered {
             } else {
                 format!("L{}-{}", h.start_line, h.end_line)
             };
+            let prefix = format!("▸ {loc} ");
+            let prefix_w = prefix.chars().count();
+            let chunks = match self.wrap_width {
+                Some(w) => {
+                    let avail = w.saturating_sub(gut_w + prefix_w).max(8);
+                    crate::wrap(&h.comment, avail)
+                }
+                None => vec![h.comment.clone()],
+            };
             self.finding_rows.push(self.lines.len());
-            self.row(
-                Line::from(vec![
-                    Span::styled(
-                        format!("▸ {loc} "),
-                        Style::default().fg(c).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(h.comment.clone(), Style::default().fg(c)),
-                ]),
-                None,
-                None,
-            );
+            for (i, text) in chunks.into_iter().enumerate() {
+                let head = if i == 0 {
+                    Span::styled(prefix.clone(), Style::default().fg(c).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::raw(" ".repeat(prefix_w))
+                };
+                self.row(
+                    Line::from(vec![self.gut(), head, Span::styled(text, Style::default().fg(c))]),
+                    None,
+                    None,
+                );
+            }
         }
     }
 
@@ -1354,10 +1460,18 @@ impl Rendered {
         // Trailing pad so the bg fills the row into a band (a Line's bg only
         // covers the cells it occupies).
         let pad = || Span::raw(" ".repeat(160));
+        // Wrap comment bodies to the viewport (minus gutter, `▌ ` bar, and the
+        // 2-space indent) when wrapping is on; otherwise a fixed prototype width.
+        let gut_w = self.gutter_pad.chars().count();
+        let body_w = match self.wrap_width {
+            Some(w) => w.saturating_sub(gut_w + 4).max(16),
+            None => 72,
+        };
         for (gi, th) in ths {
             let gi = Some(*gi);
             self.row(
                 Line::from(vec![
+                    self.gut(),
                     bar(),
                     Span::styled(
                         "💬 thread",
@@ -1372,6 +1486,7 @@ impl Rendered {
             for c in &th.comments {
                 self.row(
                     Line::from(vec![
+                        self.gut(),
                         bar(),
                         Span::styled(
                             format!("@{}", c.author.login),
@@ -1383,9 +1498,10 @@ impl Rendered {
                     None,
                     gi,
                 );
-                for l in crate::wrap(&c.body, 72) {
+                for l in crate::wrap(&c.body, body_w) {
                     self.row(
                         Line::from(vec![
+                            self.gut(),
                             bar(),
                             Span::styled(format!("  {l}"), Style::default().fg(Color::White)),
                             pad(),
@@ -1419,6 +1535,8 @@ fn diff_lines_for(
     file: &FileDiff,
     threads: &[(usize, &ReviewThread)],
     collapsed: &HashSet<usize>,
+    width: usize,
+    wrap: bool,
 ) -> Rendered {
     let (starts, covered, threads_at) = build_line_meta(file, threads);
     // Body-line count per hunk (for the `⋯ N lines` fold marker).
@@ -1427,7 +1545,17 @@ fn diff_lines_for(
     let (ps, _) = crate::highlighter();
     let syntax = crate::syntax_for(ps, &file.path);
 
-    let mut r = Rendered::default();
+    // Line-number gutter: two right-aligned columns (old | new), sized to the
+    // largest line number, then a `│` separator. Non-code rows get blank padding
+    // of the same width so they line up.
+    let (max_old, max_new) = diff_max_lines(&file.unified_diff);
+    let (ow, nw) = (num_width(max_old), num_width(max_new));
+    let mut r = Rendered {
+        gutter_pad: " ".repeat(ow + nw + 4),
+        wrap_width: wrap.then_some(width),
+        ..Default::default()
+    };
+
     let mut new_ln: Option<u64> = None;
     let mut old_ln: Option<u64> = None;
     // Current hunk index (None before the first `@@`).
@@ -1439,8 +1567,10 @@ fn diff_lines_for(
             let idx = hunk_idx.map_or(0, |i| i + 1);
             hunk_idx = Some(idx);
             r.hunk_rows.push(r.lines.len());
-            let mut spans =
-                vec![Span::styled(line.to_string(), Style::default().fg(Color::Cyan))];
+            let mut spans = vec![
+                r.gut(),
+                Span::styled(line.to_string(), Style::default().fg(Color::Cyan)),
+            ];
             if collapsed.contains(&idx) {
                 let n = body_counts.get(idx).copied().unwrap_or(0);
                 spans.push(Span::styled(
@@ -1464,7 +1594,10 @@ fn diff_lines_for(
             Some(' ') => (' ', &line[1..], true, Color::DarkGray),
             _ => {
                 r.row(
-                    Line::from(Span::styled(line.to_string(), Style::default().fg(Color::DarkGray))),
+                    Line::from(vec![
+                        r.gut(),
+                        Span::styled(line.to_string(), Style::default().fg(Color::DarkGray)),
+                    ]),
                     None,
                     None,
                 );
@@ -1480,27 +1613,25 @@ fn diff_lines_for(
         }
 
         // Faint full-width background tint so added/removed lines stand out from
-        // context (the trailing pad fills the row; Paragraph truncates it).
+        // context.
         let line_bg = match marker {
             '+' => Some(ADD_BG),
             '-' => Some(DEL_BG),
             _ => None,
         };
-        let mut spans: Vec<Span> = Vec::new();
-        match cur_new.and_then(|ln| covered.get(&ln)) {
-            Some(&c) => spans.push(Span::styled("▍", Style::default().fg(c))),
-            None => spans.push(Span::raw(" ")),
-        }
-        spans.push(Span::styled(marker.to_string(), Style::default().fg(marker_color)));
-        spans.extend(highlight_spans(rest, syntax));
-        let code_row = r.lines.len();
-        let row_line = match line_bg {
-            Some(bg) => {
-                spans.push(Span::raw(" ".repeat(200)));
-                Line::from(spans).style(Style::default().bg(bg))
-            }
-            None => Line::from(spans),
+        // Gutter line numbers: `+` shows the new line, `-` the old, context both.
+        let (g_old, g_new) = match marker {
+            '+' => (None, new_ln),
+            '-' => (old_ln, None),
+            _ => (old_ln, new_ln),
         };
+        let gutter = diff_gutter(g_old, g_new, ow, nw);
+        let sev = match cur_new.and_then(|ln| covered.get(&ln)) {
+            Some(&c) => Span::styled("▍", Style::default().fg(c)),
+            None => Span::raw(" "),
+        };
+        let mark = Span::styled(marker.to_string(), Style::default().fg(marker_color));
+        let code = highlight_spans(rest, syntax);
 
         // Comment target: removed lines map to the old side, everything else
         // (added/context) to the new side.
@@ -1508,7 +1639,8 @@ fn diff_lines_for(
             '-' => old_ln.map(|line| CommentTarget { line, side: "LEFT" }),
             _ => new_ln.map(|line| CommentTarget { line, side: "RIGHT" }),
         };
-        r.row(row_line, target, None);
+        let code_row =
+            push_code_line(&mut r, gutter, [sev, mark], code, line_bg, width, wrap, target);
 
         // Open review-thread comments inline below the line they're on.
         if let Some(ln) = cur_new {
@@ -1550,7 +1682,12 @@ fn diff_lines_for(
 /// Render the whole new file (`head_content`), syntax-highlighted, with the
 /// diff's added lines tinted and the same AI gutter / annotations and inline
 /// threads as the diff view. Every line is new-side, so any line is commentable.
-fn full_file_lines_for(file: &FileDiff, threads: &[(usize, &ReviewThread)]) -> Rendered {
+fn full_file_lines_for(
+    file: &FileDiff,
+    threads: &[(usize, &ReviewThread)],
+    width: usize,
+    wrap: bool,
+) -> Rendered {
     if file.head_content.is_empty() {
         return Rendered::message("(full file unavailable)");
     }
@@ -1560,26 +1697,29 @@ fn full_file_lines_for(file: &FileDiff, threads: &[(usize, &ReviewThread)]) -> R
     let (ps, _) = crate::highlighter();
     let syntax = crate::syntax_for(ps, &file.path);
 
-    let mut r = Rendered::default();
+    // Single-column gutter (the whole file is new-side, so there's no old side).
+    let total = file.head_content.lines().count() as u64;
+    let lw = num_width(total);
+    let mut r = Rendered {
+        gutter_pad: " ".repeat(lw + 3),
+        wrap_width: wrap.then_some(width),
+        ..Default::default()
+    };
+
     for (i, code) in file.head_content.lines().enumerate() {
         let ln = (i + 1) as u64;
         r.push_annotations(&starts, ln);
 
-        let mut spans: Vec<Span> = Vec::new();
-        match covered.get(&ln) {
-            Some(&c) => spans.push(Span::styled("▍", Style::default().fg(c))),
-            None => spans.push(Span::raw(" ")),
-        }
-        spans.push(Span::raw(" ")); // marker column (blank — no +/- in full file)
-        spans.extend(highlight_spans(code, syntax));
-        let code_row = r.lines.len();
-        let row_line = if added.contains(&ln) {
-            spans.push(Span::raw(" ".repeat(200)));
-            Line::from(spans).style(Style::default().bg(ADD_BG))
-        } else {
-            Line::from(spans)
+        let gutter = file_gutter(ln, lw);
+        let sev = match covered.get(&ln) {
+            Some(&c) => Span::styled("▍", Style::default().fg(c)),
+            None => Span::raw(" "),
         };
-        r.row(row_line, Some(CommentTarget { line: ln, side: "RIGHT" }), None);
+        let mark = Span::raw(" "); // marker column (blank — no +/- in full file)
+        let code = highlight_spans(code, syntax);
+        let bg = added.contains(&ln).then_some(ADD_BG);
+        let target = Some(CommentTarget { line: ln, side: "RIGHT" });
+        let code_row = push_code_line(&mut r, gutter, [sev, mark], code, bg, width, wrap, target);
 
         if let Some(ths) = threads_at.get(&ln) {
             if let Some((gi, _)) = ths.first() {
@@ -1668,6 +1808,150 @@ fn hunk_body_counts(unified_diff: &str) -> Vec<usize> {
         }
     }
     counts
+}
+
+/// The largest old-side and new-side line numbers a diff reaches, used to size
+/// the line-number gutter columns.
+fn diff_max_lines(unified_diff: &str) -> (u64, u64) {
+    let (mut max_old, mut max_new) = (0u64, 0u64);
+    let (mut old_ln, mut new_ln) = (0u64, 0u64);
+    for line in unified_diff.lines() {
+        if line.starts_with("@@") {
+            old_ln = hunk_old_start(line).unwrap_or(old_ln);
+            new_ln = crate::hunk_new_start(line).unwrap_or(new_ln);
+            continue;
+        }
+        match line.chars().next() {
+            Some('+') => {
+                max_new = max_new.max(new_ln);
+                new_ln += 1;
+            }
+            Some('-') => {
+                max_old = max_old.max(old_ln);
+                old_ln += 1;
+            }
+            Some(' ') => {
+                max_old = max_old.max(old_ln);
+                max_new = max_new.max(new_ln);
+                old_ln += 1;
+                new_ln += 1;
+            }
+            _ => {}
+        }
+    }
+    (max_old, max_new)
+}
+
+/// Decimal digits needed to print `n` (at least 1, so a zero-width gutter never
+/// collapses the separator).
+fn num_width(n: u64) -> usize {
+    n.max(1).to_string().len()
+}
+
+/// The dim two-column line-number gutter for a diff row (`old new │ `); a side
+/// with no number (added → old, removed → new) renders as blanks.
+fn diff_gutter(old: Option<u64>, new: Option<u64>, ow: usize, nw: usize) -> Span<'static> {
+    let o = old.map(|n| n.to_string()).unwrap_or_default();
+    let n = new.map(|n| n.to_string()).unwrap_or_default();
+    Span::styled(format!("{o:>ow$} {n:>nw$} │ "), Style::default().fg(Color::DarkGray))
+}
+
+/// The dim single-column line-number gutter for a full-file row (`ln │ `).
+fn file_gutter(ln: u64, w: usize) -> Span<'static> {
+    Span::styled(format!("{ln:>w$} │ "), Style::default().fg(Color::DarkGray))
+}
+
+/// Split a run of styled spans into rows no wider than `width` display columns
+/// (char-counted), breaking mid-span when needed and preserving each span's
+/// style. Always returns at least one row. Used for manual line wrapping so each
+/// rendered row stays exactly one terminal row (keeping cursor/scroll math
+/// row-based).
+fn split_spans(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> {
+    let width = width.max(1);
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut cur_w = 0usize;
+    for sp in spans {
+        let style = sp.style;
+        let chars: Vec<char> = sp.content.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if cur_w >= width {
+                rows.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            let take = (width - cur_w).min(chars.len() - i);
+            cur.push(Span::styled(chars[i..i + take].iter().collect::<String>(), style));
+            cur_w += take;
+            i += take;
+        }
+    }
+    if !cur.is_empty() || rows.is_empty() {
+        rows.push(cur);
+    }
+    rows
+}
+
+/// Push one source line as one or more rendered rows. The first row gets the
+/// line-number `gutter` and the `lead` (severity bar + diff marker, 2 cols);
+/// continuation rows (when `wrap` splits a long line) get blank padding so the
+/// code stays aligned. `bg`, when set, tints the whole row and is padded to the
+/// full `width` so the background reads as a band. The same comment `target` is
+/// attached to every row of the line. Returns the first row's index.
+#[allow(clippy::too_many_arguments)]
+fn push_code_line(
+    r: &mut Rendered,
+    gutter: Span<'static>,
+    lead: [Span<'static>; 2],
+    code: Vec<Span<'static>>,
+    bg: Option<Color>,
+    width: usize,
+    wrap: bool,
+    target: Option<CommentTarget>,
+) -> usize {
+    let gw = gutter.content.chars().count();
+    let prefix_w = gw + 2; // gutter + lead (2 cols)
+    let code_w = width.saturating_sub(prefix_w).max(1);
+    let first_row = r.lines.len();
+    let blank_gutter = Span::raw(" ".repeat(gw));
+
+    let chunks = if wrap { split_spans(&code, code_w) } else { vec![code] };
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if i == 0 {
+            spans.push(gutter.clone());
+            spans.push(lead[0].clone());
+            spans.push(lead[1].clone());
+        } else {
+            spans.push(blank_gutter.clone());
+            spans.push(Span::raw("  ")); // blank lead (2 cols)
+        }
+        let chunk_w: usize = chunk.iter().map(|s| s.content.chars().count()).sum();
+        spans.extend(chunk);
+        let line = match bg {
+            Some(c) => {
+                let used = prefix_w + chunk_w;
+                if width > used {
+                    spans.push(Span::raw(" ".repeat(width - used)));
+                }
+                Line::from(spans).style(Style::default().bg(c))
+            }
+            None => Line::from(spans),
+        };
+        r.row(line, target, None);
+    }
+    first_row
+}
+
+/// Hard-wrap a string into char chunks of at most `width` (for paths, which have
+/// no useful word boundaries). Always returns at least one chunk.
+fn wrap_chars(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let chars: Vec<char> = s.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars.chunks(width).map(|c| c.iter().collect()).collect()
 }
 
 /// Parse the old-side start line from a hunk header: `@@ -a,b +c,d @@` -> a.
@@ -1772,6 +2056,7 @@ fn render_help(f: &mut Frame) {
         head("View"),
         Line::from("  a            toggle full file / diff"),
         Line::from("  z / Z        fold hunk / all hunks"),
+        Line::from("  w            toggle line wrap"),
         Line::from("  /            search in file"),
         Line::from("  t            filter low-risk"),
         Line::from(""),
@@ -2110,6 +2395,83 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::ReviewInput));
         assert!(app.status.as_deref().unwrap_or("").contains("needs a message"));
+    }
+
+    #[test]
+    fn long_annotation_wraps_when_enabled() {
+        let mut f = file("pkg/c.go", "high", "@@ -1,1 +1,2 @@\n a\n+b\n");
+        let comment = "word ".repeat(40); // ~200 chars, must wrap in a narrow pane
+        f.highlights = vec![Highlight {
+            start_line: 2,
+            end_line: 2,
+            severity: "high".into(),
+            comment: comment.trim().into(),
+        }];
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.content_width = 40;
+        app.cache_idx = None;
+        app.sync_cache();
+        // The annotation spans several rows; the finding jump lands on the first.
+        let first = app.finding_rows[0];
+        let ann_rows = (first..app.diff_cache.len())
+            .take_while(|&i| lines_text_row(&app, i).contains("word"))
+            .count();
+        assert!(ann_rows > 1, "long annotation should wrap, got {ann_rows} row(s)");
+
+        // With wrap off it collapses to a single (overflowing) annotation row.
+        press(&mut app, KeyCode::Char('w'));
+        app.sync_cache();
+        let first = app.finding_rows[0];
+        let ann_rows = (first..app.diff_cache.len())
+            .take_while(|&i| lines_text_row(&app, i).contains("word"))
+            .count();
+        assert_eq!(ann_rows, 1, "no-wrap: annotation is one row");
+    }
+
+    /// The concatenated text of a single rendered row.
+    fn lines_text_row(app: &App, i: usize) -> String {
+        app.diff_cache[i].spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn diff_shows_line_number_gutter() {
+        let f = file("pkg/c.go", "high", "@@ -5,3 +5,3 @@\n ctx\n-removed\n+added\n");
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        app.sync_cache();
+        let text = lines_text(&app);
+        // The context line carries both old and new numbers (here 5 | 5).
+        assert!(text.contains("5 5 │"), "dual line-number gutter on context: {text:?}");
+        // Adding the gutter must not change the 1:1 row→line mapping.
+        assert_eq!(app.targets.len(), app.diff_cache.len(), "targets stay parallel");
+        let ctx = app.targets[1].unwrap();
+        assert_eq!((ctx.side, ctx.line), ("RIGHT", 5));
+    }
+
+    #[test]
+    fn wrap_splits_long_lines_and_toggles() {
+        let long = "x".repeat(300);
+        let diff = format!("@@ -1,0 +1,1 @@\n+{long}\n");
+        let f = file("pkg/long.go", "high", &diff);
+        let m = ReviewManifest { files: vec![f], ..manifest() };
+        let mut app = App::new(&m);
+        // Narrow pane so the 300-char line must wrap.
+        app.content_width = 40;
+        app.cache_idx = None;
+        app.sync_cache();
+        assert!(app.wrap, "wrap is on by default");
+        assert!(
+            app.diff_cache.len() > 2,
+            "long line wraps into several rows (header + many), got {}",
+            app.diff_cache.len()
+        );
+
+        // Toggling wrap off collapses back to one row per source line.
+        press(&mut app, KeyCode::Char('w'));
+        app.sync_cache();
+        assert!(!app.wrap);
+        assert_eq!(app.diff_cache.len(), 2, "no-wrap: hunk header + one (truncated) code row");
     }
 
     #[test]
