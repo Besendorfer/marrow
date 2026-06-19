@@ -89,7 +89,9 @@ struct App<'a> {
     mode: Mode,
     search_input: String,
     rows: Vec<Row>,
-    filter_low: bool,
+    /// Show NOT_RELEVANT files in the sidebar. Off by default (the AI deemed them
+    /// noise — tests, generated, presentational); `t` reveals them on demand.
+    show_irrelevant: bool,
     /// The pending review verb while typing its message (ReviewInput mode).
     review_event: &'static str,
     review_input: String,
@@ -162,7 +164,7 @@ impl<'a> App<'a> {
             mode: Mode::Normal,
             search_input: String::new(),
             rows: Vec::new(),
-            filter_low: false,
+            show_irrelevant: false,
             review_event: "",
             review_input: String::new(),
             pending_comment: None,
@@ -222,11 +224,11 @@ impl<'a> App<'a> {
 
     /// Build the sidebar: an overview header, then files grouped by AI
     /// change-group (risk-ordered within), then an "Other" section for any
-    /// ungrouped files. Falls back to a flat list with no groups. `filter_low`
-    /// hides low-risk files.
+    /// ungrouped files. Falls back to a flat list with no groups. Unless
+    /// `show_irrelevant` is set, NOT_RELEVANT files are hidden.
     fn build_rows(&self) -> Vec<Row> {
-        let filter_low = self.filter_low;
-        let keep = |f: &FileDiff| !filter_low || f.risk_level != "low";
+        let show_irrelevant = self.show_irrelevant;
+        let keep = |f: &FileDiff| show_irrelevant || f.classification == "RELEVANT";
         let mut rows = vec![Row::Overview, Row::Threads];
 
         if self.manifest.change_groups.is_empty() {
@@ -285,8 +287,13 @@ impl<'a> App<'a> {
     }
 
     fn toggle_filter(&mut self) {
-        self.filter_low = !self.filter_low;
+        self.show_irrelevant = !self.show_irrelevant;
         self.rebuild_rows();
+    }
+
+    /// Count of changed files the AI classified NOT_RELEVANT (hidden by default).
+    fn irrelevant_count(&self) -> usize {
+        self.files.iter().filter(|f| f.classification != "RELEVANT").count()
     }
 
     /// Move the selection to the next/previous selectable row, skipping group
@@ -318,26 +325,34 @@ impl<'a> App<'a> {
     /// Overview content: risk counts, the PR summary, and change-group blurbs.
     fn build_overview(&self) -> Rendered {
         let mut lines: Vec<Line> = Vec::new();
+        // Counts cover the relevant files (the review set); NOT_RELEVANT files are
+        // reported separately so the risk breakdown isn't skewed by noise.
+        let relevant: Vec<&&FileDiff> =
+            self.files.iter().filter(|f| f.classification == "RELEVANT").collect();
         let (mut hi, mut me, mut lo) = (0u32, 0u32, 0u32);
-        for f in &self.files {
+        for f in &relevant {
             match f.risk_level.as_str() {
                 "high" => hi += 1,
                 "low" => lo += 1,
                 _ => me += 1,
             }
         }
+        let mut header = format!("{} files · {hi} high · {me} med · {lo} low", relevant.len());
+        let nr = self.irrelevant_count();
+        if nr > 0 {
+            header.push_str(&format!("  ·  {nr} not relevant (press t)"));
+        }
         lines.push(Line::from(Span::styled(
-            format!("{} files · {hi} high · {me} med · {lo} low", self.files.len()),
+            header,
             Style::default().add_modifier(Modifier::BOLD),
         )));
-        let viewed = self
-            .files
+        let viewed = relevant
             .iter()
             .filter(|f| self.viewed_status(&f.path, &f.diff_hash) == ViewedStatus::Viewed)
             .count();
         lines.push(Line::from(Span::styled(
-            format!("{viewed}/{} viewed", self.files.len()),
-            Style::default().fg(if viewed == self.files.len() && viewed > 0 {
+            format!("{viewed}/{} viewed", relevant.len()),
+            Style::default().fg(if viewed == relevant.len() && viewed > 0 {
                 Color::Green
             } else {
                 Color::DarkGray
@@ -1235,11 +1250,18 @@ impl<'a> App<'a> {
                 Row::File(i) => {
                     let file = self.files[*i];
                     // Risk is kept as the filename color (no HIGH/med/low text);
-                    // churn shows additions/deletions.
-                    let color = match file.risk_level.as_str() {
-                        "high" => Color::Red,
-                        "low" => Color::Green,
-                        _ => Color::Yellow,
+                    // churn shows additions/deletions. NOT_RELEVANT files (only
+                    // shown when the filter is toggled on) are gray, since their
+                    // risk level is just a placeholder.
+                    let relevant = file.classification == "RELEVANT";
+                    let color = if !relevant {
+                        Color::DarkGray
+                    } else {
+                        match file.risk_level.as_str() {
+                            "high" => Color::Red,
+                            "low" => Color::Green,
+                            _ => Color::Yellow,
+                        }
                     };
                     // A leading glyph marks viewed (✓) / stale (~); viewed names
                     // dim so unreviewed files stand out. The glyph keeps the same
@@ -1251,7 +1273,7 @@ impl<'a> App<'a> {
                         ViewedStatus::Unviewed => ("  ", color),
                     };
                     let mut name_style = Style::default().fg(color);
-                    if status == ViewedStatus::Viewed {
+                    if status == ViewedStatus::Viewed || !relevant {
                         name_style = name_style.add_modifier(Modifier::DIM);
                     }
                     // Churn (+adds / -dels), built fresh per use.
@@ -1311,7 +1333,14 @@ impl<'a> App<'a> {
             })
             .collect();
 
-        let title = if self.filter_low { "Files (relevant)" } else { "Files" };
+        let nr = self.irrelevant_count();
+        let title = if self.show_irrelevant {
+            "Files (all)".to_string()
+        } else if nr > 0 {
+            format!("Files ({nr} not relevant hidden)")
+        } else {
+            "Files".to_string()
+        };
         let list = List::new(items)
             .block(Block::default().borders(Borders::RIGHT).title(title))
             .highlight_style(Style::default().bg(CURSOR_BG))
@@ -2058,7 +2087,7 @@ fn render_help(f: &mut Frame) {
         Line::from("  z / Z        fold hunk / all hunks"),
         Line::from("  w            toggle line wrap"),
         Line::from("  /            search in file"),
-        Line::from("  t            filter low-risk"),
+        Line::from("  t            show/hide not-relevant"),
         Line::from(""),
         head("Actions"),
         Line::from("  c            comment on the cursor line"),
@@ -2242,8 +2271,14 @@ mod tests {
     }
 
     #[test]
-    fn grouping_and_low_risk_filter() {
+    fn grouping_and_relevance_filter() {
         let mut m = manifest();
+        // low.go is noise: hidden by default, revealed by the filter.
+        for f in &mut m.files {
+            if f.path == "pkg/low.go" {
+                f.classification = "NOT_RELEVANT".into();
+            }
+        }
         m.change_groups = vec![ChangeGroup {
             label: "Core".into(),
             description: "core logic".into(),
@@ -2252,13 +2287,13 @@ mod tests {
         let mut app = App::new(&m);
         let groups = |a: &App| a.rows.iter().filter(|r| matches!(r, Row::Group(_))).count();
         let files = |a: &App| a.rows.iter().filter(|r| matches!(r, Row::File(_))).count();
-        // Core (high.go) + Other (low.go).
-        assert_eq!(groups(&app), 2);
-        assert_eq!(files(&app), 2);
-        // Filtering low-risk drops low.go and its now-empty "Other" section.
-        app.toggle_filter();
+        // Default hides NOT_RELEVANT: only high.go in its Core group.
         assert_eq!(files(&app), 1);
         assert_eq!(groups(&app), 1);
+        // Toggling reveals low.go under an "Other" section.
+        app.toggle_filter();
+        assert_eq!(files(&app), 2);
+        assert_eq!(groups(&app), 2);
     }
 
     #[test]
@@ -2351,7 +2386,7 @@ mod tests {
         app.mode = Mode::Help;
         let out = render_to_string(&mut app, 100, 30);
         assert!(out.contains("Keys"), "help title missing");
-        assert!(out.contains("filter low-risk"), "help body missing");
+        assert!(out.contains("not-relevant"), "help body missing");
     }
 
     #[test]

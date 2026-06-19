@@ -12,7 +12,7 @@ RELEVANT files include:
 - Shared libraries and utilities used by business logic
 
 NOT_RELEVANT files include:
-- UI components (React components that render JSX/HTML, CSS, Tailwind config, styles, layouts, pages that are purely presentational)
+- Purely presentational UI: web markup and styling only (React/Vue/Svelte components that just render JSX/HTML, CSS/SCSS, Tailwind config, stylesheets, layouts/pages with no logic). This exclusion is about markup and styling — NOT about anything that "deals with display". A file that contains real logic is RELEVANT even if it ultimately drives a UI.
 - Test files — ANY file matching these patterns is NOT_RELEVANT regardless of content: *.test.*, *.spec.*, __tests__/, test/, tests/, pact/, e2e/, **/e2e/**, *.e2e.*, playwright/*, cypress/*
 - Documentation (*.md, docs/, README)
 - IDE/editor config (.vscode/, .idea/)
@@ -29,6 +29,7 @@ IMPORTANT EDGE CASES:
 - tRPC router files ARE relevant
 - Hook files that contain business logic (data fetching, state management with business rules) ARE relevant
 - Hook files that are purely UI state (animations, UI toggles) are NOT relevant
+- Rendering/view code that contains non-trivial logic IS relevant — e.g. terminal/TUI rendering, view-models, editors, or components with parsing, state machines, cursor/scroll/layout math, or data transformation. Only the purely-markup/styling case above is NOT_RELEVANT; when a "UI" file carries substantial logic, classify it RELEVANT.
 - Shared utility libraries: classify based on whether they contain business logic or UI helpers
 - Page object files, test helpers, test fixtures, and test utilities are NOT_RELEVANT
 
