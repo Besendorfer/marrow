@@ -102,6 +102,12 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
+          # CLI releases must be pre-releases so they never claim GitHub's
+          # "Latest" badge — the desktop auto-updater resolves
+          # releases/latest/download/latest.json, which only the desktop (v*)
+          # release carries. A non-prerelease cli-v* release steals "Latest" and
+          # breaks the updater.
+          prerelease: true
           files: |
             dist/marrow-*.tar.gz
             dist/marrow-*.zip
