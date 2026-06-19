@@ -491,6 +491,17 @@ export function FileSidebar({
     return buildFileTree(files.filter((f) => visiblePaths.has(f.path)));
   }, [files, visiblePaths]);
 
+  // Files not in any AI change group (NOT_RELEVANT files aren't grouped, and the
+  // grouping step can omit a file) — surfaced under "Other" in the Groups view
+  // so nothing silently disappears there.
+  const ungroupedFiles = useMemo(() => {
+    if (!hasGroups) return [];
+    const groupedPaths = new Set(changeGroups.flatMap((g) => g.file_paths));
+    return files.filter(
+      (f) => !groupedPaths.has(f.path) && (visiblePaths === null || visiblePaths.has(f.path)),
+    );
+  }, [files, changeGroups, hasGroups, visiblePaths]);
+
   const visibleCategories = useMemo(() => {
     const order = ["Business Logic", "Infrastructure", "Domain Types", "Other"];
     return Object.keys(visibleGrouped).sort((a, b) => {
@@ -629,6 +640,36 @@ export function FileSidebar({
                 </div>
               );
             })}
+            {ungroupedFiles.length > 0 && (() => {
+              const groupKey = "group:other";
+              return (
+                <div className="file-group change-group">
+                  <button
+                    className="group-header group-toggle"
+                    onClick={() => toggleCollapsed(groupKey)}
+                  >
+                    <span className={`collapse-chevron ${collapsed.has(groupKey) ? "collapsed" : ""}`}>&#9662;</span>
+                    Other
+                    <span className="group-count">{ungroupedFiles.length}</span>
+                  </button>
+                  {!collapsed.has(groupKey) && (<>
+                  <div className="change-group-description">Files not part of a change group</div>
+                  {ungroupedFiles.map((file) => (
+                    <FileItem
+                      key={file.path}
+                      file={file}
+                      selectedFile={selectedFile}
+                      isViewed={viewedFiles.has(file.path)}
+                      isStale={staleViewedFiles.has(file.path)}
+                      onSelectFile={onSelectFile}
+                      onToggleViewed={onToggleViewed}
+                      showPathHint
+                    />
+                  ))}
+                  </>)}
+                </div>
+              );
+            })()}
           </>
         ) : view === "category" ? (
           <>
