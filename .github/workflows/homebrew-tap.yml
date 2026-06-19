@@ -14,19 +14,36 @@ name: Update Homebrew Tap
 on:
   release:
     types: [published]
+  # Manual re-sync / backfill (and a way to test without cutting a release).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "CLI release tag to sync to the tap (e.g. cli-v0.1.0-alpha.3)"
+        required: true
 
 jobs:
   update-tap:
     # Only CLI releases carry a Homebrew formula; skip desktop (`v*`) releases.
-    if: startsWith(github.event.release.tag_name, 'cli-v')
+    # (workflow_dispatch has no release object, so allow it through and validate
+    # the tag below.)
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'cli-v') }}
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve release tag
+        id: rel
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          case "$TAG" in
+            cli-v*) ;;
+            *) echo "::error::tag must start with cli-v (got: '$TAG')"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Download the formula from the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release download "$TAG" \
+          gh release download "${{ steps.rel.outputs.tag }}" \
             --repo "${{ github.repository }}" \
             --pattern marrow.rb \
             --dir .
@@ -35,7 +52,7 @@ jobs:
       - name: Commit to the tap
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ steps.rel.outputs.tag }}
         run: |
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::error::HOMEBREW_TAP_TOKEN is not set — create a PAT with contents:write on Besendorfer/homebrew-tap and add it as a repo secret."
