@@ -97,9 +97,18 @@ tap for all of Besendorfer's tools, so users tap once and `brew install` any of
 them. (The old per-project `homebrew-marrow` tap is deprecated and redirects
 here.)
 
-After each CLI release, copy the generated `marrow.rb` from the release into
-`Formula/marrow.rb` in the tap repo and push. Users then install with the short
-name after a one-time tap:
+Updating the tap is **automated**: when a `cli-v*` release is *published*,
+`.github/workflows/homebrew-tap.yml` copies that release's generated `marrow.rb`
+into `Formula/marrow.rb` in the tap repo and pushes. (It runs on publish, not on
+the tag push, because a draft release's asset URLs aren't reachable yet.) This
+needs a repo secret **`HOMEBREW_TAP_TOKEN`** — a PAT with `contents:write` on
+`Besendorfer/homebrew-tap` (the default `GITHUB_TOKEN` can't push to another
+repo). If the secret is missing the job fails loudly; fall back to the manual
+copy below.
+
+Manual fallback — copy the generated `marrow.rb` from the release into
+`Formula/marrow.rb` in the tap repo and push. Users install with the short name
+after a one-time tap:
 
 ```bash
 brew tap besendorfer/tap
@@ -111,10 +120,8 @@ brew install marrow
 > set, it refuses non-official taps until trusted: `brew trust besendorfer/tap`
 > (one-time, per machine). Only homebrew-core formulae are exempt.
 
-> Future automation: have `cli-release.yml` push `marrow.rb` to the tap repo
-> directly (needs a `HOMEBREW_TAP_TOKEN` secret with write access to the tap).
-> For now the formula is generated and attached to the release for a manual
-> copy — no secret required.
+> The formula is also attached to every CLI release, so the manual copy above
+> always works if the automation is unavailable (e.g. the secret is missing).
 
 ### Bare `brew install marrow` (homebrew-core, later)
 
