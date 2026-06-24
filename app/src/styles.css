@@ -916,6 +916,15 @@ body {
   overflow: auto;
 }
 
+/* Transient highlight when keyboard-navigating to an AI note (n / N). */
+@keyframes finding-flash-fade {
+  from { background-color: var(--accent, #4c8bf5); }
+  to { background-color: transparent; }
+}
+.finding-flash td {
+  animation: finding-flash-fade 1.2s ease-out;
+}
+
 /* ─── Diff Table ────────────────────────────────────────────────────────── */
 .diff-table {
   width: 100%;

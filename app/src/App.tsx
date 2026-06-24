@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileSidebar } from "./components/FileSidebar";
-import { DiffViewer, detectLanguage } from "./components/DiffViewer";
+import { DiffViewer, detectLanguage, type DiffViewerHandle } from "./components/DiffViewer";
 import { CommentsViewer } from "./components/CommentsViewer";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
@@ -34,6 +34,7 @@ function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef = useRef<SearchBarHandle>(null);
+  const diffViewerRef = useRef<DiffViewerHandle>(null);
   // Visible file order from the sidebar, used by the [ / ] navigation shortcuts.
   const visibleOrderRef = useRef<string[]>([]);
   const handleVisibleFilesChange = useCallback((paths: string[]) => {
@@ -193,6 +194,12 @@ function App() {
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
       onCloseOverlays: () => setHelpOpen(false),
+      onNextHunk: () => diffViewerRef.current?.nextHunk(),
+      onPrevHunk: () => diffViewerRef.current?.prevHunk(),
+      onNextFinding: () => diffViewerRef.current?.nextFinding(),
+      onPrevFinding: () => diffViewerRef.current?.prevFinding(),
+      onFoldHunk: () => diffViewerRef.current?.foldHunk(),
+      onFoldAll: () => diffViewerRef.current?.foldAll(),
     },
     {
       enabled: !!activeTab?.manifest,
@@ -1368,7 +1375,7 @@ function App() {
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
             ) : activeTab.manifest.summary ? (
               <div className="pr-summary">
                 <h3>PR Summary</h3>

@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch } from "../types";
@@ -107,6 +107,18 @@ interface DiffViewerProps {
   searchMatches?: SearchMatch[];
   currentSearchMatch?: SearchMatch | null;
   searchQuery?: string;
+}
+
+/** Imperative API for keyboard-driven hunk/finding navigation and folding (Tier 2). */
+export interface DiffViewerHandle {
+  nextHunk: () => void;
+  prevHunk: () => void;
+  /** Fold/unfold the hunk currently at the top of the viewport. */
+  foldHunk: () => void;
+  /** Toggle fold-all: collapse every hunk, or expand all if any are collapsed. */
+  foldAll: () => void;
+  nextFinding: () => void;
+  prevFinding: () => void;
 }
 
 export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lang }: { body: string; lang?: string }) {
@@ -529,7 +541,12 @@ interface DiffLine {
   newLineNum: number | null;
 }
 
-function parseDiffLines(unifiedDiff: string, lang: string | undefined): DiffLine[] {
+function parseDiffLines(
+  unifiedDiff: string,
+  lang: string | undefined,
+  headContent?: string,
+  baseContent?: string,
+): DiffLine[] {
   const rawLines = unifiedDiff.split("\n");
 
   // First pass: extract old-side and new-side source lines for highlighting
@@ -569,23 +586,34 @@ function parseDiffLines(unifiedDiff: string, lang: string | undefined): DiffLine
     }
   }
 
-  // Highlight both sides
-  const oldHtml = highlightLines(oldSrc.join("\n"), lang);
-  const newHtml = highlightLines(newSrc.join("\n"), lang);
+  // Highlight from the COMPLETE file contents when available, indexing each diff
+  // line by its real line number. The diff reconstruction (oldSrc/newSrc) stitches
+  // non-contiguous hunks together — that's syntactically broken code, and on a
+  // large/scattered diff it breaks highlight.js's stateful lexer so most tokens
+  // render uncolored. The full files are valid contiguous code and highlight
+  // correctly. Fall back to the stitched reconstruction for a side whose full
+  // content isn't available (e.g. a renamed file's missing base), preserving the
+  // previous behavior there.
+  const newFull = headContent ? highlightLines(headContent, lang) : null;
+  const oldFull = baseContent ? highlightLines(baseContent, lang) : null;
+  const newStitched = newFull ? null : highlightLines(newSrc.join("\n"), lang);
+  const oldStitched = oldFull ? null : highlightLines(oldSrc.join("\n"), lang);
 
-  // Map highlighted HTML back to diff lines
+  const newHtmlOf = (e: (typeof entries)[number]): string | undefined =>
+    newFull
+      ? (e.newLineNum != null ? newFull[e.newLineNum - 1] : undefined)
+      : (e.newIdx != null ? newStitched![e.newIdx] : undefined);
+  const oldHtmlOf = (e: (typeof entries)[number]): string | undefined =>
+    oldFull
+      ? (e.oldLineNum != null ? oldFull[e.oldLineNum - 1] : undefined)
+      : (e.oldIdx != null ? oldStitched![e.oldIdx] : undefined);
+
+  // Map highlighted HTML back to diff lines (add + context use the new side).
   return entries.map((e) => {
-    let html: string;
-    if (e.type === "header") {
-      html = escapeHtml(e.content);
-    } else if (e.type === "add") {
-      html = e.newIdx !== null ? (newHtml[e.newIdx] ?? escapeHtml(e.content)) : escapeHtml(e.content);
-    } else if (e.type === "remove") {
-      html = e.oldIdx !== null ? (oldHtml[e.oldIdx] ?? escapeHtml(e.content)) : escapeHtml(e.content);
-    } else {
-      // context — use new side
-      html = e.newIdx !== null ? (newHtml[e.newIdx] ?? escapeHtml(e.content)) : escapeHtml(e.content);
-    }
+    const html =
+      e.type === "header"
+        ? escapeHtml(e.content)
+        : (e.type === "remove" ? oldHtmlOf(e) : newHtmlOf(e)) ?? escapeHtml(e.content);
     return { type: e.type, content: e.content, html, oldLineNum: e.oldLineNum, newLineNum: e.newLineNum };
   });
 }
@@ -673,7 +701,7 @@ function buildFullFileDiffLines(
   lang: string | undefined
 ): DiffLine[] {
   if (!headContent) return [];
-  const parsed = parseDiffLines(unifiedDiff, lang);
+  const parsed = parseDiffLines(unifiedDiff, lang, headContent);
   const newLines = headContent.split("\n");
   const newHtml = highlightLines(headContent, lang);
 
@@ -1041,6 +1069,7 @@ function UnifiedView({
             <Fragment key={hunk.index}>
               {showSignificance && hunk.headerLine && (
                 <tr
+                  id={`hunk-${hunk.index}`}
                   className={`diff-line diff-line-header${isHigh ? " hunk-header-high" : ""} hunk-header-clickable`}
                   onClick={() => onToggleHunk(hunk.index)}
                 >
@@ -1057,6 +1086,7 @@ function UnifiedView({
               {isCollapsed ? (
                 !hunk.headerLine && (
                   <tr
+                    id={`hunk-${hunk.index}`}
                     className="hunk-collapsed"
                     onClick={() => onToggleHunk(hunk.index)}
                   >
@@ -1305,6 +1335,7 @@ function SplitView({
             <Fragment key={hunk.index}>
               {showSignificance && hunk.headerLine && (
                 <tr
+                  id={`hunk-${hunk.index}`}
                   className={`diff-split-row diff-line-header${isHigh ? " hunk-header-high" : ""} hunk-header-clickable`}
                   onClick={() => onToggleHunk(hunk.index)}
                 >
@@ -1323,6 +1354,7 @@ function SplitView({
               {isCollapsed ? (
                 !hunk.headerLine && (
                   <tr
+                    id={`hunk-${hunk.index}`}
                     className="hunk-collapsed"
                     onClick={() => onToggleHunk(hunk.index)}
                   >
@@ -1361,7 +1393,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1436,7 +1468,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
 
     // Use hunk-based view when we have scores and a parseable unified diff
     if (hasUnifiedDiff && hunkScores.length > 0) {
-      const lines = parseDiffLines(file.unified_diff, lang);
+      const lines = parseDiffLines(file.unified_diff, lang, file.head_content, file.base_content);
       return {
         hunks: groupIntoHunks(lines, hunkScores),
         diffLines: lines,
@@ -1451,7 +1483,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
     } else if (file.diff_type === "removed") {
       lines = buildFullFileLines(file.base_content, "remove", lang);
     } else {
-      lines = parseDiffLines(file.unified_diff, lang);
+      lines = parseDiffLines(file.unified_diff, lang, file.head_content, file.base_content);
       // Even without scores from AI, group into hunks for consistent rendering
       return {
         hunks: groupIntoHunks(lines, []),
@@ -1721,6 +1753,129 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
     setCollapsedHunks(new Set());
   };
 
+  // ── Tier 2: keyboard hunk/finding navigation + folding ────────────────────
+  const sortedFindings = useMemo(
+    () => (showAiNotes ? [...(file.highlights ?? [])] : []).sort((a, b) => a.start_line - b.start_line),
+    [file.highlights, showAiNotes],
+  );
+  const findingIdxRef = useRef(-1);
+  const [pendingScrollLine, setPendingScrollLine] = useState<number | null>(null);
+
+  // Absolute scroll offset of an element within the diff-content scroll container.
+  const offsetWithin = (el: HTMLElement, container: HTMLElement) =>
+    el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+
+  // The on-screen anchor for a hunk. Only a significance header OR a collapsed
+  // placeholder carries id="hunk-N" — these are mutually exclusive on headerLine,
+  // so there's never a duplicate id. Every other (expanded) hunk has rendered code
+  // rows, so we fall back to its first line's #diff-line-N.
+  const hunkAnchorEl = (index: number): HTMLElement | null => {
+    const c = diffContentRef.current;
+    if (!c) return null;
+    const byId = c.querySelector<HTMLElement>(`#hunk-${index}`);
+    if (byId) return byId;
+    const hunk = hunks.find((h) => h.index === index);
+    const first = hunk?.lines[0];
+    const ln = first?.newLineNum ?? first?.oldLineNum;
+    return ln != null ? c.querySelector<HTMLElement>(`#diff-line-${ln}`) : null;
+  };
+
+  const hunkOffsets = (): { index: number; top: number }[] => {
+    const c = diffContentRef.current;
+    if (!c) return [];
+    return hunks
+      .map((h) => {
+        const el = hunkAnchorEl(h.index);
+        return el ? { index: h.index, top: offsetWithin(el, c) } : null;
+      })
+      .filter((x): x is { index: number; top: number } => x !== null)
+      .sort((a, b) => a.top - b.top);
+  };
+
+  const scrollDiffTo = (top: number) =>
+    diffContentRef.current?.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+
+  const goToAdjacentHunk = (dir: 1 | -1) => {
+    const c = diffContentRef.current;
+    if (!c) return;
+    const offs = hunkOffsets();
+    const target =
+      dir > 0
+        ? offs.find((o) => o.top > c.scrollTop + 4)
+        : [...offs].reverse().find((o) => o.top < c.scrollTop - 4);
+    if (target) scrollDiffTo(target.top);
+  };
+  const nextHunk = () => goToAdjacentHunk(1);
+  const prevHunk = () => goToAdjacentHunk(-1);
+
+  const foldHunk = () => {
+    const c = diffContentRef.current;
+    if (!c) return;
+    // The hunk whose anchor sits at/above the viewport top is the "current" one.
+    const cur = c.scrollTop + 4;
+    let target: { index: number; top: number } | undefined;
+    for (const o of hunkOffsets()) {
+      if (o.top <= cur) target = o;
+      else break;
+    }
+    if (target) toggleHunk(target.index);
+  };
+
+  const foldAll = () => {
+    if (collapsedHunks.size > 0) expandAll();
+    else collapseAll();
+  };
+
+  const goToFinding = () => {
+    const f = sortedFindings[findingIdxRef.current];
+    if (!f) return;
+    // Expand the containing hunk if collapsed, then scroll once it has rendered.
+    const hunk = hunks.find((h) =>
+      h.lines.some((l) => l.newLineNum === f.start_line || l.oldLineNum === f.start_line),
+    );
+    if (hunk && collapsedHunks.has(hunk.index)) {
+      setCollapsedHunks((prev) => {
+        const n = new Set(prev);
+        n.delete(hunk.index);
+        return n;
+      });
+    }
+    setPendingScrollLine(f.start_line);
+  };
+
+  const stepFinding = (dir: 1 | -1) => {
+    const len = sortedFindings.length;
+    if (len === 0) return;
+    findingIdxRef.current = (findingIdxRef.current + dir + len) % len;
+    goToFinding();
+  };
+  const nextFinding = () => stepFinding(1);
+  const prevFinding = () => stepFinding(-1);
+
+  // Perform the finding scroll after the (possibly just-expanded) hunk renders.
+  useEffect(() => {
+    if (pendingScrollLine == null) return;
+    const c = diffContentRef.current;
+    if (c) {
+      const el = c.querySelector<HTMLElement>(`#diff-line-${pendingScrollLine}`);
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        el.classList.add("finding-flash");
+        setTimeout(() => el.classList.remove("finding-flash"), 1200);
+      }
+    }
+    setPendingScrollLine(null);
+    // Only depends on pendingScrollLine: goToFinding batches the hunk-expand and
+    // this state set, so the expanded line is already in the DOM when we run.
+  }, [pendingScrollLine]);
+
+  // No dep array: the handle is only ever called imperatively (on a keypress),
+  // never read in a memo/dep, so rebuilding it each render keeps it always-fresh
+  // for free — no stale closures over hunks/collapsedHunks/sortedFindings.
+  useImperativeHandle(ref, () => ({
+    nextHunk, prevHunk, foldHunk, foldAll, nextFinding, prevFinding,
+  }));
+
   return (
     <div className={`diff-viewer ${isCritical ? "diff-viewer-critical" : ""}`}>
       <div className="diff-header">
@@ -1859,4 +2014,4 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
       </div>
     </div>
   );
-}
+});
