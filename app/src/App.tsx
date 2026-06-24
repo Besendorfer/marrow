@@ -173,6 +173,13 @@ function App() {
     if (next && next.path !== activeTab.selectedFile.path) setSelectedFile(next);
   }
 
+  function selectAdjacentTab(delta: 1 | -1) {
+    if (tabs.length < 2) return;
+    const i = tabs.findIndex((t) => t.id === activeTabId);
+    if (i < 0) return;
+    handleSelectTab(tabs[(i + delta + tabs.length) % tabs.length].id);
+  }
+
   function toggleThreadsView() {
     if (!activeTab?.manifest) return;
     if (activeTab.sidebarView === "comments") {
@@ -196,6 +203,8 @@ function App() {
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
       onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); },
+      onNextTab: () => selectAdjacentTab(1),
+      onPrevTab: () => selectAdjacentTab(-1),
       onNextHunk: () => diffViewerRef.current?.nextHunk(),
       onPrevHunk: () => diffViewerRef.current?.prevHunk(),
       onNextFinding: () => diffViewerRef.current?.nextFinding(),

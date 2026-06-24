@@ -17,6 +17,9 @@ export interface ShortcutHandlers {
   onToggleHelp: () => void;
   /** Close transient overlays (help). Search owns its own Esc. */
   onCloseOverlays: () => void;
+  /** Cycle to the next / previous tab (Ctrl+Tab / Ctrl+Shift+Tab). */
+  onNextTab: () => void;
+  onPrevTab: () => void;
   // Tier 2/3 — diff-internal navigation/folding (no-ops when no diff is shown).
   onNextHunk: () => void;
   onPrevHunk: () => void;
@@ -89,6 +92,17 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
       // Esc is always allowed so overlays can be dismissed.
       if (e.key === "Escape") {
         h.onCloseOverlays();
+        return;
+      }
+
+      // Ctrl+Tab / Ctrl+Shift+Tab cycle tabs — works regardless of `enabled` (so it
+      // applies on opener tabs too), but not while an overlay is open. Ctrl, not Cmd:
+      // Cmd+Tab is the macOS app switcher.
+      if (e.key === "Tab" && e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (!overlayOpen) {
+          if (e.shiftKey) h.onPrevTab(); else h.onNextTab();
+          e.preventDefault();
+        }
         return;
       }
 

@@ -22,6 +22,8 @@ const SECTIONS: Section[] = [
     bindings: [
       { keys: ["]"], label: "Next file" },
       { keys: ["["], label: "Previous file" },
+      { keys: ["⌃Tab"], label: "Next tab" },
+      { keys: ["⌃⇧Tab"], label: "Previous tab" },
       { keys: ["j"], label: "Cursor down" },
       { keys: ["k"], label: "Cursor up" },
       { keys: ["g", "Home"], label: "Cursor to top" },
