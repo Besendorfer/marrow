@@ -38,12 +38,20 @@ function isEditable(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
+// ARIA roles whose widgets respond to Space/Enter — paging should defer to them.
+const INTERACTIVE_ROLES = new Set([
+  "button", "checkbox", "radio", "switch", "tab", "menuitem", "menuitemcheckbox",
+  "menuitemradio", "option", "link",
+]);
+
 /** Elements where Space/Enter means "activate", so paging should defer to them. */
 function isClickable(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el) return false;
   const tag = el.tagName;
-  return tag === "BUTTON" || tag === "A" || tag === "SUMMARY" || el.getAttribute("role") === "button";
+  if (tag === "BUTTON" || tag === "A" || tag === "SUMMARY") return true;
+  const role = el.getAttribute("role");
+  return role !== null && INTERACTIVE_ROLES.has(role);
 }
 
 export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: ShortcutOptions): void {
@@ -87,12 +95,11 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
 
       if (!enabled || overlayOpen) return;
 
-      const ctrl = e.ctrlKey || e.metaKey;
-
-      // Ctrl/Cmd combos — handle before bailing on modifiers below.
-      // ^f (full page down in the TUI) is intentionally omitted: it collides with
-      // find, so SearchBar's own Cmd/Ctrl+F listener owns it. PageDown covers the gap.
-      if (ctrl && !e.shiftKey && !e.altKey) {
+      // Vim-style scroll/refresh combos are Ctrl-only (NOT Cmd): on macOS Cmd+R
+      // reloads the webview, Cmd+D bookmarks, Cmd+U views source — leave those to
+      // the system. ^f (full page down in the TUI) is omitted too; it collides with
+      // find, which SearchBar's own Cmd/Ctrl+F listener owns. Space covers the gap.
+      if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
         switch (e.key.toLowerCase()) {
           case "d": scrollBy(page(0.5)); e.preventDefault(); return;
           case "u": scrollBy(-page(0.5)); e.preventDefault(); return;
