@@ -18,6 +18,8 @@ interface FileSidebarProps {
   commentThreads: ReviewThread[];
   selectedCommentFile: string | null;
   onSelectCommentFile: (path: string) => void;
+  /** Emits the visible file paths in manifest order, for keyboard file navigation. */
+  onVisibleFilesChange?: (paths: string[]) => void;
 }
 
 function getMaxHunkSignificance(file: FileDiff): string {
@@ -153,6 +155,19 @@ function sortedTreeEntries(node: TreeNode): TreeNode[] {
   dirs.sort((a, b) => a.name.localeCompare(b.name));
   fileNodes.sort((a, b) => a.name.localeCompare(b.name));
   return [...dirs, ...fileNodes];
+}
+
+// Flatten the tree into the top-to-bottom order of *displayed* file rows,
+// skipping the contents of collapsed folders. Mirrors TreeFolder's render so
+// keyboard file nav follows exactly what's on screen.
+function flattenTreePaths(node: TreeNode, depth: number, collapsed: Set<string>, out: string[]): void {
+  for (const child of sortedTreeEntries(node)) {
+    if (child.file) {
+      out.push(child.file.path);
+    } else if (!collapsed.has(`tree:${depth}:${child.name}`)) {
+      flattenTreePaths(child, depth + 1, collapsed, out);
+    }
+  }
 }
 
 /* ─── Shared file item renderer ─────────────────────────────────────────── */
@@ -390,6 +405,7 @@ export function FileSidebar({
   commentThreads,
   selectedCommentFile,
   onSelectCommentFile,
+  onVisibleFilesChange,
 }: FileSidebarProps) {
   const hasGroups = changeGroups.length > 0;
   const prevHasGroups = useRef(hasGroups);
@@ -510,6 +526,42 @@ export function FileSidebar({
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
     });
   }, [visibleGrouped]);
+
+  // The flat top-to-bottom order of file rows as actually displayed for the
+  // current view — respecting filters and collapsed sections, deduped to first
+  // occurrence (critical files also appear under their category). Drives the
+  // [ / ] navigation shortcuts so they follow the visible list exactly.
+  const navigableOrder = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const push = (path: string) => {
+      if (!seen.has(path)) { seen.add(path); out.push(path); }
+    };
+    if (view === "groups") {
+      changeGroups.forEach((group, idx) => {
+        if (collapsed.has(`group:${idx}`)) return;
+        for (const p of group.file_paths) {
+          const f = filesByPath.get(p);
+          if (f && isVisible(f)) push(f.path);
+        }
+      });
+      if (!collapsed.has("group:other")) ungroupedFiles.forEach((f) => push(f.path));
+    } else if (view === "category") {
+      if (!collapsed.has(NEEDS_ATTENTION)) visibleCriticalFiles.forEach((f) => push(f.path));
+      for (const category of visibleCategories) {
+        if (collapsed.has(category)) continue;
+        visibleGrouped[category].forEach((f) => push(f.path));
+      }
+    } else if (view === "tree") {
+      flattenTreePaths(visibleFileTree, 0, collapsed, out);
+    }
+    // "comments" view drives a separate selection model — emit nothing.
+    return out;
+  }, [view, changeGroups, collapsed, filesByPath, visiblePaths, ungroupedFiles, visibleCriticalFiles, visibleCategories, visibleGrouped, visibleFileTree]);
+
+  useEffect(() => {
+    onVisibleFilesChange?.(navigableOrder);
+  }, [navigableOrder, onVisibleFilesChange]);
 
   const viewedCount = viewedFiles.size;
   const staleCount = staleViewedFiles.size;
