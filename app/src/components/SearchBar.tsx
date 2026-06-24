@@ -89,7 +89,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
   // Report open/close transitions to the parent (for overlay-aware shortcuts).
   useEffect(() => {
     onOpenChange?.(open);
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, onOpenChange]);
 
   // Debounce the query for global search (local stays instant)
   useEffect(() => {
