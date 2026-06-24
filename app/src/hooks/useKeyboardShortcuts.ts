@@ -17,13 +17,23 @@ export interface ShortcutHandlers {
   onToggleHelp: () => void;
   /** Close transient overlays (help). Search owns its own Esc. */
   onCloseOverlays: () => void;
-  // Tier 2 — diff-internal navigation/folding (no-ops when no diff is shown).
+  // Tier 2/3 — diff-internal navigation/folding (no-ops when no diff is shown).
   onNextHunk: () => void;
   onPrevHunk: () => void;
   onNextFinding: () => void;
   onPrevFinding: () => void;
-  onFoldHunk: () => void;
   onFoldAll: () => void;
+  // Tier 3 — line cursor. j/k/g/G drive the cursor instead of scrolling.
+  onCursorDown: () => void;
+  onCursorUp: () => void;
+  onCursorTop: () => void;
+  onCursorBottom: () => void;
+  onFoldAtCursor: () => void;
+  onComment: () => void;
+  onToggleAnchor: () => void;
+  onReviewPicker: () => void;
+  onReply: () => void;
+  onResolve: () => void;
 }
 
 export interface ShortcutOptions {
@@ -34,9 +44,6 @@ export interface ShortcutOptions {
   /** Returns the scrollable diff element. Defaults to the `.diff-content` pane. */
   getScrollEl?: () => HTMLElement | null;
 }
-
-/** ~3 text lines — a comfortable j/k nudge. */
-const LINE_STEP = 48;
 
 function isEditable(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -76,11 +83,6 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
     }
     function scrollBy(delta: number) {
       scrollEl()?.scrollBy({ top: delta });
-    }
-    function scrollToEdge(edge: "top" | "bottom") {
-      const el = scrollEl();
-      if (!el) return;
-      el.scrollTo({ top: edge === "top" ? 0 : el.scrollHeight });
     }
     function page(fraction: number): number {
       const el = scrollEl();
@@ -134,16 +136,23 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
         case "F5": h.onRefresh(); e.preventDefault(); break;
         case "/": h.onOpenSearch(); e.preventDefault(); break;
         case "?": h.onToggleHelp(); break;
-        case "j": scrollBy(LINE_STEP); break;
-        case "k": scrollBy(-LINE_STEP); break;
+        // Tier 3: j/k/g/G drive the line cursor (the view follows it).
+        case "j": h.onCursorDown(); break;
+        case "k": h.onCursorUp(); break;
+        case "g": case "Home": h.onCursorTop(); break;
+        case "G": case "End": h.onCursorBottom(); break;
         case "}": h.onNextHunk(); break;
         case "{": h.onPrevHunk(); break;
         case "n": h.onNextFinding(); break;
         case "N": h.onPrevFinding(); break;
-        case "z": h.onFoldHunk(); break;
+        case "z": h.onFoldAtCursor(); break;
         case "Z": h.onFoldAll(); break;
-        case "g": case "Home": scrollToEdge("top"); break;
-        case "G": case "End": scrollToEdge("bottom"); break;
+        case "c": h.onComment(); break;
+        case "v": h.onToggleAnchor(); break;
+        case "r": h.onReply(); break;
+        case "R": h.onReviewPicker(); break;
+        case "x": h.onResolve(); break;
+        // Page-level scrolling stays view-based (cursor stays put).
         case "PageDown": scrollBy(page(0.9)); e.preventDefault(); break;
         case "PageUp": scrollBy(-page(0.9)); e.preventDefault(); break;
         default: return;

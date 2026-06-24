@@ -925,6 +925,85 @@ body {
   animation: finding-flash-fade 1.2s ease-out;
 }
 
+/* ─── Keyboard line cursor (Tier 3) ─────────────────────────────────────── */
+.diff-line.cursor-line td,
+.diff-split-row.cursor-line td {
+  background: rgba(88, 166, 255, 0.12);
+}
+/* A left accent bar on the cursor row's first cell. */
+.diff-line.cursor-line td:first-child,
+.diff-split-row.cursor-line td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent, #58a6ff);
+}
+.diff-line.cursor-selected td,
+.diff-split-row.cursor-selected td {
+  background: rgba(88, 166, 255, 0.20);
+}
+
+/* ─── Keyboard overlays (reply box, review picker) ──────────────────────── */
+.kbd-overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 200;
+}
+.kbd-overlay {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 520px;
+  max-width: 90vw;
+  padding: 16px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+}
+.kbd-overlay-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.kbd-overlay-input {
+  width: 100%;
+  min-height: 90px;
+  resize: vertical;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.kbd-overlay-verbs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.kbd-overlay-verb {
+  flex: 1;
+  padding: 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+}
+.kbd-overlay-verb.active {
+  border-color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, 0.12);
+}
+.kbd-overlay-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
 /* ─── Diff Table ────────────────────────────────────────────────────────── */
 .diff-table {
   width: 100%;

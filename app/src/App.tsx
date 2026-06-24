@@ -13,6 +13,7 @@ import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
+import { ReviewPicker } from "./components/ReviewPicker";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -32,6 +33,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef = useRef<SearchBarHandle>(null);
   const diffViewerRef = useRef<DiffViewerHandle>(null);
@@ -193,17 +195,27 @@ function App() {
       onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
-      onCloseOverlays: () => setHelpOpen(false),
+      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); },
       onNextHunk: () => diffViewerRef.current?.nextHunk(),
       onPrevHunk: () => diffViewerRef.current?.prevHunk(),
       onNextFinding: () => diffViewerRef.current?.nextFinding(),
       onPrevFinding: () => diffViewerRef.current?.prevFinding(),
-      onFoldHunk: () => diffViewerRef.current?.foldHunk(),
       onFoldAll: () => diffViewerRef.current?.foldAll(),
+      // Tier 3 — line cursor + actions
+      onCursorDown: () => diffViewerRef.current?.cursorMove(1),
+      onCursorUp: () => diffViewerRef.current?.cursorMove(-1),
+      onCursorTop: () => diffViewerRef.current?.cursorEdge("top"),
+      onCursorBottom: () => diffViewerRef.current?.cursorEdge("bottom"),
+      onFoldAtCursor: () => diffViewerRef.current?.foldAtCursor(),
+      onComment: () => diffViewerRef.current?.commentAtCursor(),
+      onToggleAnchor: () => diffViewerRef.current?.toggleAnchor(),
+      onReply: () => diffViewerRef.current?.replyAtCursor(),
+      onResolve: () => diffViewerRef.current?.resolveAtCursor(),
+      onReviewPicker: () => { if (activeTab?.manifest) setReviewPickerOpen(true); },
     },
     {
       enabled: !!activeTab?.manifest,
-      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal,
+      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen,
     },
   );
 
@@ -1221,6 +1233,12 @@ function App() {
         onDismiss={() => setUpdateStatus({ state: "idle" })}
       />
       {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} />}
+      {reviewPickerOpen && (
+        <ReviewPicker
+          onClose={() => setReviewPickerOpen(false)}
+          onSubmit={(event, body) => { handleSubmitReview(event, body); setReviewPickerOpen(false); }}
+        />
+      )}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </>
   );
