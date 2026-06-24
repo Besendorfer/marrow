@@ -109,16 +109,57 @@ interface DiffViewerProps {
   searchQuery?: string;
 }
 
-/** Imperative API for keyboard-driven hunk/finding navigation and folding (Tier 2). */
+/** Imperative API for keyboard-driven navigation, folding, and the line cursor. */
 export interface DiffViewerHandle {
   nextHunk: () => void;
   prevHunk: () => void;
-  /** Fold/unfold the hunk currently at the top of the viewport. */
-  foldHunk: () => void;
   /** Toggle fold-all: collapse every hunk, or expand all if any are collapsed. */
   foldAll: () => void;
+  // ── Tier 3: line cursor ──────────────────────────────────────────────────
+  /** Move the line cursor by `delta` rows (initializing it at the viewport if unset). */
+  cursorMove: (delta: number) => void;
+  /** Move the line cursor to the first/last navigable line. */
+  cursorEdge: (edge: "top" | "bottom") => void;
+  /** Move the cursor ~frac of a viewport in `dir` (half page = 0.5, full = 0.9). */
+  cursorPage: (dir: 1 | -1, frac: number) => void;
+  /** Move the cursor to the next/previous AI finding. */
   nextFinding: () => void;
   prevFinding: () => void;
+  /** Fold/unfold the hunk containing the cursor (or the viewport top if no cursor). */
+  foldAtCursor: () => void;
+  /** Open the comment composer on the cursor line (or the v-selection range). */
+  commentAtCursor: () => void;
+  /** Toggle the selection anchor at the cursor (extend with cursorMove, then comment). */
+  toggleAnchor: () => void;
+  /** Reply to the review thread on the cursor line, if any. */
+  replyAtCursor: () => void;
+  /** Resolve/reopen the review thread on the cursor line, if any. */
+  resolveAtCursor: () => void;
+}
+
+/** Small keyboard-driven reply box, shown when `r` is pressed on a thread line. */
+function KeyboardReplyOverlay({ onSubmit, onClose }: { onSubmit: (body: string) => void; onClose: () => void }) {
+  const [text, setText] = useState("");
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  return (
+    <div className="kbd-overlay-backdrop" onClick={onClose}>
+      <div className="kbd-overlay" onClick={(e) => e.stopPropagation()}>
+        <div className="kbd-overlay-title">Reply to thread</div>
+        <textarea
+          ref={ref}
+          className="kbd-overlay-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { e.preventDefault(); onClose(); }
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) { e.preventDefault(); onSubmit(text.trim()); }
+          }}
+          placeholder="Write a reply…  (⌘/Ctrl+Enter to send, Esc to cancel)"
+        />
+      </div>
+    </div>
+  );
 }
 
 export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lang }: { body: string; lang?: string }) {
@@ -958,6 +999,8 @@ function UnifiedHunkLines({
             )}
             <tr
               id={lineNum != null ? `diff-line-${lineNum}` : undefined}
+              data-cl={commentLine ?? undefined}
+              data-cs={commentLine != null ? commentSide : undefined}
               className={`diff-line diff-line-${line.type}${hl ? ` highlighted highlighted-${hl.severity}` : ""}${canComment ? " commentable-line" : ""}${isInSelection ? " line-selected" : ""}`}
             >
               <td
@@ -1070,6 +1113,8 @@ function UnifiedView({
               {showSignificance && hunk.headerLine && (
                 <tr
                   id={`hunk-${hunk.index}`}
+                  data-cl={isCollapsed ? hunk.index : undefined}
+                  data-cs={isCollapsed ? "FOLD" : undefined}
                   className={`diff-line diff-line-header${isHigh ? " hunk-header-high" : ""} hunk-header-clickable`}
                   onClick={() => onToggleHunk(hunk.index)}
                 >
@@ -1087,6 +1132,8 @@ function UnifiedView({
                 !hunk.headerLine && (
                   <tr
                     id={`hunk-${hunk.index}`}
+                    data-cl={hunk.index}
+                    data-cs="FOLD"
                     className="hunk-collapsed"
                     onClick={() => onToggleHunk(hunk.index)}
                   >
@@ -1174,6 +1221,10 @@ function SplitHunkLines({
         const canCommentRight = onLineMouseDown && pair.right && pair.right.type !== "header" && rightLine != null;
         const leftSide: "LEFT" | "RIGHT" = pair.left?.type === "remove" ? "LEFT" : "RIGHT";
         const rightSide: "LEFT" | "RIGHT" = "RIGHT";
+        // The row's primary keyboard-cursor target: prefer the new (right) side,
+        // falling back to the old (left) side for pure removals.
+        const curCl = canCommentRight ? rightLine : (canCommentLeft ? leftLine : null);
+        const curCs: "LEFT" | "RIGHT" = canCommentRight ? rightSide : leftSide;
         const isEndLeft =
           commentingOn && commentingOn.endLine === leftLine && commentingOn.side === leftSide;
         const isEndRight =
@@ -1221,6 +1272,8 @@ function SplitHunkLines({
             )}
             <tr
               id={rightLineNum != null ? `diff-line-${rightLineNum}` : undefined}
+              data-cl={curCl ?? undefined}
+              data-cs={curCl != null ? curCs : undefined}
               className={`diff-split-row${hl ? ` highlighted highlighted-${hl.severity}` : ""}${(canCommentLeft || canCommentRight) ? " commentable-line" : ""}`}
             >
               {/* Left side (base/old) */}
@@ -1336,6 +1389,8 @@ function SplitView({
               {showSignificance && hunk.headerLine && (
                 <tr
                   id={`hunk-${hunk.index}`}
+                  data-cl={isCollapsed ? hunk.index : undefined}
+                  data-cs={isCollapsed ? "FOLD" : undefined}
                   className={`diff-split-row diff-line-header${isHigh ? " hunk-header-high" : ""} hunk-header-clickable`}
                   onClick={() => onToggleHunk(hunk.index)}
                 >
@@ -1355,6 +1410,8 @@ function SplitView({
                 !hunk.headerLine && (
                   <tr
                     id={`hunk-${hunk.index}`}
+                    data-cl={hunk.index}
+                    data-cs="FOLD"
                     className="hunk-collapsed"
                     onClick={() => onToggleHunk(hunk.index)}
                   >
@@ -1759,7 +1816,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     [file.highlights, showAiNotes],
   );
   const findingIdxRef = useRef(-1);
-  const [pendingScrollLine, setPendingScrollLine] = useState<number | null>(null);
+  // Element id to scroll to + home the cursor onto after a re-render (finding nav,
+  // fold-expand onto the first line, fold-collapse onto the hunk header).
+  const [pendingScroll, setPendingScroll] = useState<string | null>(null);
 
   // Absolute scroll offset of an element within the diff-content scroll container.
   const offsetWithin = (el: HTMLElement, container: HTMLElement) =>
@@ -1826,10 +1885,159 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     else collapseAll();
   };
 
+  // ── Tier 3: line cursor ───────────────────────────────────────────────────
+  // The cursor is a (line, side) pair tracked in refs (no re-renders) and painted
+  // as a .cursor-line class on the matching [data-cl] row — same approach as the
+  // search highlight. Navigable rows carry data-cl (line) + data-cs (side).
+  // cs is the comment side, or "FOLD" when the cursor is on a collapsed-hunk row
+  // (so `z` can expand it). cl is the line number, or the hunk index when "FOLD".
+  type CursorPos = { cl: number; cs: "LEFT" | "RIGHT" | "FOLD" };
+  const cursorRef = useRef<CursorPos | null>(null);
+  const anchorRef = useRef<CursorPos | null>(null);
+  const [replyTarget, setReplyTarget] = useState<{ threadId: string; commentId: string } | null>(null);
+  const cursorThreadsByLine = useMemo(() => buildThreadsByLine(fileThreads), [fileThreads]);
+
+  const navRows = (): HTMLElement[] => {
+    const c = diffContentRef.current;
+    return c ? Array.from(c.querySelectorAll<HTMLElement>("tr[data-cl]")) : [];
+  };
+  const keyOf = (r: HTMLElement): CursorPos => ({ cl: Number(r.dataset.cl), cs: r.dataset.cs as CursorPos["cs"] });
+  const indexOfPos = (rows: HTMLElement[], pos: CursorPos | null) =>
+    pos ? rows.findIndex((r) => Number(r.dataset.cl) === pos.cl && r.dataset.cs === pos.cs) : -1;
+
+  const paintCursor = () => {
+    const c = diffContentRef.current;
+    if (!c) return;
+    c.querySelectorAll(".cursor-line").forEach((e) => e.classList.remove("cursor-line"));
+    c.querySelectorAll(".cursor-selected").forEach((e) => e.classList.remove("cursor-selected"));
+    const cur = cursorRef.current;
+    if (!cur) return;
+    const rows = navRows();
+    const ci = indexOfPos(rows, cur);
+    if (ci < 0) return;
+    rows[ci].classList.add("cursor-line");
+    const anc = anchorRef.current;
+    if (anc && anc.cs === cur.cs) {
+      const ai = indexOfPos(rows, anc);
+      if (ai >= 0) {
+        const [lo, hi] = ai <= ci ? [ai, ci] : [ci, ai];
+        for (let i = lo; i <= hi; i++) rows[i].classList.add("cursor-selected");
+      }
+    }
+  };
+
+  // Resolve the cursor's index, initializing it to the first row at/below the
+  // viewport top when unset or scrolled off-screen.
+  const cursorIndex = (rows: HTMLElement[]): number => {
+    const found = indexOfPos(rows, cursorRef.current);
+    if (found >= 0) return found;
+    const c = diffContentRef.current;
+    if (!c || rows.length === 0) return -1;
+    let idx = 0;
+    for (let i = 0; i < rows.length; i++) {
+      idx = i;
+      if (offsetWithin(rows[i], c) >= c.scrollTop) break;
+    }
+    cursorRef.current = keyOf(rows[idx]);
+    return idx;
+  };
+
+  const moveCursorTo = (rows: HTMLElement[], i: number) => {
+    const clamped = Math.max(0, Math.min(rows.length - 1, i));
+    cursorRef.current = keyOf(rows[clamped]);
+    paintCursor();
+    rows[clamped].scrollIntoView({ block: "nearest" });
+  };
+
+  const cursorMove = (delta: number) => {
+    const rows = navRows();
+    if (rows.length) moveCursorTo(rows, cursorIndex(rows) + delta);
+  };
+  const cursorEdge = (edge: "top" | "bottom") => {
+    const rows = navRows();
+    if (rows.length) moveCursorTo(rows, edge === "top" ? 0 : rows.length - 1);
+  };
+  // Move the cursor ~frac of a viewport up/down, landing on the nearest row.
+  const cursorPage = (dir: 1 | -1, frac: number) => {
+    const c = diffContentRef.current;
+    const rows = navRows();
+    if (!c || !rows.length) return;
+    const target = offsetWithin(rows[cursorIndex(rows)], c) + dir * c.clientHeight * frac;
+    let best = 0;
+    let bestDist = Infinity;
+    rows.forEach((r, j) => {
+      const d = Math.abs(offsetWithin(r, c) - target);
+      if (d < bestDist) { bestDist = d; best = j; }
+    });
+    moveCursorTo(rows, best);
+  };
+
+  const toggleAnchor = () => {
+    if (cursorIndex(navRows()) < 0) return;
+    if (cursorRef.current?.cs === "FOLD") return; // selection only spans code lines
+    anchorRef.current = anchorRef.current ? null : (cursorRef.current ? { ...cursorRef.current } : null);
+    paintCursor();
+  };
+
+  const commentAtCursor = () => {
+    const cur = cursorRef.current;
+    if (!cur || cur.cs === "FOLD") return;
+    const anc = anchorRef.current && anchorRef.current.cs === cur.cs ? anchorRef.current : null;
+    setCommentingOn({
+      startLine: anc ? Math.min(anc.cl, cur.cl) : cur.cl,
+      endLine: anc ? Math.max(anc.cl, cur.cl) : cur.cl,
+      side: cur.cs,
+    });
+    anchorRef.current = null;
+    paintCursor();
+  };
+
+  const foldAtCursor = () => {
+    const cur = cursorRef.current;
+    if (cur && cur.cs === "FOLD") {
+      // On a collapsed-hunk row: expand it and re-home the cursor onto its first
+      // line (the pendingScroll effect picks up the now-rendered row).
+      const hunk = hunks.find((h) => h.index === cur.cl);
+      toggleHunk(cur.cl);
+      const first = hunk?.lines[0];
+      const ln = first ? (first.newLineNum ?? first.oldLineNum) : null;
+      if (ln != null) setPendingScroll(`diff-line-${ln}`);
+      return;
+    }
+    const hunk = cur
+      ? hunks.find((h) => h.lines.some((l) => l.newLineNum === cur.cl || l.oldLineNum === cur.cl))
+      : undefined;
+    if (hunk) {
+      toggleHunk(hunk.index);
+      // If we just collapsed the hunk the cursor was in, its line is gone — land
+      // the cursor on the hunk's now-collapsed header/placeholder row instead.
+      if (!collapsedHunks.has(hunk.index)) setPendingScroll(`hunk-${hunk.index}`);
+    } else {
+      foldHunk();
+    }
+  };
+
+  const threadAtCursor = (): ReviewThread | null => {
+    const cur = cursorRef.current;
+    if (!cur || cur.cs === "FOLD") return null;
+    return cursorThreadsByLine.get(cur.cl)?.[0] ?? null;
+  };
+  const resolveAtCursor = () => {
+    const t = threadAtCursor();
+    if (t && onToggleResolved) onToggleResolved(t.id, !t.is_resolved);
+  };
+  const replyAtCursor = () => {
+    const t = threadAtCursor();
+    if (t && onReply && t.comments.length > 0) {
+      setReplyTarget({ threadId: t.id, commentId: t.comments[t.comments.length - 1].id });
+    }
+  };
+
   const goToFinding = () => {
     const f = sortedFindings[findingIdxRef.current];
     if (!f) return;
-    // Expand the containing hunk if collapsed, then scroll once it has rendered.
+    // Expand the containing hunk if collapsed, then move the cursor + scroll once
+    // it has rendered. Findings live on the new (right) side.
     const hunk = hunks.find((h) =>
       h.lines.some((l) => l.newLineNum === f.start_line || l.oldLineNum === f.start_line),
     );
@@ -1840,7 +2048,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         return n;
       });
     }
-    setPendingScrollLine(f.start_line);
+    cursorRef.current = { cl: f.start_line, cs: "RIGHT" };
+    anchorRef.current = null;
+    setPendingScroll(`diff-line-${f.start_line}`);
   };
 
   const stepFinding = (dir: 1 | -1) => {
@@ -1852,32 +2062,40 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const nextFinding = () => stepFinding(1);
   const prevFinding = () => stepFinding(-1);
 
-  // Perform the finding scroll after the (possibly just-expanded) hunk renders.
+  // Scroll to + paint the cursor on the pending row once it has (re-)rendered.
   useEffect(() => {
-    if (pendingScrollLine == null) return;
+    if (pendingScroll == null) return;
     const c = diffContentRef.current;
     if (c) {
-      const el = c.querySelector<HTMLElement>(`#diff-line-${pendingScrollLine}`);
+      const el = c.querySelector<HTMLElement>(`#${pendingScroll}`);
       if (el) {
         el.scrollIntoView({ block: "center", behavior: "smooth" });
         el.classList.add("finding-flash");
         setTimeout(() => el.classList.remove("finding-flash"), 1200);
+        // Home the cursor exactly onto the landed row (carries data-cl/data-cs).
+        if (el.dataset.cl != null) cursorRef.current = { cl: Number(el.dataset.cl), cs: el.dataset.cs as CursorPos["cs"] };
       }
+      paintCursor();
     }
-    setPendingScrollLine(null);
-    // Only depends on pendingScrollLine: goToFinding batches the hunk-expand and
-    // this state set, so the expanded line is already in the DOM when we run.
-  }, [pendingScrollLine]);
+    setPendingScroll(null);
+  }, [pendingScroll]);
 
   // No dep array: the handle is only ever called imperatively (on a keypress),
-  // never read in a memo/dep, so rebuilding it each render keeps it always-fresh
-  // for free — no stale closures over hunks/collapsedHunks/sortedFindings.
+  // so rebuilding it each render keeps it always-fresh for free.
   useImperativeHandle(ref, () => ({
-    nextHunk, prevHunk, foldHunk, foldAll, nextFinding, prevFinding,
+    nextHunk, prevHunk, foldAll,
+    cursorMove, cursorEdge, cursorPage, nextFinding, prevFinding, foldAtCursor,
+    commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor,
   }));
 
   return (
     <div className={`diff-viewer ${isCritical ? "diff-viewer-critical" : ""}`}>
+      {replyTarget && (
+        <KeyboardReplyOverlay
+          onClose={() => setReplyTarget(null)}
+          onSubmit={(body) => { onReply?.(replyTarget.threadId, replyTarget.commentId, body); setReplyTarget(null); }}
+        />
+      )}
       <div className="diff-header">
         <span className={`diff-badge diff-badge-${file.diff_type}`}>
           {file.diff_type.toUpperCase()}

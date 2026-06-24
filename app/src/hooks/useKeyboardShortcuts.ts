@@ -17,13 +17,30 @@ export interface ShortcutHandlers {
   onToggleHelp: () => void;
   /** Close transient overlays (help). Search owns its own Esc. */
   onCloseOverlays: () => void;
-  // Tier 2 — diff-internal navigation/folding (no-ops when no diff is shown).
+  /** Cycle to the next / previous tab (Ctrl+Tab / Ctrl+Shift+Tab). */
+  onNextTab: () => void;
+  onPrevTab: () => void;
+  // Tier 2/3 — diff-internal navigation/folding (no-ops when no diff is shown).
   onNextHunk: () => void;
   onPrevHunk: () => void;
   onNextFinding: () => void;
   onPrevFinding: () => void;
-  onFoldHunk: () => void;
   onFoldAll: () => void;
+  // Tier 3 — line cursor. j/k/g/G drive the cursor instead of scrolling.
+  onCursorDown: () => void;
+  onCursorUp: () => void;
+  onCursorTop: () => void;
+  onCursorBottom: () => void;
+  onCursorHalfDown: () => void;
+  onCursorHalfUp: () => void;
+  onCursorPageDown: () => void;
+  onCursorPageUp: () => void;
+  onFoldAtCursor: () => void;
+  onComment: () => void;
+  onToggleAnchor: () => void;
+  onReviewPicker: () => void;
+  onReply: () => void;
+  onResolve: () => void;
 }
 
 export interface ShortcutOptions {
@@ -31,12 +48,7 @@ export interface ShortcutOptions {
   enabled: boolean;
   /** A modal (help/search/settings/checks) is open — suppress single-key nav, but keep Esc. */
   overlayOpen: boolean;
-  /** Returns the scrollable diff element. Defaults to the `.diff-content` pane. */
-  getScrollEl?: () => HTMLElement | null;
 }
-
-/** ~3 text lines — a comfortable j/k nudge. */
-const LINE_STEP = 48;
 
 function isEditable(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -70,23 +82,6 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
   optionsRef.current = options;
 
   useEffect(() => {
-    function scrollEl(): HTMLElement | null {
-      const get = optionsRef.current.getScrollEl;
-      return get ? get() : (document.querySelector(".diff-content") as HTMLElement | null);
-    }
-    function scrollBy(delta: number) {
-      scrollEl()?.scrollBy({ top: delta });
-    }
-    function scrollToEdge(edge: "top" | "bottom") {
-      const el = scrollEl();
-      if (!el) return;
-      el.scrollTo({ top: edge === "top" ? 0 : el.scrollHeight });
-    }
-    function page(fraction: number): number {
-      const el = scrollEl();
-      return el ? el.clientHeight * fraction : 0;
-    }
-
     function onKey(e: KeyboardEvent) {
       const h = handlersRef.current;
       const { enabled, overlayOpen } = optionsRef.current;
@@ -100,25 +95,36 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
         return;
       }
 
+      // Ctrl+Tab / Ctrl+Shift+Tab cycle tabs — works regardless of `enabled` (so it
+      // applies on opener tabs too), but not while an overlay is open. Ctrl, not Cmd:
+      // Cmd+Tab is the macOS app switcher.
+      if (e.key === "Tab" && e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (!overlayOpen) {
+          if (e.shiftKey) h.onPrevTab(); else h.onNextTab();
+          e.preventDefault();
+        }
+        return;
+      }
+
       if (!enabled || overlayOpen) return;
 
-      // Vim-style scroll/refresh combos are Ctrl-only (NOT Cmd): on macOS Cmd+R
-      // reloads the webview, Cmd+D bookmarks, Cmd+U views source — leave those to
-      // the system. ^f (full page down in the TUI) is omitted too; it collides with
-      // find, which SearchBar's own Cmd/Ctrl+F listener owns. Space covers the gap.
+      // Vim-style cursor paging is Ctrl-only (NOT Cmd): on macOS Cmd+R reloads the
+      // webview, Cmd+D bookmarks, Cmd+U views source — leave those to the system.
+      // ^f (full page down in the TUI) is omitted too; it collides with find, which
+      // SearchBar's own Cmd/Ctrl+F listener owns. Space covers the gap.
       if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
         switch (e.key.toLowerCase()) {
-          case "d": scrollBy(page(0.5)); e.preventDefault(); return;
-          case "u": scrollBy(-page(0.5)); e.preventDefault(); return;
-          case "b": scrollBy(-page(0.9)); e.preventDefault(); return;
+          case "d": h.onCursorHalfDown(); e.preventDefault(); return;
+          case "u": h.onCursorHalfUp(); e.preventDefault(); return;
+          case "b": h.onCursorPageUp(); e.preventDefault(); return;
           case "r": h.onRefresh(); e.preventDefault(); return;
         }
       }
 
-      // Space / Shift+Space page through the diff (the laptop-friendly PageDown/Up).
+      // Space / Shift+Space page the cursor (laptop-friendly PageDown/Up).
       // Skip when a clickable control is focused, where Space means "activate".
       if (e.key === " " && !isClickable(e.target)) {
-        scrollBy(e.shiftKey ? -page(0.9) : page(0.9));
+        if (e.shiftKey) h.onCursorPageUp(); else h.onCursorPageDown();
         e.preventDefault();
         return;
       }
@@ -134,18 +140,24 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
         case "F5": h.onRefresh(); e.preventDefault(); break;
         case "/": h.onOpenSearch(); e.preventDefault(); break;
         case "?": h.onToggleHelp(); break;
-        case "j": scrollBy(LINE_STEP); break;
-        case "k": scrollBy(-LINE_STEP); break;
+        // Tier 3: j/k/g/G drive the line cursor (the view follows it).
+        case "j": h.onCursorDown(); break;
+        case "k": h.onCursorUp(); break;
+        case "g": case "Home": h.onCursorTop(); break;
+        case "G": case "End": h.onCursorBottom(); break;
         case "}": h.onNextHunk(); break;
         case "{": h.onPrevHunk(); break;
         case "n": h.onNextFinding(); break;
         case "N": h.onPrevFinding(); break;
-        case "z": h.onFoldHunk(); break;
+        case "z": h.onFoldAtCursor(); break;
         case "Z": h.onFoldAll(); break;
-        case "g": case "Home": scrollToEdge("top"); break;
-        case "G": case "End": scrollToEdge("bottom"); break;
-        case "PageDown": scrollBy(page(0.9)); e.preventDefault(); break;
-        case "PageUp": scrollBy(-page(0.9)); e.preventDefault(); break;
+        case "c": h.onComment(); break;
+        case "v": h.onToggleAnchor(); break;
+        case "r": h.onReply(); break;
+        case "R": h.onReviewPicker(); break;
+        case "x": h.onResolve(); break;
+        case "PageDown": h.onCursorPageDown(); e.preventDefault(); break;
+        case "PageUp": h.onCursorPageUp(); e.preventDefault(); break;
         default: return;
       }
     }
