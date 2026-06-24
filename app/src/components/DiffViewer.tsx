@@ -1777,19 +1777,18 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const scrollDiffTo = (top: number) =>
     diffContentRef.current?.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
 
-  const nextHunk = () => {
+  const goToAdjacentHunk = (dir: 1 | -1) => {
     const c = diffContentRef.current;
     if (!c) return;
-    const next = hunkOffsets().find((o) => o.top > c.scrollTop + 4);
-    if (next) scrollDiffTo(next.top);
+    const offs = hunkOffsets();
+    const target =
+      dir > 0
+        ? offs.find((o) => o.top > c.scrollTop + 4)
+        : [...offs].reverse().find((o) => o.top < c.scrollTop - 4);
+    if (target) scrollDiffTo(target.top);
   };
-
-  const prevHunk = () => {
-    const c = diffContentRef.current;
-    if (!c) return;
-    const prev = [...hunkOffsets()].reverse().find((o) => o.top < c.scrollTop - 4);
-    if (prev) scrollDiffTo(prev.top);
-  };
+  const nextHunk = () => goToAdjacentHunk(1);
+  const prevHunk = () => goToAdjacentHunk(-1);
 
   const foldHunk = () => {
     const c = diffContentRef.current;
@@ -1826,18 +1825,14 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     setPendingScrollLine(f.start_line);
   };
 
-  const nextFinding = () => {
-    if (sortedFindings.length === 0) return;
-    findingIdxRef.current = (findingIdxRef.current + 1) % sortedFindings.length;
-    goToFinding();
-  };
-
-  const prevFinding = () => {
+  const stepFinding = (dir: 1 | -1) => {
     const len = sortedFindings.length;
     if (len === 0) return;
-    findingIdxRef.current = (findingIdxRef.current - 1 + len) % len;
+    findingIdxRef.current = (findingIdxRef.current + dir + len) % len;
     goToFinding();
   };
+  const nextFinding = () => stepFinding(1);
+  const prevFinding = () => stepFinding(-1);
 
   // Perform the finding scroll after the (possibly just-expanded) hunk renders.
   useEffect(() => {
@@ -1846,7 +1841,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     if (c) {
       const el = c.querySelector<HTMLElement>(`#diff-line-${pendingScrollLine}`);
       if (el) {
-        scrollDiffTo(offsetWithin(el, c) - c.clientHeight / 2);
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
         el.classList.add("finding-flash");
         setTimeout(() => el.classList.remove("finding-flash"), 1200);
       }
