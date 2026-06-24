@@ -1847,13 +1847,16 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       }
     }
     setPendingScrollLine(null);
-  }, [pendingScrollLine, collapsedHunks]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Only depends on pendingScrollLine: goToFinding batches the hunk-expand and
+    // this state set, so the expanded line is already in the DOM when we run.
+  }, [pendingScrollLine]);
 
-  useImperativeHandle(
-    ref,
-    () => ({ nextHunk, prevHunk, foldHunk, foldAll, nextFinding, prevFinding }),
-    [hunks, collapsedHunks, sortedFindings], // eslint-disable-line react-hooks/exhaustive-deps
-  );
+  // No dep array: the handle is only ever called imperatively (on a keypress),
+  // never read in a memo/dep, so rebuilding it each render keeps it always-fresh
+  // for free — no stale closures over hunks/collapsedHunks/sortedFindings.
+  useImperativeHandle(ref, () => ({
+    nextHunk, prevHunk, foldHunk, foldAll, nextFinding, prevFinding,
+  }));
 
   return (
     <div className={`diff-viewer ${isCritical ? "diff-viewer-critical" : ""}`}>
