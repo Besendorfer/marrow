@@ -1816,7 +1816,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     [file.highlights, showAiNotes],
   );
   const findingIdxRef = useRef(-1);
-  const [pendingScrollLine, setPendingScrollLine] = useState<number | null>(null);
+  // Element id to scroll to + home the cursor onto after a re-render (finding nav,
+  // fold-expand onto the first line, fold-collapse onto the hunk header).
+  const [pendingScroll, setPendingScroll] = useState<string | null>(null);
 
   // Absolute scroll offset of an element within the diff-content scroll container.
   const offsetWithin = (el: HTMLElement, container: HTMLElement) =>
@@ -1999,14 +2001,20 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       toggleHunk(cur.cl);
       const first = hunk?.lines[0];
       const ln = first ? (first.newLineNum ?? first.oldLineNum) : null;
-      if (ln != null) setPendingScrollLine(ln);
+      if (ln != null) setPendingScroll(`diff-line-${ln}`);
       return;
     }
     const hunk = cur
       ? hunks.find((h) => h.lines.some((l) => l.newLineNum === cur.cl || l.oldLineNum === cur.cl))
       : undefined;
-    if (hunk) toggleHunk(hunk.index);
-    else foldHunk();
+    if (hunk) {
+      toggleHunk(hunk.index);
+      // If we just collapsed the hunk the cursor was in, its line is gone — land
+      // the cursor on the hunk's now-collapsed header/placeholder row instead.
+      if (!collapsedHunks.has(hunk.index)) setPendingScroll(`hunk-${hunk.index}`);
+    } else {
+      foldHunk();
+    }
   };
 
   const threadAtCursor = (): ReviewThread | null => {
@@ -2042,7 +2050,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     }
     cursorRef.current = { cl: f.start_line, cs: "RIGHT" };
     anchorRef.current = null;
-    setPendingScrollLine(f.start_line);
+    setPendingScroll(`diff-line-${f.start_line}`);
   };
 
   const stepFinding = (dir: 1 | -1) => {
@@ -2054,23 +2062,23 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const nextFinding = () => stepFinding(1);
   const prevFinding = () => stepFinding(-1);
 
-  // Scroll to (and paint the cursor on) the finding line once its hunk has rendered.
+  // Scroll to + paint the cursor on the pending row once it has (re-)rendered.
   useEffect(() => {
-    if (pendingScrollLine == null) return;
+    if (pendingScroll == null) return;
     const c = diffContentRef.current;
     if (c) {
-      const el = c.querySelector<HTMLElement>(`#diff-line-${pendingScrollLine}`);
+      const el = c.querySelector<HTMLElement>(`#${pendingScroll}`);
       if (el) {
         el.scrollIntoView({ block: "center", behavior: "smooth" });
         el.classList.add("finding-flash");
         setTimeout(() => el.classList.remove("finding-flash"), 1200);
-        // Home the cursor exactly onto the landed row (finding nav / fold-expand).
+        // Home the cursor exactly onto the landed row (carries data-cl/data-cs).
         if (el.dataset.cl != null) cursorRef.current = { cl: Number(el.dataset.cl), cs: el.dataset.cs as CursorPos["cs"] };
       }
       paintCursor();
     }
-    setPendingScrollLine(null);
-  }, [pendingScrollLine]);
+    setPendingScroll(null);
+  }, [pendingScroll]);
 
   // No dep array: the handle is only ever called imperatively (on a keypress),
   // so rebuilding it each render keeps it always-fresh for free.
