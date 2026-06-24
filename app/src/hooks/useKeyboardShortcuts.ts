@@ -17,6 +17,13 @@ export interface ShortcutHandlers {
   onToggleHelp: () => void;
   /** Close transient overlays (help). Search owns its own Esc. */
   onCloseOverlays: () => void;
+  // Tier 2 — diff-internal navigation/folding (no-ops when no diff is shown).
+  onNextHunk: () => void;
+  onPrevHunk: () => void;
+  onNextFinding: () => void;
+  onPrevFinding: () => void;
+  onFoldHunk: () => void;
+  onFoldAll: () => void;
 }
 
 export interface ShortcutOptions {
@@ -129,6 +136,12 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
         case "?": h.onToggleHelp(); break;
         case "j": scrollBy(LINE_STEP); break;
         case "k": scrollBy(-LINE_STEP); break;
+        case "}": h.onNextHunk(); break;
+        case "{": h.onPrevHunk(); break;
+        case "n": h.onNextFinding(); break;
+        case "N": h.onPrevFinding(); break;
+        case "z": h.onFoldHunk(); break;
+        case "Z": h.onFoldAll(); break;
         case "g": case "Home": scrollToEdge("top"); break;
         case "G": case "End": scrollToEdge("bottom"); break;
         case "PageDown": scrollBy(page(0.9)); e.preventDefault(); break;

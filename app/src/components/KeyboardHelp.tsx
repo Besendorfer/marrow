@@ -30,11 +30,17 @@ const SECTIONS: Section[] = [
       { keys: ["⌃u"], label: "Half page up" },
       { keys: ["g", "Home"], label: "Jump to top" },
       { keys: ["G", "End"], label: "Jump to bottom" },
+      { keys: ["}"], label: "Next hunk" },
+      { keys: ["{"], label: "Previous hunk" },
+      { keys: ["n"], label: "Next AI note" },
+      { keys: ["N"], label: "Previous AI note" },
     ],
   },
   {
     title: "Actions",
     bindings: [
+      { keys: ["z"], label: "Fold / unfold hunk" },
+      { keys: ["Z"], label: "Fold / unfold all hunks" },
       { keys: ["V"], label: "Toggle file viewed" },
       { keys: ["T"], label: "Toggle threads / diff" },
       { keys: ["⌃r", "F5"], label: "Refresh PR" },

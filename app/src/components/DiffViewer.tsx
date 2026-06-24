@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch } from "../types";
@@ -107,6 +107,18 @@ interface DiffViewerProps {
   searchMatches?: SearchMatch[];
   currentSearchMatch?: SearchMatch | null;
   searchQuery?: string;
+}
+
+/** Imperative API for keyboard-driven hunk/finding navigation and folding (Tier 2). */
+export interface DiffViewerHandle {
+  nextHunk: () => void;
+  prevHunk: () => void;
+  /** Fold/unfold the hunk currently at the top of the viewport. */
+  foldHunk: () => void;
+  /** Toggle fold-all: collapse every hunk, or expand all if any are collapsed. */
+  foldAll: () => void;
+  nextFinding: () => void;
+  prevFinding: () => void;
 }
 
 export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lang }: { body: string; lang?: string }) {
@@ -1041,6 +1053,7 @@ function UnifiedView({
             <Fragment key={hunk.index}>
               {showSignificance && hunk.headerLine && (
                 <tr
+                  id={`hunk-${hunk.index}`}
                   className={`diff-line diff-line-header${isHigh ? " hunk-header-high" : ""} hunk-header-clickable`}
                   onClick={() => onToggleHunk(hunk.index)}
                 >
@@ -1057,6 +1070,7 @@ function UnifiedView({
               {isCollapsed ? (
                 !hunk.headerLine && (
                   <tr
+                    id={`hunk-${hunk.index}`}
                     className="hunk-collapsed"
                     onClick={() => onToggleHunk(hunk.index)}
                   >
@@ -1067,7 +1081,7 @@ function UnifiedView({
                   </tr>
                 )
               ) : isDimmed ? (
-                <tr className="hunk-low-significance">
+                <tr className="hunk-low-significance" id={hunk.headerLine ? undefined : `hunk-${hunk.index}`}>
                   <td colSpan={4} style={{ padding: 0 }}>
                     <table className="diff-table unified hunk-low-significance-inner">
                       <colgroup>
@@ -1305,6 +1319,7 @@ function SplitView({
             <Fragment key={hunk.index}>
               {showSignificance && hunk.headerLine && (
                 <tr
+                  id={`hunk-${hunk.index}`}
                   className={`diff-split-row diff-line-header${isHigh ? " hunk-header-high" : ""} hunk-header-clickable`}
                   onClick={() => onToggleHunk(hunk.index)}
                 >
@@ -1323,6 +1338,7 @@ function SplitView({
               {isCollapsed ? (
                 !hunk.headerLine && (
                   <tr
+                    id={`hunk-${hunk.index}`}
                     className="hunk-collapsed"
                     onClick={() => onToggleHunk(hunk.index)}
                   >
@@ -1333,7 +1349,7 @@ function SplitView({
                   </tr>
                 )
               ) : isDimmed ? (
-                <tr className="hunk-low-significance">
+                <tr className="hunk-low-significance" id={hunk.headerLine ? undefined : `hunk-${hunk.index}`}>
                   <td colSpan={4} style={{ padding: 0 }}>
                     <table className="diff-table split hunk-low-significance-inner">
                       <colgroup>
@@ -1361,7 +1377,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1721,6 +1737,129 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
     setCollapsedHunks(new Set());
   };
 
+  // ── Tier 2: keyboard hunk/finding navigation + folding ────────────────────
+  const sortedFindings = useMemo(
+    () => (showAiNotes ? [...(file.highlights ?? [])] : []).sort((a, b) => a.start_line - b.start_line),
+    [file.highlights, showAiNotes],
+  );
+  const findingIdxRef = useRef(-1);
+  const [pendingScrollLine, setPendingScrollLine] = useState<number | null>(null);
+
+  // Absolute scroll offset of an element within the diff-content scroll container.
+  const offsetWithin = (el: HTMLElement, container: HTMLElement) =>
+    el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+
+  // The on-screen anchor for a hunk: its tagged leading row, or — for a headerless,
+  // expanded hunk — its first code line.
+  const hunkAnchorEl = (index: number): HTMLElement | null => {
+    const c = diffContentRef.current;
+    if (!c) return null;
+    const byId = c.querySelector<HTMLElement>(`#hunk-${index}`);
+    if (byId) return byId;
+    const hunk = hunks.find((h) => h.index === index);
+    const first = hunk?.lines[0];
+    const ln = first?.newLineNum ?? first?.oldLineNum;
+    return ln != null ? c.querySelector<HTMLElement>(`#diff-line-${ln}`) : null;
+  };
+
+  const hunkOffsets = (): { index: number; top: number }[] => {
+    const c = diffContentRef.current;
+    if (!c) return [];
+    return hunks
+      .map((h) => {
+        const el = hunkAnchorEl(h.index);
+        return el ? { index: h.index, top: offsetWithin(el, c) } : null;
+      })
+      .filter((x): x is { index: number; top: number } => x !== null)
+      .sort((a, b) => a.top - b.top);
+  };
+
+  const scrollDiffTo = (top: number) =>
+    diffContentRef.current?.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+
+  const nextHunk = () => {
+    const c = diffContentRef.current;
+    if (!c) return;
+    const next = hunkOffsets().find((o) => o.top > c.scrollTop + 4);
+    if (next) scrollDiffTo(next.top);
+  };
+
+  const prevHunk = () => {
+    const c = diffContentRef.current;
+    if (!c) return;
+    const prev = [...hunkOffsets()].reverse().find((o) => o.top < c.scrollTop - 4);
+    if (prev) scrollDiffTo(prev.top);
+  };
+
+  const foldHunk = () => {
+    const c = diffContentRef.current;
+    if (!c) return;
+    // The hunk whose anchor sits at/above the viewport top is the "current" one.
+    const cur = c.scrollTop + 4;
+    let target: { index: number; top: number } | undefined;
+    for (const o of hunkOffsets()) {
+      if (o.top <= cur) target = o;
+      else break;
+    }
+    if (target) toggleHunk(target.index);
+  };
+
+  const foldAll = () => {
+    if (collapsedHunks.size > 0) expandAll();
+    else collapseAll();
+  };
+
+  const goToFinding = () => {
+    const f = sortedFindings[findingIdxRef.current];
+    if (!f) return;
+    // Expand the containing hunk if collapsed, then scroll once it has rendered.
+    const hunk = hunks.find((h) =>
+      h.lines.some((l) => l.newLineNum === f.start_line || l.oldLineNum === f.start_line),
+    );
+    if (hunk && collapsedHunks.has(hunk.index)) {
+      setCollapsedHunks((prev) => {
+        const n = new Set(prev);
+        n.delete(hunk.index);
+        return n;
+      });
+    }
+    setPendingScrollLine(f.start_line);
+  };
+
+  const nextFinding = () => {
+    if (sortedFindings.length === 0) return;
+    findingIdxRef.current = (findingIdxRef.current + 1) % sortedFindings.length;
+    goToFinding();
+  };
+
+  const prevFinding = () => {
+    const len = sortedFindings.length;
+    if (len === 0) return;
+    findingIdxRef.current = (findingIdxRef.current - 1 + len) % len;
+    goToFinding();
+  };
+
+  // Perform the finding scroll after the (possibly just-expanded) hunk renders.
+  useEffect(() => {
+    if (pendingScrollLine == null) return;
+    const c = diffContentRef.current;
+    if (c) {
+      const el = c.querySelector<HTMLElement>(`#diff-line-${pendingScrollLine}`);
+      if (el) {
+        scrollDiffTo(offsetWithin(el, c) - c.clientHeight / 2);
+        el.classList.add("finding-flash");
+        setTimeout(() => el.classList.remove("finding-flash"), 1200);
+      }
+    }
+    setPendingScrollLine(null);
+  }, [pendingScrollLine, collapsedHunks]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useImperativeHandle(
+    ref,
+    () => ({ nextHunk, prevHunk, foldHunk, foldAll, nextFinding, prevFinding }),
+    [hunks, collapsedHunks, sortedFindings], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   return (
     <div className={`diff-viewer ${isCritical ? "diff-viewer-critical" : ""}`}>
       <div className="diff-header">
@@ -1859,4 +1998,4 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
       </div>
     </div>
   );
-}
+});
