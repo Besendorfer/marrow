@@ -28,6 +28,10 @@ export interface ShortcutHandlers {
   onCursorUp: () => void;
   onCursorTop: () => void;
   onCursorBottom: () => void;
+  onCursorHalfDown: () => void;
+  onCursorHalfUp: () => void;
+  onCursorPageDown: () => void;
+  onCursorPageUp: () => void;
   onFoldAtCursor: () => void;
   onComment: () => void;
   onToggleAnchor: () => void;
@@ -41,8 +45,6 @@ export interface ShortcutOptions {
   enabled: boolean;
   /** A modal (help/search/settings/checks) is open — suppress single-key nav, but keep Esc. */
   overlayOpen: boolean;
-  /** Returns the scrollable diff element. Defaults to the `.diff-content` pane. */
-  getScrollEl?: () => HTMLElement | null;
 }
 
 function isEditable(target: EventTarget | null): boolean {
@@ -77,18 +79,6 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
   optionsRef.current = options;
 
   useEffect(() => {
-    function scrollEl(): HTMLElement | null {
-      const get = optionsRef.current.getScrollEl;
-      return get ? get() : (document.querySelector(".diff-content") as HTMLElement | null);
-    }
-    function scrollBy(delta: number) {
-      scrollEl()?.scrollBy({ top: delta });
-    }
-    function page(fraction: number): number {
-      const el = scrollEl();
-      return el ? el.clientHeight * fraction : 0;
-    }
-
     function onKey(e: KeyboardEvent) {
       const h = handlersRef.current;
       const { enabled, overlayOpen } = optionsRef.current;
@@ -104,23 +94,23 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
 
       if (!enabled || overlayOpen) return;
 
-      // Vim-style scroll/refresh combos are Ctrl-only (NOT Cmd): on macOS Cmd+R
-      // reloads the webview, Cmd+D bookmarks, Cmd+U views source — leave those to
-      // the system. ^f (full page down in the TUI) is omitted too; it collides with
-      // find, which SearchBar's own Cmd/Ctrl+F listener owns. Space covers the gap.
+      // Vim-style cursor paging is Ctrl-only (NOT Cmd): on macOS Cmd+R reloads the
+      // webview, Cmd+D bookmarks, Cmd+U views source — leave those to the system.
+      // ^f (full page down in the TUI) is omitted too; it collides with find, which
+      // SearchBar's own Cmd/Ctrl+F listener owns. Space covers the gap.
       if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
         switch (e.key.toLowerCase()) {
-          case "d": scrollBy(page(0.5)); e.preventDefault(); return;
-          case "u": scrollBy(-page(0.5)); e.preventDefault(); return;
-          case "b": scrollBy(-page(0.9)); e.preventDefault(); return;
+          case "d": h.onCursorHalfDown(); e.preventDefault(); return;
+          case "u": h.onCursorHalfUp(); e.preventDefault(); return;
+          case "b": h.onCursorPageUp(); e.preventDefault(); return;
           case "r": h.onRefresh(); e.preventDefault(); return;
         }
       }
 
-      // Space / Shift+Space page through the diff (the laptop-friendly PageDown/Up).
+      // Space / Shift+Space page the cursor (laptop-friendly PageDown/Up).
       // Skip when a clickable control is focused, where Space means "activate".
       if (e.key === " " && !isClickable(e.target)) {
-        scrollBy(e.shiftKey ? -page(0.9) : page(0.9));
+        if (e.shiftKey) h.onCursorPageUp(); else h.onCursorPageDown();
         e.preventDefault();
         return;
       }
@@ -152,9 +142,8 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
         case "r": h.onReply(); break;
         case "R": h.onReviewPicker(); break;
         case "x": h.onResolve(); break;
-        // Page-level scrolling stays view-based (cursor stays put).
-        case "PageDown": scrollBy(page(0.9)); e.preventDefault(); break;
-        case "PageUp": scrollBy(-page(0.9)); e.preventDefault(); break;
+        case "PageDown": h.onCursorPageDown(); e.preventDefault(); break;
+        case "PageUp": h.onCursorPageUp(); e.preventDefault(); break;
         default: return;
       }
     }

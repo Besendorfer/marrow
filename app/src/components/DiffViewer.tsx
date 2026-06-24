@@ -120,6 +120,8 @@ export interface DiffViewerHandle {
   cursorMove: (delta: number) => void;
   /** Move the line cursor to the first/last navigable line. */
   cursorEdge: (edge: "top" | "bottom") => void;
+  /** Move the cursor ~frac of a viewport in `dir` (half page = 0.5, full = 0.9). */
+  cursorPage: (dir: 1 | -1, frac: number) => void;
   /** Move the cursor to the next/previous AI finding. */
   nextFinding: () => void;
   prevFinding: () => void;
@@ -1943,6 +1945,20 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     const rows = navRows();
     if (rows.length) moveCursorTo(rows, edge === "top" ? 0 : rows.length - 1);
   };
+  // Move the cursor ~frac of a viewport up/down, landing on the nearest row.
+  const cursorPage = (dir: 1 | -1, frac: number) => {
+    const c = diffContentRef.current;
+    const rows = navRows();
+    if (!c || !rows.length) return;
+    const target = offsetWithin(rows[cursorIndex(rows)], c) + dir * c.clientHeight * frac;
+    let best = 0;
+    let bestDist = Infinity;
+    rows.forEach((r, j) => {
+      const d = Math.abs(offsetWithin(r, c) - target);
+      if (d < bestDist) { bestDist = d; best = j; }
+    });
+    moveCursorTo(rows, best);
+  };
 
   const toggleAnchor = () => {
     if (cursorIndex(navRows()) < 0) return;
@@ -2037,7 +2053,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   // so rebuilding it each render keeps it always-fresh for free.
   useImperativeHandle(ref, () => ({
     nextHunk, prevHunk, foldAll,
-    cursorMove, cursorEdge, nextFinding, prevFinding, foldAtCursor,
+    cursorMove, cursorEdge, cursorPage, nextFinding, prevFinding, foldAtCursor,
     commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor,
   }));
 
