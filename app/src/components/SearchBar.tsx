@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { FileDiff, SearchMatch } from "../types";
 import { getFileName } from "../utils";
 
 type SearchMode = "local" | "global";
+
+/** Imperative handle so a global shortcut (e.g. "/") can open the search bar. */
+export interface SearchBarHandle {
+  open: (mode?: SearchMode) => void;
+}
 
 interface SearchBarProps {
   files: FileDiff[];
@@ -10,6 +15,8 @@ interface SearchBarProps {
   onSelectFile: (file: FileDiff) => void;
   onHighlightMatches: (matches: SearchMatch[], currentIndex: number, query: string) => void;
   onClearHighlights: () => void;
+  /** Notified whenever the bar opens/closes so the parent can track overlay state. */
+  onOpenChange?: (open: boolean) => void;
 }
 
 function searchInContent(
@@ -51,13 +58,14 @@ function dedupeMatches(matches: SearchMatch[]): SearchMatch[] {
   });
 }
 
-export function SearchBar({
+export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({
   files,
   selectedFile,
   onSelectFile,
   onHighlightMatches,
   onClearHighlights,
-}: SearchBarProps) {
+  onOpenChange,
+}: SearchBarProps, ref) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<SearchMode>("local");
   const [query, setQuery] = useState("");
@@ -65,6 +73,23 @@ export function SearchBar({
   const [currentIndex, setCurrentIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    open: (m: SearchMode = "local") => {
+      setMode(m);
+      setOpen(true);
+      setCurrentIndex(0);
+      setTimeout(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }, 0);
+    },
+  }), []);
+
+  // Report open/close transitions to the parent (for overlay-aware shortcuts).
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debounce the query for global search (local stays instant)
   useEffect(() => {
@@ -318,7 +343,7 @@ export function SearchBar({
       )}
     </div>
   );
-}
+});
 
 function truncateLeft(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;

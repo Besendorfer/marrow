@@ -11,9 +11,11 @@ import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
-import { SearchBar } from "./components/SearchBar";
+import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
+import { KeyboardHelp } from "./components/KeyboardHelp";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
@@ -29,6 +31,14 @@ function App() {
   const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<SearchBarHandle>(null);
+  // Visible file order from the sidebar, used by the [ / ] navigation shortcuts.
+  const visibleOrderRef = useRef<string[]>([]);
+  const handleVisibleFilesChange = useCallback((paths: string[]) => {
+    visibleOrderRef.current = paths;
+  }, []);
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
@@ -140,6 +150,54 @@ function App() {
       return m?.filePath === selectedFilePath ? m : null;
     },
     [searchMatches, searchCurrentIndex, selectedFilePath]
+  );
+
+  // ── Keyboard shortcuts (ported from the CLI/TUI; see useKeyboardShortcuts) ──
+  function selectAdjacentFile(delta: 1 | -1) {
+    if (!activeTab?.manifest || !activeTab.selectedFile) return;
+    const order = visibleOrderRef.current.length
+      ? visibleOrderRef.current
+      : activeTab.manifest.files.map((f) => f.path);
+    const byPath = (p: string) => activeTab.manifest!.files.find((f) => f.path === p);
+    const i = order.indexOf(activeTab.selectedFile.path);
+    if (i === -1) {
+      // Current file is filtered out of the list — jump to the first visible one.
+      const first = byPath(order[0]);
+      if (first) setSelectedFile(first);
+      return;
+    }
+    const next = byPath(order[Math.min(Math.max(i + delta, 0), order.length - 1)]);
+    if (next && next.path !== activeTab.selectedFile.path) setSelectedFile(next);
+  }
+
+  function toggleThreadsView() {
+    if (!activeTab?.manifest) return;
+    if (activeTab.sidebarView === "comments") {
+      const hasGroups = (activeTab.manifest.change_groups ?? []).length > 0;
+      handleViewChange(hasGroups ? "groups" : "category");
+    } else {
+      handleViewChange("comments");
+    }
+  }
+
+  useKeyboardShortcuts(
+    {
+      onNextFile: () => selectAdjacentFile(1),
+      onPrevFile: () => selectAdjacentFile(-1),
+      onToggleViewed: () => {
+        const path = activeTab?.selectedFile?.path;
+        if (path) toggleViewed(path);
+      },
+      onToggleThreads: toggleThreadsView,
+      onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
+      onOpenSearch: () => searchRef.current?.open("local"),
+      onToggleHelp: () => setHelpOpen((o) => !o),
+      onCloseOverlays: () => setHelpOpen(false),
+    },
+    {
+      enabled: !!activeTab?.manifest,
+      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal,
+    },
   );
 
   function buildReviewTab(id: string, manifest: ReviewManifest): Tab {
@@ -1155,6 +1213,7 @@ function App() {
         onRelaunch={relaunch}
         onDismiss={() => setUpdateStatus({ state: "idle" })}
       />
+      {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} />}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </>
   );
@@ -1260,11 +1319,13 @@ function App() {
           />
         )}
         <SearchBar
+          ref={searchRef}
           files={activeTab.manifest.files}
           selectedFile={activeTab.selectedFile}
           onSelectFile={setSelectedFile}
           onHighlightMatches={(matches, idx, q) => { setSearchMatches(matches); setSearchCurrentIndex(idx); setSearchQuery(q); }}
           onClearHighlights={() => { setSearchMatches([]); setSearchCurrentIndex(0); setSearchQuery(""); }}
+          onOpenChange={setSearchOpen}
         />
         <div className="main-content">
           <FileSidebar
@@ -1283,6 +1344,7 @@ function App() {
             commentThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : []}
             selectedCommentFile={activeTab.selectedCommentFile}
             onSelectCommentFile={handleSelectCommentFile}
+            onVisibleFilesChange={handleVisibleFilesChange}
           />
           <div className="diff-pane">
             {activeTab.sidebarView === "comments" ? (
