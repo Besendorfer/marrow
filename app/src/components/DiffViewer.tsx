@@ -1081,7 +1081,7 @@ function UnifiedView({
                   </tr>
                 )
               ) : isDimmed ? (
-                <tr className="hunk-low-significance" id={hunk.headerLine ? undefined : `hunk-${hunk.index}`}>
+                <tr className="hunk-low-significance">
                   <td colSpan={4} style={{ padding: 0 }}>
                     <table className="diff-table unified hunk-low-significance-inner">
                       <colgroup>
@@ -1349,7 +1349,7 @@ function SplitView({
                   </tr>
                 )
               ) : isDimmed ? (
-                <tr className="hunk-low-significance" id={hunk.headerLine ? undefined : `hunk-${hunk.index}`}>
+                <tr className="hunk-low-significance">
                   <td colSpan={4} style={{ padding: 0 }}>
                     <table className="diff-table split hunk-low-significance-inner">
                       <colgroup>
@@ -1749,8 +1749,10 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const offsetWithin = (el: HTMLElement, container: HTMLElement) =>
     el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
 
-  // The on-screen anchor for a hunk: its tagged leading row, or — for a headerless,
-  // expanded hunk — its first code line.
+  // The on-screen anchor for a hunk. Only a significance header OR a collapsed
+  // placeholder carries id="hunk-N" — these are mutually exclusive on headerLine,
+  // so there's never a duplicate id. Every other (expanded) hunk has rendered code
+  // rows, so we fall back to its first line's #diff-line-N.
   const hunkAnchorEl = (index: number): HTMLElement | null => {
     const c = diffContentRef.current;
     if (!c) return null;
