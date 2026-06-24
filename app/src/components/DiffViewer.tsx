@@ -529,7 +529,12 @@ interface DiffLine {
   newLineNum: number | null;
 }
 
-function parseDiffLines(unifiedDiff: string, lang: string | undefined): DiffLine[] {
+function parseDiffLines(
+  unifiedDiff: string,
+  lang: string | undefined,
+  headContent?: string,
+  baseContent?: string,
+): DiffLine[] {
   const rawLines = unifiedDiff.split("\n");
 
   // First pass: extract old-side and new-side source lines for highlighting
@@ -569,23 +574,34 @@ function parseDiffLines(unifiedDiff: string, lang: string | undefined): DiffLine
     }
   }
 
-  // Highlight both sides
-  const oldHtml = highlightLines(oldSrc.join("\n"), lang);
-  const newHtml = highlightLines(newSrc.join("\n"), lang);
+  // Highlight from the COMPLETE file contents when available, indexing each diff
+  // line by its real line number. The diff reconstruction (oldSrc/newSrc) stitches
+  // non-contiguous hunks together — that's syntactically broken code, and on a
+  // large/scattered diff it breaks highlight.js's stateful lexer so most tokens
+  // render uncolored. The full files are valid contiguous code and highlight
+  // correctly. Fall back to the stitched reconstruction for a side whose full
+  // content isn't available (e.g. a renamed file's missing base), preserving the
+  // previous behavior there.
+  const newFull = headContent ? highlightLines(headContent, lang) : null;
+  const oldFull = baseContent ? highlightLines(baseContent, lang) : null;
+  const newStitched = newFull ? null : highlightLines(newSrc.join("\n"), lang);
+  const oldStitched = oldFull ? null : highlightLines(oldSrc.join("\n"), lang);
 
-  // Map highlighted HTML back to diff lines
+  const newHtmlOf = (e: (typeof entries)[number]): string | undefined =>
+    newFull
+      ? (e.newLineNum != null ? newFull[e.newLineNum - 1] : undefined)
+      : (e.newIdx != null ? newStitched![e.newIdx] : undefined);
+  const oldHtmlOf = (e: (typeof entries)[number]): string | undefined =>
+    oldFull
+      ? (e.oldLineNum != null ? oldFull[e.oldLineNum - 1] : undefined)
+      : (e.oldIdx != null ? oldStitched![e.oldIdx] : undefined);
+
+  // Map highlighted HTML back to diff lines (add + context use the new side).
   return entries.map((e) => {
-    let html: string;
-    if (e.type === "header") {
-      html = escapeHtml(e.content);
-    } else if (e.type === "add") {
-      html = e.newIdx !== null ? (newHtml[e.newIdx] ?? escapeHtml(e.content)) : escapeHtml(e.content);
-    } else if (e.type === "remove") {
-      html = e.oldIdx !== null ? (oldHtml[e.oldIdx] ?? escapeHtml(e.content)) : escapeHtml(e.content);
-    } else {
-      // context — use new side
-      html = e.newIdx !== null ? (newHtml[e.newIdx] ?? escapeHtml(e.content)) : escapeHtml(e.content);
-    }
+    const html =
+      e.type === "header"
+        ? escapeHtml(e.content)
+        : (e.type === "remove" ? oldHtmlOf(e) : newHtmlOf(e)) ?? escapeHtml(e.content);
     return { type: e.type, content: e.content, html, oldLineNum: e.oldLineNum, newLineNum: e.newLineNum };
   });
 }
@@ -673,7 +689,7 @@ function buildFullFileDiffLines(
   lang: string | undefined
 ): DiffLine[] {
   if (!headContent) return [];
-  const parsed = parseDiffLines(unifiedDiff, lang);
+  const parsed = parseDiffLines(unifiedDiff, lang, headContent);
   const newLines = headContent.split("\n");
   const newHtml = highlightLines(headContent, lang);
 
@@ -1436,7 +1452,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
 
     // Use hunk-based view when we have scores and a parseable unified diff
     if (hasUnifiedDiff && hunkScores.length > 0) {
-      const lines = parseDiffLines(file.unified_diff, lang);
+      const lines = parseDiffLines(file.unified_diff, lang, file.head_content, file.base_content);
       return {
         hunks: groupIntoHunks(lines, hunkScores),
         diffLines: lines,
@@ -1451,7 +1467,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
     } else if (file.diff_type === "removed") {
       lines = buildFullFileLines(file.base_content, "remove", lang);
     } else {
-      lines = parseDiffLines(file.unified_diff, lang);
+      lines = parseDiffLines(file.unified_diff, lang, file.head_content, file.base_content);
       // Even without scores from AI, group into hunks for consistent rendering
       return {
         hunks: groupIntoHunks(lines, []),
