@@ -926,17 +926,15 @@ body {
 }
 
 /* ─── Keyboard line cursor (Tier 3) ─────────────────────────────────────── */
-.diff-line.cursor-line td,
-.diff-split-row.cursor-line td {
+/* Generic tr selectors so the cursor also shows on collapsed-hunk fold rows. */
+tr.cursor-line td {
   background: rgba(88, 166, 255, 0.12);
 }
 /* A left accent bar on the cursor row's first cell. */
-.diff-line.cursor-line td:first-child,
-.diff-split-row.cursor-line td:first-child {
+tr.cursor-line td:first-child {
   box-shadow: inset 2px 0 0 var(--accent, #58a6ff);
 }
-.diff-line.cursor-selected td,
-.diff-split-row.cursor-selected td {
+tr.cursor-selected td {
   background: rgba(88, 166, 255, 0.20);
 }
 
