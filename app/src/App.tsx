@@ -542,7 +542,8 @@ function App() {
     if (next.has(key)) next.delete(key); else next.add(key);
     updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: next }));
     const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
-    invoke("save_dismissed_highlights", { owner, repo, prNumber: number, state: { keys: [...next] } }).catch(() => {});
+    invoke("save_dismissed_highlights", { owner, repo, prNumber: number, state: { keys: [...next] } })
+      .catch(() => addToast("error", "Couldn't save — this dismissal may not persist"));
   }
 
   const unlistenRef = useRef<(() => void) | null>(null);
