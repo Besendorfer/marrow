@@ -146,6 +146,30 @@ pub enum AiBackend {
     },
 }
 
+/// Who authored a turn in a chat conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRole {
+    User,
+    Assistant,
+}
+
+impl ChatRole {
+    /// The wire string used by the Anthropic / OpenAI message APIs.
+    fn api_str(&self) -> &'static str {
+        match self {
+            ChatRole::User => "user",
+            ChatRole::Assistant => "assistant",
+        }
+    }
+}
+
+/// One turn of a multi-turn chat conversation fed to [`AiBackend::invoke_chat_stream`].
+#[derive(Debug, Clone)]
+pub struct ChatTurn {
+    pub role: ChatRole,
+    pub content: String,
+}
+
 impl AiBackend {
     /// Build a backend from a full `Settings` (resolving keys/base-url from
     /// config + env).
@@ -228,6 +252,272 @@ impl AiBackend {
             AiBackend::ClaudeCli { model } => invoke_claude_cli(model, prompt).await,
         }
     }
+
+    /// Stream a multi-turn chat completion. `system` is the grounding/context
+    /// preamble; `turns` is the conversation so far (last turn is the user's new
+    /// message). Each text fragment is passed to `on_delta` as it arrives; the
+    /// fully assembled text is also returned.
+    pub async fn invoke_chat_stream(
+        &self,
+        system: &str,
+        turns: &[ChatTurn],
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<String, String> {
+        match self {
+            AiBackend::Bedrock { client, model_arn } => {
+                client.converse_stream(model_arn, system, turns, on_delta).await
+            }
+            AiBackend::Anthropic { api_key, model } => {
+                stream_anthropic(api_key, model, system, turns, on_delta).await
+            }
+            AiBackend::OpenAiCompatible { base_url, api_key, model } => {
+                stream_openai_compatible(base_url, api_key, model, system, turns, on_delta).await
+            }
+            AiBackend::ClaudeCli { model } => {
+                stream_claude_cli(model, system, turns, on_delta).await
+            }
+        }
+    }
+}
+
+/// Consume a Server-Sent Events response, calling `extract` on each `data:`
+/// payload to pull out a text delta. Stops on the OpenAI `[DONE]` sentinel or
+/// end of stream. Bytes are buffered and only split on `\n` (which never falls
+/// inside a multibyte UTF-8 char), so deltas are never corrupted across chunks.
+async fn consume_sse(
+    resp: reqwest::Response,
+    mut extract: impl FnMut(&str) -> Option<String>,
+    on_delta: &mut (dyn FnMut(String) + Send),
+) -> Result<String, String> {
+    use futures::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut full = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("AI stream read failed: {e}"))?;
+        buf.extend_from_slice(&chunk);
+        while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
+            let line = line.trim_end_matches(['\r', '\n']);
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data == "[DONE]" {
+                return Ok(full);
+            }
+            if let Some(delta) = extract(data) {
+                if !delta.is_empty() {
+                    full.push_str(&delta);
+                    on_delta(delta);
+                }
+            }
+        }
+    }
+    Ok(full)
+}
+
+/// Build the OpenAI/Anthropic-style `messages` array from a system preamble and
+/// the conversation turns. The `system` role is prepended (OpenAI convention);
+/// Anthropic passes `system` separately and ignores this prepend.
+fn turns_to_messages(turns: &[ChatTurn]) -> Vec<serde_json::Value> {
+    turns
+        .iter()
+        .map(|t| serde_json::json!({ "role": t.role.api_str(), "content": t.content }))
+        .collect()
+}
+
+/// Stream from the Anthropic Messages API (`stream: true`, SSE).
+async fn stream_anthropic(
+    api_key: &str,
+    model: &str,
+    system: &str,
+    turns: &[ChatTurn],
+    on_delta: &mut (dyn FnMut(String) + Send),
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "stream": true,
+        "system": system,
+        "messages": turns_to_messages(turns),
+    });
+    let resp = reqwest::Client::new()
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Anthropic API request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(500).collect();
+        return Err(format!(
+            "Anthropic API error ({status}): {snippet}. Check your ANTHROPIC_API_KEY and that `{model}` is a valid model name."
+        ));
+    }
+
+    consume_sse(
+        resp,
+        |data| {
+            let json: serde_json::Value = serde_json::from_str(data).ok()?;
+            // content_block_delta events carry the streamed text.
+            if json["type"] == "content_block_delta" {
+                return json["delta"]["text"].as_str().map(str::to_string);
+            }
+            None
+        },
+        on_delta,
+    )
+    .await
+}
+
+/// Stream from an OpenAI-compatible Chat Completions endpoint (`stream: true`).
+async fn stream_openai_compatible(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    turns: &[ChatTurn],
+    on_delta: &mut (dyn FnMut(String) + Send),
+) -> Result<String, String> {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let mut messages = vec![serde_json::json!({ "role": "system", "content": system })];
+    messages.extend(turns_to_messages(turns));
+    let body = serde_json::json!({
+        "model": model,
+        "stream": true,
+        "messages": messages,
+    });
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("OpenAI-compatible request to {url} failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(500).collect();
+        return Err(format!(
+            "OpenAI-compatible API error ({status}) from {url}: {snippet}. Check the API key, base URL, and that `{model}` is valid there."
+        ));
+    }
+
+    consume_sse(
+        resp,
+        |data| {
+            let json: serde_json::Value = serde_json::from_str(data).ok()?;
+            json["choices"][0]["delta"]["content"].as_str().map(str::to_string)
+        },
+        on_delta,
+    )
+    .await
+}
+
+/// Stream from the `claude` CLI. The CLI is single-shot over stdin, so we flatten
+/// the system preamble + turns into one prompt and read stdout incrementally,
+/// emitting each chunk as a delta.
+async fn stream_claude_cli(
+    model: &str,
+    system: &str,
+    turns: &[ChatTurn],
+    on_delta: &mut (dyn FnMut(String) + Send),
+) -> Result<String, String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut prompt = String::new();
+    prompt.push_str("System instructions:\n");
+    prompt.push_str(system);
+    prompt.push_str("\n\n");
+    for turn in turns {
+        let label = match turn.role {
+            ChatRole::User => "User",
+            ChatRole::Assistant => "Assistant",
+        };
+        prompt.push_str(&format!("{label}: {}\n\n", turn.content));
+    }
+    prompt.push_str("Assistant:");
+
+    let mut child = Command::new(resolve_claude_binary())
+        .args(["--model", model, "--print"])
+        .env("CLAUDECODE", "") // prevent recursive Claude Code invocation
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // If this future is dropped mid-stream (the chat was cancelled), kill the
+        // child rather than leaking a running `claude` process.
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| {
+            format!(
+                "Failed to run claude CLI: {} (os error {}). Is the `claude` command installed and on your PATH?",
+                e, e.raw_os_error().unwrap_or(-1)
+            )
+        })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write prompt to claude stdin: {}", e))?;
+        // Drop stdin to close it, signaling EOF.
+    }
+
+    let mut full = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let mut buf = [0u8; 4096];
+        let mut pending: Vec<u8> = Vec::new();
+        loop {
+            let n = stdout
+                .read(&mut buf)
+                .await
+                .map_err(|e| format!("Failed to read claude stdout: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            pending.extend_from_slice(&buf[..n]);
+            // Emit only up to the last valid UTF-8 boundary; keep the remainder
+            // (a possibly-split multibyte char) buffered for the next read.
+            let valid = match std::str::from_utf8(&pending) {
+                Ok(s) => s.len(),
+                Err(e) => e.valid_up_to(),
+            };
+            if valid > 0 {
+                let text = String::from_utf8_lossy(&pending[..valid]).to_string();
+                pending.drain(..valid);
+                full.push_str(&text);
+                on_delta(text);
+            }
+        }
+        if !pending.is_empty() {
+            let text = String::from_utf8_lossy(&pending).to_string();
+            full.push_str(&text);
+            on_delta(text);
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Failed to wait for claude CLI: {}", e))?;
+    if !status.success() {
+        let mut stderr = String::new();
+        if let Some(mut err) = child.stderr.take() {
+            let _ = err.read_to_string(&mut stderr).await;
+        }
+        return Err(format!("claude CLI exited with {}: {}", status, stderr.trim()));
+    }
+    if full.trim().is_empty() {
+        return Err("claude CLI returned empty response".to_string());
+    }
+    Ok(full)
 }
 
 /// Upper bound on generated tokens for the Anthropic API (required by the API;

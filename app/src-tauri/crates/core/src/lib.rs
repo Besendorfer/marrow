@@ -5,6 +5,8 @@
 pub mod activity;
 pub mod ai;
 pub mod bedrock;
+pub mod chat;
+pub mod chat_history;
 pub mod checks_dismiss;
 pub mod config;
 pub mod dismissed_highlights;

@@ -1,6 +1,10 @@
+use crate::ai::{ChatRole, ChatTurn};
 use aws_config::BehaviorVersion;
 use aws_sdk_bedrockruntime::error::ProvideErrorMetadata;
-use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message};
+use aws_sdk_bedrockruntime::types::{
+    ContentBlock, ContentBlockDelta, ConversationRole, ConverseStreamOutput, Message,
+    SystemContentBlock,
+};
 use aws_sdk_bedrockruntime::Client;
 
 pub struct BedrockClient {
@@ -63,6 +67,64 @@ impl BedrockClient {
             }
             _ => Err("Unexpected Bedrock response type".to_string()),
         }
+    }
+
+    /// Stream a multi-turn conversation via Bedrock `ConverseStream`. Emits each
+    /// text fragment through `on_delta` and returns the full assembled text.
+    pub async fn converse_stream(
+        &self,
+        model_arn: &str,
+        system: &str,
+        turns: &[ChatTurn],
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<String, String> {
+        let mut messages = Vec::with_capacity(turns.len());
+        for turn in turns {
+            let role = match turn.role {
+                ChatRole::User => ConversationRole::User,
+                ChatRole::Assistant => ConversationRole::Assistant,
+            };
+            let message = Message::builder()
+                .role(role)
+                .content(ContentBlock::Text(turn.content.clone()))
+                .build()
+                .map_err(|e| format!("Failed to build message: {}", e))?;
+            messages.push(message);
+        }
+
+        let mut response = self
+            .client
+            .converse_stream()
+            .model_id(model_arn)
+            .set_system(Some(vec![SystemContentBlock::Text(system.to_string())]))
+            .set_messages(Some(messages))
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = e
+                    .as_service_error()
+                    .map(|se| format!("{}: {}", se.code().unwrap_or("Unknown"), se.message().unwrap_or("no details")))
+                    .unwrap_or_else(|| format!("{}", e));
+                format!("Bedrock streaming error: {}. Make sure you are logged in: aws sso login --profile claude-code-bedrock", msg)
+            })?;
+
+        let mut full = String::new();
+        loop {
+            match response.stream.recv().await {
+                Ok(Some(ConverseStreamOutput::ContentBlockDelta(ev))) => {
+                    if let Some(ContentBlockDelta::Text(text)) = ev.delta() {
+                        if !text.is_empty() {
+                            full.push_str(text);
+                            on_delta(text.clone());
+                        }
+                    }
+                }
+                Ok(Some(_)) => {} // message_start / metadata / stop events — ignore
+                Ok(None) => break, // end of stream
+                Err(e) => return Err(format!("Bedrock stream read failed: {}", e)),
+            }
+        }
+        Ok(full)
     }
 }
 

@@ -45,6 +45,8 @@ export interface ShortcutHandlers {
   onReviewPicker: () => void;
   onReply: () => void;
   onResolve: () => void;
+  /** Toggle the conversational diff Q&A panel (Cmd/Ctrl+J). */
+  onToggleChat: () => void;
 }
 
 export interface ShortcutOptions {
@@ -102,6 +104,17 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
           if (!isEditable(e.target)) h.onCloseTab();
           return;
         }
+      }
+
+      // Cmd/Ctrl+J toggles the chat panel. Handled before the typing guard so it
+      // also closes the panel while the chat input is focused. Gated on `enabled`
+      // (no chat on the opener tab) but allowed with an overlay open.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "j") {
+        if (enabled) {
+          h.onToggleChat();
+          e.preventDefault();
+        }
+        return;
       }
 
       // Typing into a field never triggers shortcuts.
