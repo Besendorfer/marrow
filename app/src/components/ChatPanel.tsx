@@ -181,11 +181,11 @@ export function ChatPanel({
           <div className="chat-msg chat-msg-assistant">
             <div className="chat-msg-role">AI</div>
             <div className="chat-msg-body">
-              {chat.streamingText ? (
-                <>
-                  <ChatMarkdown content={chat.streamingText} />
-                  <span className="chat-caret" aria-hidden="true" />
-                </>
+              {chat.streamingText && <ChatMarkdown content={chat.streamingText} />}
+              {chat.streamingStatus ? (
+                <span className="chat-working"><span className="chat-working-spinner" aria-hidden="true">↻</span> {chat.streamingStatus}</span>
+              ) : chat.streamingText ? (
+                <span className="chat-caret" aria-hidden="true" />
               ) : (
                 <span className="chat-thinking">Thinking…</span>
               )}

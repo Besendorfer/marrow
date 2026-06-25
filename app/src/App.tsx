@@ -33,7 +33,7 @@ function isOpenerTab(tab: Tab): boolean {
 
 /** A fresh, closed chat panel for a new tab. */
 function emptyChatState(): ChatState {
-  return { messages: [], status: "idle", streamingText: "", includeWholePr: false, open: false };
+  return { messages: [], status: "idle", streamingText: "", streamingStatus: null, includeWholePr: false, open: false };
 }
 
 function App() {
@@ -609,7 +609,7 @@ function App() {
   function finalizeChat(tabId: string, prUrl: string, content: string) {
     const tab = tabsRef.current.find((t) => t.id === tabId);
     const messages: ChatMessage[] = [...(tab?.chat.messages ?? []), { role: "assistant", content }];
-    updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, messages, status: "idle", streamingText: "" } }));
+    updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, messages, status: "idle", streamingText: "", streamingStatus: null } }));
     try {
       const { owner, repo, number } = parsePrUrl(prUrl);
       invoke("save_chat_history", { owner, repo, prNumber: number, state: { messages } }).catch(() => {});
@@ -640,18 +640,21 @@ function App() {
     chatRequestIdRef.current[tabId] = requestId;
     updateTab(tabId, (t) => ({
       ...t,
-      chat: { ...t.chat, messages: [...t.chat.messages, userMsg], status: "streaming", streamingText: "", error: undefined },
+      chat: { ...t.chat, messages: [...t.chat.messages, userMsg], status: "streaming", streamingText: "", streamingStatus: null, error: undefined },
     }));
 
     const channel = new Channel<ChatStreamEvent>();
     channel.onmessage = (ev) => {
       if (chatCancelRef.current[tabId]) return;
       if (ev.type === "delta") {
-        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, streamingText: t.chat.streamingText + ev.text } }));
+        // Any text clears a pending "Working…" status.
+        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, streamingText: t.chat.streamingText + ev.text, streamingStatus: null } }));
+      } else if (ev.type === "status") {
+        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, streamingStatus: ev.label } }));
       } else if (ev.type === "done") {
         finalizeChat(tabId, manifest.pr_url, ev.content);
       } else if (ev.type === "error") {
-        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "", error: ev.message } }));
+        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "", streamingStatus: null, error: ev.message } }));
       }
     };
 

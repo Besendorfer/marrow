@@ -108,6 +108,9 @@ export interface ChatState {
   status: "idle" | "streaming";
   /** The in-progress assistant answer accumulated from stream deltas. */
   streamingText: string;
+  /** Transient status shown while the AI is working but not emitting text
+   * (e.g. the CLI agent using tools between blocks); null when none. */
+  streamingStatus: string | null;
   /** When true, ground answers in the whole PR rather than the selected file. */
   includeWholePr: boolean;
   /** Whether the chat dock is open. */
@@ -119,6 +122,7 @@ export interface ChatState {
 /** Streaming events sent from the backend `chat_send` command over the IPC channel. */
 export type ChatStreamEvent =
   | { type: "delta"; text: string }
+  | { type: "status"; label: string | null }
   | { type: "done"; content: string }
   | { type: "error"; message: string };
 

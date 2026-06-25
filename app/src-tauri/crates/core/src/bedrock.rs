@@ -1,4 +1,4 @@
-use crate::ai::{ChatRole, ChatTurn};
+use crate::ai::{ChatRole, ChatTurn, StreamUpdate};
 use aws_config::BehaviorVersion;
 use aws_sdk_bedrockruntime::error::ProvideErrorMetadata;
 use aws_sdk_bedrockruntime::types::{
@@ -76,7 +76,7 @@ impl BedrockClient {
         model_arn: &str,
         system: &str,
         turns: &[ChatTurn],
-        on_delta: &mut (dyn FnMut(String) + Send),
+        on: &mut (dyn FnMut(StreamUpdate) + Send),
     ) -> Result<String, String> {
         let mut messages = Vec::with_capacity(turns.len());
         for turn in turns {
@@ -115,7 +115,7 @@ impl BedrockClient {
                     if let Some(ContentBlockDelta::Text(text)) = ev.delta() {
                         if !text.is_empty() {
                             full.push_str(text);
-                            on_delta(text.clone());
+                            on(StreamUpdate::Delta(text.clone()));
                         }
                     }
                 }

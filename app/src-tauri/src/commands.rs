@@ -569,6 +569,8 @@ pub struct ChatRequest {
 pub enum ChatStreamEvent {
     /// A fragment of the assistant's answer.
     Delta { text: String },
+    /// A transient status (e.g. the CLI agent using tools); `label` None clears it.
+    Status { label: Option<String> },
     /// The stream finished cleanly; `content` is the full assembled answer.
     Done { content: String },
     /// The stream failed; `message` is a human-readable error.
@@ -611,9 +613,13 @@ pub async fn chat_send(
     let request_id = request.request_id.clone();
     state.chat_cancels.lock().unwrap().insert(request_id.clone(), token.clone());
 
-    let delta_channel = channel.clone();
-    let mut on_delta = move |text: String| {
-        let _ = delta_channel.send(ChatStreamEvent::Delta { text });
+    let update_channel = channel.clone();
+    let mut on_update = move |u: marrow_core::ai::StreamUpdate| {
+        let ev = match u {
+            marrow_core::ai::StreamUpdate::Delta(text) => ChatStreamEvent::Delta { text },
+            marrow_core::ai::StreamUpdate::Status(label) => ChatStreamEvent::Status { label },
+        };
+        let _ = update_channel.send(ev);
     };
 
     // Race the streaming call against cancellation. On cancel, the select drops
@@ -621,7 +627,7 @@ pub async fn chat_send(
     // killing the `claude` child, which is spawned with kill_on_drop) — and we
     // send nothing further. The frontend keeps the partial answer it streamed.
     tokio::select! {
-        result = backend.invoke_chat_stream(&system, &turns, &mut on_delta) => {
+        result = backend.invoke_chat_stream(&system, &turns, &mut on_update) => {
             match result {
                 Ok(content) => { let _ = channel.send(ChatStreamEvent::Done { content }); }
                 Err(message) => { let _ = channel.send(ChatStreamEvent::Error { message }); }

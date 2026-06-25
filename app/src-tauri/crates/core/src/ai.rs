@@ -170,6 +170,17 @@ pub struct ChatTurn {
     pub content: String,
 }
 
+/// An incremental update from a streaming chat call.
+#[derive(Debug, Clone)]
+pub enum StreamUpdate {
+    /// A fragment of answer text to append.
+    Delta(String),
+    /// A transient status while no answer text is being produced — e.g. the
+    /// `claude` CLI agent using tools between text blocks. `Some(label)` to show,
+    /// `None` to clear. Not part of the saved answer.
+    Status(Option<String>),
+}
+
 impl AiBackend {
     /// Build a backend from a full `Settings` (resolving keys/base-url from
     /// config + env).
@@ -261,20 +272,20 @@ impl AiBackend {
         &self,
         system: &str,
         turns: &[ChatTurn],
-        on_delta: &mut (dyn FnMut(String) + Send),
+        on: &mut (dyn FnMut(StreamUpdate) + Send),
     ) -> Result<String, String> {
         match self {
             AiBackend::Bedrock { client, model_arn } => {
-                client.converse_stream(model_arn, system, turns, on_delta).await
+                client.converse_stream(model_arn, system, turns, on).await
             }
             AiBackend::Anthropic { api_key, model } => {
-                stream_anthropic(api_key, model, system, turns, on_delta).await
+                stream_anthropic(api_key, model, system, turns, on).await
             }
             AiBackend::OpenAiCompatible { base_url, api_key, model } => {
-                stream_openai_compatible(base_url, api_key, model, system, turns, on_delta).await
+                stream_openai_compatible(base_url, api_key, model, system, turns, on).await
             }
             AiBackend::ClaudeCli { model } => {
-                stream_claude_cli(model, system, turns, on_delta).await
+                stream_claude_cli(model, system, turns, on).await
             }
         }
     }
@@ -287,7 +298,7 @@ impl AiBackend {
 async fn consume_sse(
     resp: reqwest::Response,
     mut extract: impl FnMut(&str) -> Option<String>,
-    on_delta: &mut (dyn FnMut(String) + Send),
+    on: &mut (dyn FnMut(StreamUpdate) + Send),
 ) -> Result<String, String> {
     use futures::StreamExt;
     let mut stream = resp.bytes_stream();
@@ -308,7 +319,7 @@ async fn consume_sse(
             if let Some(delta) = extract(data) {
                 if !delta.is_empty() {
                     full.push_str(&delta);
-                    on_delta(delta);
+                    on(StreamUpdate::Delta(delta));
                 }
             }
         }
@@ -332,7 +343,7 @@ async fn stream_anthropic(
     model: &str,
     system: &str,
     turns: &[ChatTurn],
-    on_delta: &mut (dyn FnMut(String) + Send),
+    on: &mut (dyn FnMut(StreamUpdate) + Send),
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "model": model,
@@ -370,7 +381,7 @@ async fn stream_anthropic(
             }
             None
         },
-        on_delta,
+        on,
     )
     .await
 }
@@ -382,7 +393,7 @@ async fn stream_openai_compatible(
     model: &str,
     system: &str,
     turns: &[ChatTurn],
-    on_delta: &mut (dyn FnMut(String) + Send),
+    on: &mut (dyn FnMut(StreamUpdate) + Send),
 ) -> Result<String, String> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let mut messages = vec![serde_json::json!({ "role": "system", "content": system })];
@@ -416,7 +427,7 @@ async fn stream_openai_compatible(
             let json: serde_json::Value = serde_json::from_str(data).ok()?;
             json["choices"][0]["delta"]["content"].as_str().map(str::to_string)
         },
-        on_delta,
+        on,
     )
     .await
 }
@@ -428,7 +439,7 @@ async fn stream_claude_cli(
     model: &str,
     system: &str,
     turns: &[ChatTurn],
-    on_delta: &mut (dyn FnMut(String) + Send),
+    on: &mut (dyn FnMut(StreamUpdate) + Send),
 ) -> Result<String, String> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
@@ -480,11 +491,14 @@ async fn stream_claude_cli(
         // Drop stdin to close it, signaling EOF.
     }
 
-    // Read NDJSON line by line. Each `content_block_delta` with a `text_delta`
-    // carries one token chunk of the answer; everything else (init, usage,
-    // thinking deltas, result) is ignored. Splitting on `\n` never bisects a
-    // multibyte char, so each complete line decodes cleanly.
+    // Read NDJSON line by line. The CLI runs as an agent: it emits a text block,
+    // may call tools, then emits another text block. We stream `text_delta`s as
+    // answer text, insert a blank line between separate text blocks (different
+    // `index`) so they don't run together, and surface a transient "Working…"
+    // status while the agent uses tools between blocks. Splitting on `\n` never
+    // bisects a multibyte char, so each complete line decodes cleanly.
     let mut full = String::new();
+    let mut last_index: Option<u64> = None;
     if let Some(stdout) = child.stdout.take() {
         let mut reader = tokio::io::BufReader::new(stdout);
         let mut line = String::new();
@@ -501,11 +515,24 @@ async fn stream_claude_cli(
             if trimmed.is_empty() {
                 continue;
             }
-            if let Some(text) = cli_text_delta(trimmed) {
-                if !text.is_empty() {
-                    full.push_str(&text);
-                    on_delta(text);
+            match cli_event(trimmed) {
+                Some(CliEvent::Text { index, text }) => {
+                    // A new text block after an earlier one means tool use happened
+                    // in between — separate them with a blank line.
+                    if last_index.is_some_and(|prev| prev != index) {
+                        full.push_str("\n\n");
+                        on(StreamUpdate::Delta("\n\n".to_string()));
+                    }
+                    last_index = Some(index);
+                    if !text.is_empty() {
+                        full.push_str(&text);
+                        on(StreamUpdate::Delta(text));
+                    }
                 }
+                Some(CliEvent::ToolUse) => {
+                    on(StreamUpdate::Status(Some("Working…".to_string())));
+                }
+                None => {}
             }
         }
     }
@@ -527,23 +554,35 @@ async fn stream_claude_cli(
     Ok(full)
 }
 
-/// Extract the answer text from one NDJSON line of `claude --output-format
-/// stream-json --include-partial-messages`. Returns the text of a
-/// `content_block_delta` / `text_delta` event, or None for any other line.
-fn cli_text_delta(line: &str) -> Option<String> {
+/// A meaningful event parsed from one NDJSON line of `claude --output-format
+/// stream-json --include-partial-messages`.
+#[derive(Debug, PartialEq)]
+enum CliEvent {
+    /// A chunk of answer text in content block `index`.
+    Text { index: u64, text: String },
+    /// The agent started using a tool (between text blocks).
+    ToolUse,
+}
+
+/// Parse one NDJSON line into a [`CliEvent`], or None for lines we don't surface
+/// (init, usage, thinking deltas, result, …).
+fn cli_event(line: &str) -> Option<CliEvent> {
     let json: serde_json::Value = serde_json::from_str(line).ok()?;
     if json["type"] != "stream_event" {
         return None;
     }
     let event = &json["event"];
-    if event["type"] != "content_block_delta" {
-        return None;
+    match event["type"].as_str()? {
+        "content_block_delta" if event["delta"]["type"] == "text_delta" => {
+            let index = event["index"].as_u64().unwrap_or(0);
+            let text = event["delta"]["text"].as_str()?.to_string();
+            Some(CliEvent::Text { index, text })
+        }
+        "content_block_start" if event["content_block"]["type"] == "tool_use" => {
+            Some(CliEvent::ToolUse)
+        }
+        _ => None,
     }
-    let delta = &event["delta"];
-    if delta["type"] != "text_delta" {
-        return None; // skip thinking_delta and others
-    }
-    delta["text"].as_str().map(str::to_string)
 }
 
 /// Upper bound on generated tokens for the Anthropic API (required by the API;
@@ -738,17 +777,19 @@ mod tests {
     }
 
     #[test]
-    fn cli_text_delta_extracts_only_text_deltas() {
-        let d = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}}"#;
-        assert_eq!(cli_text_delta(d).as_deref(), Some("Hello"));
-        // thinking deltas, non-stream events, and init lines yield nothing.
+    fn cli_event_extracts_text_tool_and_ignores_rest() {
+        let d = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Hello"}}}"#;
+        assert_eq!(cli_event(d), Some(CliEvent::Text { index: 2, text: "Hello".to_string() }));
+        let tool = r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","name":"Read"}}}"#;
+        assert_eq!(cli_event(tool), Some(CliEvent::ToolUse));
+        // thinking deltas, non-stream events, and init/result lines yield nothing.
         let thinking = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}}"#;
-        assert_eq!(cli_text_delta(thinking), None);
+        assert_eq!(cli_event(thinking), None);
         let init = r#"{"type":"system","subtype":"init"}"#;
-        assert_eq!(cli_text_delta(init), None);
+        assert_eq!(cli_event(init), None);
         let result = r#"{"type":"result","result":"Hello"}"#;
-        assert_eq!(cli_text_delta(result), None);
-        assert_eq!(cli_text_delta("not json"), None);
+        assert_eq!(cli_event(result), None);
+        assert_eq!(cli_event("not json"), None);
     }
 
     #[test]

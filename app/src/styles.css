@@ -4484,3 +4484,15 @@ mark.search-highlight-current {
   0%, 50% { opacity: 1; }
   50.01%, 100% { opacity: 0; }
 }
+
+.chat-working {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-muted);
+}
+.chat-working-spinner {
+  display: inline-block;
+  animation: spin 1.2s linear infinite;
+}
