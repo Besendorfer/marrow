@@ -206,6 +206,7 @@ function App() {
       onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); },
       onNextTab: () => selectAdjacentTab(1),
       onPrevTab: () => selectAdjacentTab(-1),
+      onCloseTab: () => { if (activeTabId) closeTab(activeTabId); },
       onNextHunk: () => diffViewerRef.current?.nextHunk(),
       onPrevHunk: () => diffViewerRef.current?.prevHunk(),
       onNextFinding: () => diffViewerRef.current?.nextFinding(),
