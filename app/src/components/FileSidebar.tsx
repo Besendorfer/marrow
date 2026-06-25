@@ -7,6 +7,8 @@ interface FileSidebarProps {
   changeGroups: ChangeGroup[];
   /** Triage guidance (top risks + contract-first order); enables the Guided view. */
   triage?: TriageReport | null;
+  /** Return to the triage "what to review first" overview (deselects the file). */
+  onShowOverview?: () => void;
   selectedFile: FileDiff | null;
   onSelectFile: (file: FileDiff) => void;
   viewedFiles: Set<string>;
@@ -395,6 +397,7 @@ export function FileSidebar({
   files,
   changeGroups,
   triage,
+  onShowOverview,
   selectedFile,
   onSelectFile,
   viewedFiles,
@@ -690,6 +693,14 @@ export function FileSidebar({
       <nav className="file-list">
         {view === "guided" ? (
           <div className="file-group guided-list">
+            <button
+              className={`guided-overview ${selectedFile === null ? "active" : ""}`}
+              onClick={() => onShowOverview?.()}
+              title="What to review first — top risks and overview"
+            >
+              <span className="guided-overview-star">&#9733;</span>
+              What to review first
+            </button>
             {guidedFiles.length === 0 ? (
               <div className="guided-empty">No files match the current filters.</div>
             ) : (

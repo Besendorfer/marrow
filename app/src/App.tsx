@@ -754,9 +754,12 @@ function App() {
         viewedFiles: preservedViewed,
         staleViewedFiles: newStale,
         selectedFile:
-          tab.selectedFile && newPaths.has(tab.selectedFile.path)
-            ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? newManifest.files[0] ?? null
-            : newManifest.files[0] ?? null,
+          // No file was selected (sitting on the triage/overview card) — stay there.
+          !tab.selectedFile
+            ? null
+            : newPaths.has(tab.selectedFile.path)
+              ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? newManifest.files[0] ?? null
+              : newManifest.files[0] ?? null,
         commentThreads: { status: "idle" },
       };
 
@@ -809,6 +812,11 @@ function App() {
 
   function setSelectedFile(file: FileDiff) {
     updateTab(activeTabId,(t) => ({ ...t, selectedFile: file }));
+  }
+
+  // Deselect the file to return to the triage "what to review first" overview.
+  function handleShowOverview() {
+    updateTab(activeTabId, (t) => ({ ...t, selectedFile: null }));
   }
 
   // Jump from the triage card to a flagged risk: select the file and (when known)
@@ -1600,6 +1608,7 @@ function App() {
             files={activeTab.manifest.files}
             changeGroups={activeTab.manifest.change_groups ?? []}
             triage={activeTab.manifest.triage}
+            onShowOverview={handleShowOverview}
             selectedFile={activeTab.selectedFile}
             onSelectFile={setSelectedFile}
             viewedFiles={activeTab.viewedFiles}

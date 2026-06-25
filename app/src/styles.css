@@ -4315,7 +4315,8 @@ mark.search-highlight-current {
   border-left: 3px solid var(--risk-critical);
   border-radius: 8px;
   padding: 14px 16px;
-  margin: 0 0 20px;
+  max-width: 760px;
+  margin: 0 auto 20px;
 }
 .triage-header {
   display: flex;
@@ -4373,6 +4374,27 @@ mark.search-highlight-current {
 .triage-risk-path { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 
 .guided-list { padding: 4px 0; }
+.guided-overview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: calc(100% - 12px);
+  margin: 0 6px 6px;
+  padding: 7px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.guided-overview:hover { color: var(--text-primary); }
+.guided-overview.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.guided-overview-star { color: var(--risk-critical); }
 .guided-empty { color: var(--text-muted); font-size: 12px; padding: 12px; }
 .guided-row { display: flex; align-items: flex-start; gap: 6px; padding: 2px 4px; }
 .guided-num {
