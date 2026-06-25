@@ -19,6 +19,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
 import { parsePrUrl, extractPrRef } from "./utils";
 
@@ -1220,6 +1221,29 @@ function App() {
 
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-load dismissed-highlight state from disk when the window regains focus, so
+  // dismissals made outside the app (e.g. an external/AI tool writing the
+  // ~/.config/marrow/dismissed file) show up without reopening the PR.
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) return;
+      for (const tab of tabsRef.current) {
+        if (!tab.manifest) continue;
+        const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+        invoke<{ keys: string[] } | null>("load_dismissed_highlights", { owner, repo, prNumber: number })
+          .then((saved) => {
+            const keys = saved?.keys ?? [];
+            updateTab(tab.id, (t) => {
+              const same = t.dismissedHighlights.size === keys.length && keys.every((k) => t.dismissedHighlights.has(k));
+              return same ? t : { ...t, dismissedHighlights: new Set(keys) };
+            });
+          })
+          .catch(() => {});
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
 
   // Persist session state whenever tabs or active tab change (debounced)
   useEffect(() => {
