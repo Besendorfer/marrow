@@ -6,6 +6,7 @@ pub mod ai;
 pub mod bedrock;
 pub mod checks_dismiss;
 pub mod config;
+pub mod dismissed_highlights;
 pub mod fetch;
 pub mod github;
 pub mod manifest_cache;

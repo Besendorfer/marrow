@@ -241,6 +241,7 @@ function App() {
       selectedFile: manifest.files.length > 0 ? manifest.files[0] : null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
+      dismissedHighlights: new Set(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
       sidebarView: hasGroups ? "groups" : "category",
@@ -264,6 +265,7 @@ function App() {
       selectedFile: null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
+      dismissedHighlights: new Set(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
       sidebarView: "category",
@@ -352,6 +354,7 @@ function App() {
 
             for (const tab of restored) {
               loadPersistedViewedState(tab);
+              loadDismissedHighlights(tab);
               fetchMyReviewState(tab.id, tab.manifest!.pr_url);
               fetchChecksStatus(tab.id, tab.manifest!.pr_url);
             }
@@ -431,6 +434,7 @@ function App() {
     setTabs((prev) => prev.map((t) => (t.id === tabId ? tab : t)));
     setError(null);
     loadPersistedViewedState(tab);
+    loadDismissedHighlights(tab);
     fetchMyReviewState(tabId, data.pr_url);
     fetchChecksStatus(tabId, data.pr_url);
     if (!isActive) {
@@ -449,6 +453,7 @@ function App() {
     setActiveTabId(tab.id);
     setError(null);
     loadPersistedViewedState(tab);
+    loadDismissedHighlights(tab);
     fetchMyReviewState(tab.id, data.pr_url);
     fetchChecksStatus(tab.id, data.pr_url);
   }
@@ -515,6 +520,29 @@ function App() {
       // Graceful degradation: if loading fails, start with empty state
     }
     syncGhViewedState(tab.id, tab.manifest.pr_url, tab.manifest.files);
+  }
+
+  async function loadDismissedHighlights(tab: Tab) {
+    if (!tab.manifest) return;
+    try {
+      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+      const saved = await invoke<{ keys: string[] } | null>("load_dismissed_highlights", { owner, repo, prNumber: number });
+      if (saved && saved.keys.length > 0) {
+        updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: new Set(saved.keys) }));
+      }
+    } catch {
+      // Non-critical: start with nothing dismissed on failure
+    }
+  }
+
+  function toggleHighlightDismissed(key: string) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest) return;
+    const next = new Set(tab.dismissedHighlights);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: next }));
+    const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+    invoke("save_dismissed_highlights", { owner, repo, prNumber: number, state: { keys: [...next] } }).catch(() => {});
   }
 
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -1406,7 +1434,7 @@ function App() {
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
             ) : activeTab.manifest.summary ? (
               <div className="pr-summary">
                 <h3>PR Summary</h3>
