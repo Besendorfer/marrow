@@ -1787,6 +1787,50 @@ tr.cursor-selected td {
   border-color: var(--accent);
 }
 
+/* Dismiss (×) button on an AI note, and the dismissed-notes section. */
+.highlight-dismiss {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 7px;
+  height: 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+/* When post-comment is absent (no margin-left:auto), push dismiss to the right. */
+.highlights-summary-item > .highlight-dismiss:nth-child(4) {
+  margin-left: auto;
+}
+.highlights-summary-item:hover .highlight-dismiss {
+  opacity: 1;
+}
+.highlight-dismiss:hover {
+  background: var(--diff-remove-text, #f85149);
+  color: #fff;
+  border-color: transparent;
+}
+.highlights-summary-item.highlight-dismissed {
+  opacity: 0.5;
+}
+.highlights-show-dismissed {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 2px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.highlights-show-dismissed:hover {
+  color: var(--text-primary);
+}
+
 /* Highlighted line background tint */
 .highlighted.highlighted-critical {
   background: rgba(248, 81, 73, 0.08) !important;

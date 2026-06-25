@@ -2,7 +2,7 @@ import { Fragment, forwardRef, memo, useEffect, useImperativeHandle, useMemo, us
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch } from "../types";
-import { timeAgo } from "../utils";
+import { timeAgo, highlightKey } from "../utils";
 
 const extToLang: Record<string, string> = {
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
@@ -98,6 +98,9 @@ interface DiffViewerProps {
   viewMode: DiffViewMode;
   showHunkSignificance: boolean;
   showAiNotes: boolean;
+  /** Keys (highlightKey) of AI highlights dismissed for this PR — hidden from the diff. */
+  dismissedHighlights?: Set<string>;
+  onToggleHighlightDismissed?: (key: string) => void;
   onCreateComment?: (path: string, endLine: number, side: "LEFT" | "RIGHT", body: string, startLine?: number, startSide?: "LEFT" | "RIGHT") => Promise<void>;
   onEditComment?: (commentId: string, body: string) => void;
   onReply?: (threadId: string, commentId: string, body: string) => void;
@@ -1450,7 +1453,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1613,7 +1616,14 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     [reviewThreads, file.path]
   );
 
-  const highlights = showAiNotes ? (file.highlights ?? []) : [];
+  // AI notes split into active (shown in the diff + nav) and dismissed (restorable
+  // from the summary). `highlights` is the active set everything else keys off.
+  const allNotes = showAiNotes ? (file.highlights ?? []) : [];
+  const keyFor = (h: Highlight) => highlightKey(file.path, h);
+  const dismissed = dismissedHighlights ?? new Set<string>();
+  const highlights = allNotes.filter((h) => !dismissed.has(keyFor(h)));
+  const dismissedNotes = allNotes.filter((h) => dismissed.has(keyFor(h)));
+  const [showDismissed, setShowDismissed] = useState(false);
   const isCritical =
     file.risk_level === "critical" || file.risk_level === "high";
 
@@ -1811,10 +1821,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   };
 
   // ── Tier 2: keyboard hunk/finding navigation + folding ────────────────────
-  const sortedFindings = useMemo(
-    () => (showAiNotes ? [...(file.highlights ?? [])] : []).sort((a, b) => a.start_line - b.start_line),
-    [file.highlights, showAiNotes],
-  );
+  // Active notes only, sorted — so n/N skips dismissed ones. (Cheap; read on keypress.)
+  const sortedFindings = highlights.slice().sort((a, b) => a.start_line - b.start_line);
   const findingIdxRef = useRef(-1);
   // Element id to scroll to + home the cursor onto after a re-render (finding nav,
   // fold-expand onto the first line, fold-collapse onto the hunk header).
@@ -2140,7 +2148,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
           </button>
         )}
       </div>
-      {highlights.length > 0 && (
+      {(highlights.length > 0 || dismissedNotes.length > 0) && (
         <div className="highlights-summary">
           {highlights.map((h, i) => (
             <div
@@ -2163,6 +2171,46 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
                   title="Post this AI note as a review comment"
                 >
                   Post as comment
+                </button>
+              )}
+              {onToggleHighlightDismissed && (
+                <button
+                  className="highlight-dismiss"
+                  onClick={(e) => { e.stopPropagation(); onToggleHighlightDismissed(keyFor(h)); }}
+                  title="Dismiss this AI note"
+                  aria-label="Dismiss AI note"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+          {dismissedNotes.length > 0 && (
+            <button className="highlights-show-dismissed" onClick={() => setShowDismissed((v) => !v)}>
+              {showDismissed ? "Hide" : "Show"} {dismissedNotes.length} dismissed
+            </button>
+          )}
+          {showDismissed && dismissedNotes.map((h, i) => (
+            <div
+              key={`dismissed-${i}`}
+              className={`highlights-summary-item highlight-${h.severity} highlight-dismissed`}
+              style={{ cursor: "pointer" }}
+              onClick={() => {
+                const el = document.getElementById(`diff-line-${h.start_line}`);
+                el?.scrollIntoView({ behavior: "smooth", block: "center" });
+              }}
+              title="Jump to code"
+            >
+              <span className="highlight-severity-badge">{h.severity.toUpperCase()}</span>
+              <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
+              <span className="highlight-summary-text">{h.comment}</span>
+              {onToggleHighlightDismissed && (
+                <button
+                  className="highlight-post-comment"
+                  onClick={(e) => { e.stopPropagation(); onToggleHighlightDismissed(keyFor(h)); }}
+                  title="Restore this AI note"
+                >
+                  Restore
                 </button>
               )}
             </div>

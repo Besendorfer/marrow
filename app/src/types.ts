@@ -119,6 +119,8 @@ export interface Tab {
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
   staleViewedFiles: Set<string>;
+  /** Keys (see highlightKey) of AI highlights the user has dismissed for this PR. */
+  dismissedHighlights: Set<string>;
   commentThreads: CommentThreadsState;
   selectedCommentFile: string | null;
   sidebarView: SidebarView;

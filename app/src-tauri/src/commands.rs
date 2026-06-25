@@ -5,6 +5,7 @@ use marrow_core::github::GithubClient;
 use marrow_core::types::{MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
 use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
+use marrow_core::dismissed_highlights::{self, DismissedHighlights};
 use marrow_core::viewed_state::{self, ViewedFileState};
 use std::collections::HashMap;
 use std::fs;
@@ -284,6 +285,25 @@ pub fn save_viewed_files(
     state: ViewedFileState,
 ) -> Result<(), String> {
     viewed_state::save_viewed_state(&owner, &repo, pr_number, &state)
+}
+
+#[command]
+pub fn load_dismissed_highlights(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+) -> Option<DismissedHighlights> {
+    dismissed_highlights::load_dismissed(&owner, &repo, pr_number)
+}
+
+#[command]
+pub fn save_dismissed_highlights(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    state: DismissedHighlights,
+) -> Result<(), String> {
+    dismissed_highlights::save_dismissed(&owner, &repo, pr_number, &state)
 }
 
 #[command]

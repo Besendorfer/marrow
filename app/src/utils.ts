@@ -2,6 +2,25 @@ export function getFileName(path: string): string {
   return path.split("/").pop() || path;
 }
 
+// djb2 string hash → unsigned base36, for compact stable keys.
+function hashString(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * Stable identifier for an AI highlight, used to persist dismissals. Includes the
+ * comment text (hashed) so a dismissal survives re-fetches but re-surfaces if the
+ * note's wording changes (i.e. the AI flagged something different).
+ */
+export function highlightKey(
+  path: string,
+  h: { start_line: number; end_line: number; comment: string },
+): string {
+  return `${path}:${h.start_line}-${h.end_line}:${hashString(h.comment)}`;
+}
+
 export function parsePrUrl(url: string): { owner: string; repo: string; number: number } {
   const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
   if (!match) throw new Error(`Invalid PR URL: ${url}`);
