@@ -80,15 +80,13 @@ For each highlight, provide:
 Respond with ONLY a valid JSON array of these highlight objects. If there are no notable changes, return an empty array [].
 Do NOT include any text before or after the JSON array. Just the JSON."#;
 
-pub const SUMMARY_PROMPT: &str = r#"You are a code review assistant. Given a PR title and a list of relevant files with their classifications and AI-generated reasons, write a concise executive summary for a code reviewer.
+pub const SUMMARY_PROMPT: &str = r#"You are a code review assistant. Given a PR title and a list of relevant files with their classifications and AI-generated reasons, write a SHORT orienting summary for a code reviewer.
 
-The summary should:
-1. Start with a 1-2 sentence overview of what this PR does
-2. Call out the most important areas to focus on (security-sensitive changes, API contract changes, infra changes)
-3. Note any patterns across the changes (e.g., "Most changes are in the payment service" or "This is primarily a refactor with one behavioral change in X")
-4. Be 3-5 short paragraphs — enough to orient the reviewer, not a full analysis
+Keep it tight — at most 3-4 sentences total (one short paragraph, or two at most). Cover only:
+1. What this PR does, in one or two sentences.
+2. The single most important thing to focus on, or the overall shape (e.g. "mostly a refactor with one behavioral change in X").
 
-Format the summary as separate paragraphs separated by blank lines. Each paragraph should cover a distinct aspect (overview, critical areas, patterns, etc.). No JSON, no markdown headers, no bullet points — just well-structured prose paragraphs."#;
+Do not enumerate files, restate per-file reasons, or list every risk — a separate triage step already surfaces the specific risks. Be brief; the reviewer wants orientation, not analysis. No JSON, no markdown headers, no bullet points — just one or two short prose paragraphs."#;
 
 pub const GROUPING_PROMPT: &str = r#"You are a code review assistant. Given a PR title and a list of relevant files with their classifications and reasons, group the files into logical change sets.
 
