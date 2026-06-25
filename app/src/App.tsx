@@ -12,6 +12,7 @@ import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
+import { TriageCard } from "./components/TriageCard";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
 import { ReviewPicker } from "./components/ReviewPicker";
@@ -37,6 +38,9 @@ function App() {
   const [showHunkSignificance, setShowHunkSignificance] = useState(true);
   const [showAiNotes, setShowAiNotes] = useState(true);
   const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
+  const [expandAllHunks, setExpandAllHunks] = useState(false);
+  // Set when jumping from the triage card so the diff scrolls to the risk's line.
+  const [pendingJump, setPendingJump] = useState<{ path: string; line: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -69,7 +73,12 @@ function App() {
 
   const handleSettingsClose = useCallback(() => {
     setSettingsOpen(false);
-    invoke<Settings>("get_settings").then((s) => { settingsRef.current = s; }).catch(() => {});
+    invoke<Settings>("get_settings").then((s) => {
+      settingsRef.current = s;
+      // Re-apply settings that drive live rendering so changes take effect without
+      // a restart (the next file open picks up expand_all_hunks).
+      setExpandAllHunks(s.expand_all_hunks ?? false);
+    }).catch(() => {});
   }, []);
 
   const addToast = useCallback((type: ToastData["type"], message: string) => {
@@ -165,11 +174,18 @@ function App() {
 
   // ── Keyboard shortcuts (ported from the CLI/TUI; see useKeyboardShortcuts) ──
   function selectAdjacentFile(delta: 1 | -1) {
-    if (!activeTab?.manifest || !activeTab.selectedFile) return;
+    if (!activeTab?.manifest) return;
     const order = visibleOrderRef.current.length
       ? visibleOrderRef.current
       : activeTab.manifest.files.map((f) => f.path);
     const byPath = (p: string) => activeTab.manifest!.files.find((f) => f.path === p);
+    // No file selected yet (e.g. sitting on the triage card) — start at the top
+    // of the current order so ] / [ begin the guided walk.
+    if (!activeTab.selectedFile) {
+      const first = byPath(order[0]);
+      if (first) setSelectedFile(first);
+      return;
+    }
     const i = order.indexOf(activeTab.selectedFile.path);
     if (i === -1) {
       // Current file is filtered out of the list — jump to the first visible one.
@@ -244,17 +260,20 @@ function App() {
 
   function buildReviewTab(id: string, manifest: ReviewManifest): Tab {
     const hasGroups = (manifest.change_groups ?? []).length > 0;
+    const hasTriage = (manifest.triage?.review_order ?? []).length > 0;
     return {
       id,
       manifest,
       loading: null,
-      selectedFile: manifest.files.length > 0 ? manifest.files[0] : null,
+      // Large PRs default to the guided fastest-path view; no file pre-selected so
+      // the triage card shows first.
+      selectedFile: hasTriage ? null : manifest.files.length > 0 ? manifest.files[0] : null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
-      sidebarView: hasGroups ? "groups" : "category",
+      sidebarView: hasTriage ? "guided" : hasGroups ? "groups" : "category",
       isRefreshing: false,
       lastCommentCount: 0,
     };
@@ -306,6 +325,7 @@ function App() {
         setShowHunkSignificance(settings.show_hunk_significance ?? true);
         setShowAiNotes(settings.show_ai_notes ?? true);
         setHunkFilter(settings.hunk_filter || "all");
+        setExpandAllHunks(settings.expand_all_hunks ?? false);
       } catch {
         // Use defaults on failure
       }
@@ -789,6 +809,25 @@ function App() {
 
   function setSelectedFile(file: FileDiff) {
     updateTab(activeTabId,(t) => ({ ...t, selectedFile: file }));
+  }
+
+  // Jump from the triage card to a flagged risk: select the file and (when known)
+  // scroll the diff to the risk's line.
+  function handleTriageJump(path: string, startLine?: number | null) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    const file = tab?.manifest?.files.find((f) => f.path === path);
+    if (!file) return;
+    setSelectedFile(file);
+    setPendingJump(startLine ? { path, line: startLine } : null);
+  }
+
+  // Enter the guided path: switch to the Guided view and open its first file.
+  function handleStartGuided() {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    const order = tab?.manifest?.triage?.review_order ?? [];
+    const first = order.map((o) => tab!.manifest!.files.find((f) => f.path === o.path)).find(Boolean) ?? null;
+    updateTab(activeTabId, (t) => ({ ...t, sidebarView: "guided", selectedFile: first ?? t.selectedFile }));
+    setPendingJump(null);
   }
 
   function toggleViewed(filePath: string) {
@@ -1560,6 +1599,7 @@ function App() {
           <FileSidebar
             files={activeTab.manifest.files}
             changeGroups={activeTab.manifest.change_groups ?? []}
+            triage={activeTab.manifest.triage}
             selectedFile={activeTab.selectedFile}
             onSelectFile={setSelectedFile}
             viewedFiles={activeTab.viewedFiles}
@@ -1597,11 +1637,22 @@ function App() {
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
-            ) : activeTab.manifest.summary ? (
+              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} initialScrollLine={pendingJump && pendingJump.path === activeTab.selectedFile.path ? pendingJump.line : null} onInitialScrollConsumed={() => setPendingJump(null)} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+            ) : (activeTab.manifest.triage || activeTab.manifest.summary) ? (
               <div className="pr-summary">
-                <h3>PR Summary</h3>
-                <SummaryParagraphs text={activeTab.manifest.summary} />
+                {activeTab.manifest.triage && (
+                  <TriageCard
+                    triage={activeTab.manifest.triage}
+                    onJump={handleTriageJump}
+                    onStartGuided={handleStartGuided}
+                  />
+                )}
+                {activeTab.manifest.summary && (
+                  <>
+                    <h3>PR Summary</h3>
+                    <SummaryParagraphs text={activeTab.manifest.summary} />
+                  </>
+                )}
               </div>
             ) : (
               <div className="no-file-selected">Select a file to review</div>

@@ -32,6 +32,26 @@ export interface ChangeGroup {
   file_paths: string[];
 }
 
+/** One of the 2-3 highest-risk changes, shown in the triage card. */
+export interface TopRisk {
+  title: string;
+  detail: string;
+  path: string;
+  start_line?: number | null;
+}
+
+/** A file in the contract-first "fastest path" order, with a one-line rationale. */
+export interface ReviewOrderItem {
+  path: string;
+  rationale: string;
+}
+
+/** Triage-first guidance for large PRs (absent on small PRs). */
+export interface TriageReport {
+  top_risks: TopRisk[];
+  review_order: ReviewOrderItem[];
+}
+
 export interface ReviewManifest {
   pr_title: string;
   pr_url: string;
@@ -42,6 +62,8 @@ export interface ReviewManifest {
   head_sha: string;
   summary: string;
   change_groups: ChangeGroup[];
+  /** Triage guidance; null/undefined for small PRs. */
+  triage?: TriageReport | null;
   files: FileDiff[];
 }
 
@@ -93,7 +115,7 @@ export type CommentThreadsState =
   | { status: "loaded"; threads: ReviewThread[] }
   | { status: "error"; message: string };
 
-export type SidebarView = "groups" | "comments" | "category" | "tree";
+export type SidebarView = "guided" | "groups" | "comments" | "category" | "tree";
 
 export type DiffViewMode = "split" | "unified";
 
@@ -164,6 +186,7 @@ export interface Settings {
   activity_per_watch_cap: number;
   activity_mini_player: boolean;
   show_approved_prs: boolean;
+  expand_all_hunks: boolean;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";

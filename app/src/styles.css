@@ -4306,3 +4306,95 @@ mark.search-highlight-current {
   0%, 100% { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
   50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent), 0 8px 24px rgba(0, 0, 0, 0.45); }
 }
+/* ─── Triage-first: what-matters card + guided path ─────────────────────── */
+.triage-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--risk-critical);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 0 0 20px;
+}
+.triage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.triage-header h3 { margin: 0; font-size: 15px; color: var(--text-primary); }
+.triage-start {
+  background: var(--accent);
+  color: #0d1117;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.triage-empty { color: var(--text-secondary); font-size: 13px; margin: 0; }
+.triage-risks { list-style: none; margin: 0; padding: 0; counter-reset: triage; }
+.triage-risk { margin: 0 0 8px; }
+.triage-risk-jump {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px 8px 34px;
+  position: relative;
+  cursor: pointer;
+  counter-increment: triage;
+}
+.triage-risk-jump:hover { border-color: var(--accent); }
+.triage-risk-jump::before {
+  content: counter(triage);
+  position: absolute;
+  left: 10px;
+  top: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--risk-critical-bg);
+  color: var(--risk-critical);
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.triage-risk-title { display: block; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.triage-risk-detail { display: block; font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.triage-risk-path { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+.guided-list { padding: 4px 0; }
+.guided-empty { color: var(--text-muted); font-size: 12px; padding: 12px; }
+.guided-row { display: flex; align-items: flex-start; gap: 6px; padding: 2px 4px; }
+.guided-num {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-top: 8px;
+}
+.guided-row-main { flex: 1; min-width: 0; }
+.guided-rationale {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 0 8px 4px 30px;
+  line-height: 1.4;
+}
+.guided-watch { color: var(--risk-critical); margin-right: 4px; }
+
+.settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}

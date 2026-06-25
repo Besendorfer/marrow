@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FileDiff, RiskLevel, ChangeGroup, HunkSignificanceFilter, SidebarView, ReviewThread } from "../types";
+import type { FileDiff, RiskLevel, ChangeGroup, HunkSignificanceFilter, SidebarView, ReviewThread, TriageReport } from "../types";
 import { getFileName } from "../utils";
 
 interface FileSidebarProps {
   files: FileDiff[];
   changeGroups: ChangeGroup[];
+  /** Triage guidance (top risks + contract-first order); enables the Guided view. */
+  triage?: TriageReport | null;
   selectedFile: FileDiff | null;
   onSelectFile: (file: FileDiff) => void;
   viewedFiles: Set<string>;
@@ -392,6 +394,7 @@ function CommentFileList({
 export function FileSidebar({
   files,
   changeGroups,
+  triage,
   selectedFile,
   onSelectFile,
   viewedFiles,
@@ -527,6 +530,30 @@ export function FileSidebar({
     });
   }, [visibleGrouped]);
 
+  const hasTriage = !!triage && triage.review_order.length > 0;
+
+  // Files referenced by a top risk — marked with a ⚠ in the guided path.
+  const topRiskPaths = useMemo(
+    () => new Set((triage?.top_risks ?? []).map((r) => r.path)),
+    [triage],
+  );
+
+  // The contract-first guided path: review_order mapped to visible files, with
+  // each file's rationale and whether it carries a top risk.
+  const guidedFiles = useMemo(() => {
+    if (!triage) return [];
+    return triage.review_order
+      .map((item) => {
+        const file = filesByPath.get(item.path);
+        if (!file) return null;
+        return { file, rationale: item.rationale, watch: topRiskPaths.has(item.path) };
+      })
+      .filter(
+        (x): x is { file: FileDiff; rationale: string; watch: boolean } =>
+          x !== null && isVisible(x.file),
+      );
+  }, [triage, filesByPath, visiblePaths, topRiskPaths]);
+
   // The flat top-to-bottom order of file rows as actually displayed for the
   // current view — respecting filters and collapsed sections, deduped to first
   // occurrence (critical files also appear under their category). Drives the
@@ -537,7 +564,9 @@ export function FileSidebar({
     const push = (path: string) => {
       if (!seen.has(path)) { seen.add(path); out.push(path); }
     };
-    if (view === "groups") {
+    if (view === "guided") {
+      guidedFiles.forEach((g) => push(g.file.path));
+    } else if (view === "groups") {
       changeGroups.forEach((group, idx) => {
         if (collapsed.has(`group:${idx}`)) return;
         for (const p of group.file_paths) {
@@ -557,7 +586,7 @@ export function FileSidebar({
     }
     // "comments" view drives a separate selection model — emit nothing.
     return out;
-  }, [view, changeGroups, collapsed, filesByPath, visiblePaths, ungroupedFiles, visibleCriticalFiles, visibleCategories, visibleGrouped, visibleFileTree]);
+  }, [view, guidedFiles, changeGroups, collapsed, filesByPath, visiblePaths, ungroupedFiles, visibleCriticalFiles, visibleCategories, visibleGrouped, visibleFileTree]);
 
   useEffect(() => {
     onVisibleFilesChange?.(navigableOrder);
@@ -573,6 +602,15 @@ export function FileSidebar({
         <div className="sidebar-header-top">
           <span className="sidebar-title">Files</span>
           <div className="sidebar-view-toggle">
+            {hasTriage && (
+              <button
+                className={view === "guided" ? "active" : ""}
+                onClick={() => setView("guided")}
+                title="Guided fastest path — contract-first order, risks called out"
+              >
+                Guided
+              </button>
+            )}
             {hasGroups && (
               <button
                 className={view === "groups" ? "active" : ""}
@@ -650,7 +688,38 @@ export function FileSidebar({
         </div>
       )}
       <nav className="file-list">
-        {view === "comments" ? (
+        {view === "guided" ? (
+          <div className="file-group guided-list">
+            {guidedFiles.length === 0 ? (
+              <div className="guided-empty">No files match the current filters.</div>
+            ) : (
+              guidedFiles.map(({ file, rationale, watch }, i) => (
+                <div key={file.path} className="guided-row">
+                  <span className="guided-num">{i + 1}</span>
+                  <div className="guided-row-main">
+                    <FileItem
+                      file={file}
+                      selectedFile={selectedFile}
+                      isViewed={viewedFiles.has(file.path)}
+                      isStale={staleViewedFiles.has(file.path)}
+                      onSelectFile={onSelectFile}
+                      onToggleViewed={onToggleViewed}
+                      showPathHint
+                    />
+                    {(rationale || watch) && (
+                      <div className="guided-rationale">
+                        {watch && (
+                          <span className="guided-watch" title="Flagged as a top risk to review">&#9888;</span>
+                        )}
+                        {rationale}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        ) : view === "comments" ? (
           <CommentFileList
             threads={commentThreads}
             selectedFile={selectedCommentFile}

@@ -112,6 +112,13 @@ interface DiffViewerProps {
   searchMatches?: SearchMatch[];
   currentSearchMatch?: SearchMatch | null;
   searchQuery?: string;
+  /** When true, open with all hunks expanded instead of auto-collapsing
+   * low-significance ones (issue #55 setting). */
+  expandAllHunks?: boolean;
+  /** Line (head side) to scroll to on mount — set when arriving via a triage
+   * jump. Consumed once, then `onInitialScrollConsumed` is called. */
+  initialScrollLine?: number | null;
+  onInitialScrollConsumed?: () => void;
 }
 
 /** Imperative API for keyboard-driven navigation, folding, and the line cursor. */
@@ -1470,7 +1477,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery, expandAllHunks, initialScrollLine, onInitialScrollConsumed }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1621,7 +1628,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   // Low hunks start collapsed when significance is shown; state resets on file change
   // via the key prop on DiffViewer (see App.tsx)
   const [collapsedHunks, setCollapsedHunks] = useState<Set<number>>(() => {
-    if (!showHunkSignificance || hunks.length <= 1) return new Set<number>();
+    if (expandAllHunks || !showHunkSignificance || hunks.length <= 1) return new Set<number>();
     return new Set(
       hunks.filter((h) => h.significance === "low").map((h) => h.index)
     );
@@ -2115,6 +2122,26 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     }
     setPendingScroll(null);
   }, [pendingScroll]);
+
+  // Arriving via a triage jump: expand the hunk containing the target line and
+  // scroll to it, once. Keyed by file path upstream, so this runs on a fresh
+  // mount per jumped-to file.
+  useEffect(() => {
+    if (initialScrollLine == null) return;
+    const hunk = hunks.find((h) =>
+      h.lines.some((l) => l.newLineNum === initialScrollLine || l.oldLineNum === initialScrollLine),
+    );
+    if (hunk && collapsedHunks.has(hunk.index)) {
+      setCollapsedHunks((prev) => {
+        const n = new Set(prev);
+        n.delete(hunk.index);
+        return n;
+      });
+    }
+    setPendingScroll(`diff-line-${initialScrollLine}`);
+    onInitialScrollConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialScrollLine]);
 
   // No dep array: the handle is only ever called imperatively (on a keypress),
   // so rebuilding it each render keeps it always-fresh for free.

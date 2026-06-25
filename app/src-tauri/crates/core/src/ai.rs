@@ -49,6 +49,42 @@ pub fn extract_json_array(text: &str) -> Result<serde_json::Value, String> {
     ))
 }
 
+/// Extract a JSON object from text that may contain markdown fences or preamble.
+/// Mirror of [`extract_json_array`] for the triage pass, which returns an object.
+pub fn extract_json_object(text: &str) -> Result<serde_json::Value, String> {
+    // Try direct parse.
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+        if val.is_object() {
+            return Ok(val);
+        }
+    }
+
+    // Try to find a JSON object in the text (first '{' to last '}').
+    if let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) {
+        if end > start {
+            let candidate = &text[start..=end];
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
+                if val.is_object() {
+                    return Ok(val);
+                }
+            }
+        }
+    }
+
+    // Try stripping markdown code fences.
+    let stripped = text.replace("```json", "").replace("```", "");
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(stripped.trim()) {
+        if val.is_object() {
+            return Ok(val);
+        }
+    }
+
+    Err(format!(
+        "Could not extract JSON object from AI response. Raw response:\n{}",
+        &text[..text.len().min(500)]
+    ))
+}
+
 /// The AI provider a config resolves to. A pure decision, separated from
 /// construction so it's testable without hitting AWS/network.
 #[derive(Debug, PartialEq, Eq)]
@@ -419,6 +455,20 @@ mod tests {
     // (model, override, has_base_url, has_anthropic_key)
     fn pick(model: &str, ov: &str, base: bool, anthropic: bool) -> Provider {
         choose_provider(model, ov, base, anthropic)
+    }
+
+    #[test]
+    fn extract_json_object_handles_fences_and_preamble() {
+        // Direct object.
+        assert!(extract_json_object(r#"{"a":1}"#).unwrap().is_object());
+        // Markdown-fenced.
+        let fenced = "```json\n{\"a\": 1}\n```";
+        assert_eq!(extract_json_object(fenced).unwrap()["a"], 1);
+        // Preamble + object.
+        let preamble = "Here is the result:\n{\"a\": 2}\nThanks!";
+        assert_eq!(extract_json_object(preamble).unwrap()["a"], 2);
+        // An array is not an object.
+        assert!(extract_json_object("[1,2,3]").is_err());
     }
 
     #[test]
