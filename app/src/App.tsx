@@ -49,9 +49,12 @@ function App() {
   const searchRef = useRef<SearchBarHandle>(null);
   const diffViewerRef = useRef<DiffViewerHandle>(null);
   // Visible file order from the sidebar, used by the [ / ] navigation shortcuts.
+  // Mirrored into state so the guided nav bar can show "file N of M" reactively.
   const visibleOrderRef = useRef<string[]>([]);
+  const [visibleOrder, setVisibleOrder] = useState<string[]>([]);
   const handleVisibleFilesChange = useCallback((paths: string[]) => {
     visibleOrderRef.current = paths;
+    setVisibleOrder(paths);
   }, []);
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
@@ -1625,6 +1628,33 @@ function App() {
             onVisibleFilesChange={handleVisibleFilesChange}
           />
           <div className="diff-pane">
+            {activeTab.sidebarView === "guided" && activeTab.selectedFile && (() => {
+              const idx = visibleOrder.indexOf(activeTab.selectedFile.path);
+              const total = visibleOrder.length;
+              return (
+                <div className="guided-nav">
+                  <button
+                    className="guided-nav-btn"
+                    onClick={() => selectAdjacentFile(-1)}
+                    disabled={idx <= 0}
+                    title="Previous file in the guided path ([)"
+                  >
+                    &larr; Prev
+                  </button>
+                  <span className="guided-nav-pos">
+                    {idx >= 0 ? `File ${idx + 1} of ${total}` : `${total} files`}
+                  </span>
+                  <button
+                    className="guided-nav-btn"
+                    onClick={() => selectAdjacentFile(1)}
+                    disabled={idx < 0 || idx >= total - 1}
+                    title="Next file in the guided path (])"
+                  >
+                    Next &rarr;
+                  </button>
+                </div>
+              );
+            })()}
             {activeTab.sidebarView === "comments" ? (
               activeTab.commentThreads.status === "loading" ? (
                 <div className="no-file-selected">Loading review threads...</div>

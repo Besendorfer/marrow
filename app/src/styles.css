@@ -876,7 +876,11 @@ body {
 .diff-viewer {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  /* Fill the diff pane's remaining height (so a guided nav bar above it doesn't
+     push the bottom out of an overflow:hidden pane). Equivalent to height:100%
+     when it's the only child. */
+  flex: 1;
+  min-height: 0;
 }
 
 .diff-viewer-critical .diff-header {
@@ -4372,6 +4376,30 @@ mark.search-highlight-current {
 .triage-risk-title { display: block; font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .triage-risk-detail { display: block; font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 .triage-risk-path { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+.guided-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+.guided-nav-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.guided-nav-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.guided-nav-btn:disabled { opacity: 0.4; cursor: default; }
+.guided-nav-pos { font-size: 12px; color: var(--text-secondary); }
 
 .guided-list { padding: 4px 0; }
 .guided-overview {
