@@ -832,12 +832,17 @@ function App() {
     setPendingJump(startLine ? { path, line: startLine } : null);
   }
 
-  // Enter the guided path: switch to the Guided view and open its first file.
+  // Enter the guided path: switch to the Guided view and open the first file that
+  // hasn't been reviewed yet (falling back to the first file if all are reviewed).
   function handleStartGuided() {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
-    const order = tab?.manifest?.triage?.review_order ?? [];
-    const first = order.map((o) => tab!.manifest!.files.find((f) => f.path === o.path)).find(Boolean) ?? null;
-    updateTab(activeTabId, (t) => ({ ...t, sidebarView: "guided", selectedFile: first ?? t.selectedFile }));
+    if (!tab?.manifest) return;
+    const order = tab.manifest.triage?.review_order ?? [];
+    const files = order
+      .map((o) => tab.manifest!.files.find((f) => f.path === o.path))
+      .filter((f): f is FileDiff => !!f);
+    const target = files.find((f) => !tab.viewedFiles.has(f.path)) ?? files[0] ?? null;
+    updateTab(activeTabId, (t) => ({ ...t, sidebarView: "guided", selectedFile: target ?? t.selectedFile }));
     setPendingJump(null);
   }
 
