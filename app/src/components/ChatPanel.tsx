@@ -61,12 +61,21 @@ function renderInline(text: string): React.ReactNode[] {
   return nodes;
 }
 
-/**
- * Minimal Markdown rendering: fenced ```code``` blocks (highlighted with
- * highlight.js) plus paragraphs with inline code and bold. Deliberately small —
- * the project has no Markdown dependency.
- */
-function ChatMarkdown({ content }: { content: string }) {
+/** A dim divider marking a gap where the AI used tools / thought between
+ * answer segments. Backed by a `[[thought:<secs>]]` marker in the content. */
+function ThoughtDivider({ seconds }: { seconds: number }) {
+  return (
+    <div className="chat-thought" aria-label={`Thought for ${seconds} seconds`}>
+      <span className="chat-thought-rule" />
+      <span className="chat-thought-label">Thought for {seconds}s</span>
+      <span className="chat-thought-rule" />
+    </div>
+  );
+}
+
+/** Fenced ```code``` blocks (highlighted with highlight.js) plus paragraphs with
+ * inline code and bold. Deliberately small — the project has no Markdown dep. */
+function RichText({ content }: { content: string }) {
   // Split on fenced code blocks, keeping the fences as delimiters.
   const segments = content.split(/(```[\s\S]*?```)/g);
   return (
@@ -85,6 +94,27 @@ function ChatMarkdown({ content }: { content: string }) {
             </p>
           ));
       })}
+    </>
+  );
+}
+
+/**
+ * Renders assistant content: splits out `[[thought:<secs>]]` markers (rendered as
+ * dim "Thought for Xs" dividers) and renders the text spans between them as
+ * minimal Markdown.
+ */
+function ChatMarkdown({ content }: { content: string }) {
+  // Capturing split → [text, secs, text, secs, text, …].
+  const parts = content.split(/\[\[thought:(\d+)\]\]/g);
+  return (
+    <>
+      {parts.map((part, i) =>
+        i % 2 === 1 ? (
+          <ThoughtDivider key={i} seconds={Number(part)} />
+        ) : part ? (
+          <RichText key={i} content={part} />
+        ) : null,
+      )}
     </>
   );
 }

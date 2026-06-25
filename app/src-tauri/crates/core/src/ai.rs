@@ -501,10 +501,12 @@ async fn stream_claude_cli(
     // The CLI resets the content-block index to 0 for each new assistant message,
     // so a tool call followed by more text reuses index 0 — index alone can't tell
     // blocks apart. Instead, a new *text block start* after we've already emitted
-    // text means a gap (tool use / thinking) happened; insert a blank line before
-    // that block's text so segments don't run together.
+    // text means a gap (tool use / thinking) happened. When text resumes we insert
+    // a `[[thought:<secs>]]` marker (the frontend renders it as a dim "Thought for
+    // Xs" divider), timing the gap from the last emitted text token.
     let mut emitted_text = false;
     let mut need_separator = false;
+    let mut last_text_at: Option<std::time::Instant> = None;
     if let Some(stdout) = child.stdout.take() {
         let mut reader = tokio::io::BufReader::new(stdout);
         let mut line = String::new();
@@ -530,12 +532,18 @@ async fn stream_claude_cli(
                 Some(CliEvent::Text(text)) => {
                     if !text.is_empty() {
                         if need_separator {
-                            full.push_str("\n\n");
-                            on(StreamUpdate::Delta("\n\n".to_string()));
+                            let secs = last_text_at
+                                .map(|t| t.elapsed().as_secs_f64().round() as u64)
+                                .unwrap_or(0)
+                                .max(1);
+                            let marker = format!("\n\n[[thought:{secs}]]\n\n");
+                            full.push_str(&marker);
+                            on(StreamUpdate::Delta(marker));
                             need_separator = false;
                         }
                         full.push_str(&text);
                         emitted_text = true;
+                        last_text_at = Some(std::time::Instant::now());
                         on(StreamUpdate::Delta(text));
                     }
                 }
@@ -811,9 +819,10 @@ mod tests {
     // The agent reuses content-block index 0 across messages, so a tool call
     // between two text blocks looks like (TextStart, Text, ToolUse, TextStart,
     // Text) with the same index — the separator must come from TextStart, not
-    // the index. This mirrors the loop logic in `stream_claude_cli`.
+    // the index. This mirrors the loop logic in `stream_claude_cli`, using a
+    // fixed duration in place of the wall-clock timing.
     #[test]
-    fn separator_inserted_between_text_blocks_across_a_tool_gap() {
+    fn thought_marker_inserted_between_text_blocks_across_a_tool_gap() {
         let events = [
             CliEvent::TextStart,
             CliEvent::Text("first.".to_string()),
@@ -834,7 +843,7 @@ mod tests {
                 CliEvent::Text(text) => {
                     if !text.is_empty() {
                         if need_separator {
-                            out.push_str("\n\n");
+                            out.push_str("\n\n[[thought:2]]\n\n");
                             need_separator = false;
                         }
                         out.push_str(&text);
@@ -844,7 +853,7 @@ mod tests {
                 CliEvent::ToolUse => {}
             }
         }
-        assert_eq!(out, "first.\n\nsecond.");
+        assert_eq!(out, "first.\n\n[[thought:2]]\n\nsecond.");
     }
 
     #[test]

@@ -4496,3 +4496,21 @@ mark.search-highlight-current {
   display: inline-block;
   animation: spin 1.2s linear infinite;
 }
+
+.chat-thought {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+.chat-thought-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.chat-thought-label {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
