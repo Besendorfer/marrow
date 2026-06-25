@@ -18,10 +18,15 @@ import { ToastContainer, createToast, type ToastData } from "./components/Toast"
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
 import { parsePrUrl, extractPrRef } from "./utils";
+
+/** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
+function isOpenerTab(tab: Tab): boolean {
+  return !tab.manifest && !tab.loading && !tab.error;
+}
 
 function App() {
   const nextTabId = useRef(1);
@@ -73,6 +78,7 @@ function App() {
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
 
   const checkForUpdates = useCallback(async (silent = false) => {
     if (updateStatusRef.current === "checking" || updateStatusRef.current === "downloading") return;
@@ -206,6 +212,8 @@ function App() {
       onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); },
       onNextTab: () => selectAdjacentTab(1),
       onPrevTab: () => selectAdjacentTab(-1),
+      onCloseTab: () => { if (activeTabId) closeTab(activeTabId); },
+      onNewTab: () => handleNewReview(),
       onNextHunk: () => diffViewerRef.current?.nextHunk(),
       onPrevHunk: () => diffViewerRef.current?.prevHunk(),
       onNextFinding: () => diffViewerRef.current?.nextFinding(),
@@ -642,6 +650,14 @@ function App() {
   tabsRef.current = tabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  // Latest tab handlers in refs so the once-mounted menu listeners never act on stale state.
+  const closeTabRef = useRef<(id: string) => void>(() => {});
+  const newTabRef = useRef<() => void>(() => {});
+  newTabRef.current = handleNewReview;
+  // Chrome-style confirm-quit: first Cmd+Q arms a hint, a second within the window quits.
+  const [showQuitHint, setShowQuitHint] = useState(false);
+  const quitArmedRef = useRef(false);
+  const quitTimerRef = useRef<number | null>(null);
   const checksMapRef = useRef(checksMap);
   checksMapRef.current = checksMap;
   const checksDismissedRef = useRef(checksDismissed);
@@ -1138,15 +1154,21 @@ function App() {
 
   function closeTab(tabId: string) {
     const idx = tabs.findIndex((t) => t.id === tabId);
+    const closing = tabs.find((t) => t.id === tabId);
     let next = tabs.filter((t) => t.id !== tabId);
     setChecksMap((prev) => {
       const copy = { ...prev };
       delete copy[tabId];
       return copy;
     });
-    // Closing the last tab drops back to a fresh opener tab so the tab bar
-    // (and a way to open a new PR) is always present.
     if (next.length === 0) {
+      // Closing the last *review* tab drops back to a fresh opener tab so the tab
+      // bar (and a way to open a PR) is always present. But closing the last tab
+      // when it's already an empty opener means the user is done — quit the app.
+      if (closing && isOpenerTab(closing)) {
+        exit(0);
+        return;
+      }
       const opener = createOpenerTab();
       next = [opener];
       setTabs(next);
@@ -1159,6 +1181,49 @@ function App() {
       setActiveTabId(next[newIdx].id);
     }
   }
+  closeTabRef.current = closeTab;
+
+  // Cmd+W / Cmd+T are owned by the native menu (see src-tauri/menu.rs) and arrive
+  // as these events rather than keydowns — the menu intercepts them before the
+  // webview's default window handling, which JS preventDefault couldn't reach.
+  useEffect(() => {
+    const unlistenClose = listen("menu-close-tab", () => {
+      const id = activeTabIdRef.current;
+      if (!id) return;
+      const tab = tabsRef.current.find((t) => t.id === id);
+      // On a review tab, skip Cmd+W while typing so it can't nuke a comment draft.
+      // Opener tabs only hold a URL field, so allow Cmd+W there (it may quit the app).
+      if (tab && !isOpenerTab(tab)) {
+        const el = document.activeElement as HTMLElement | null;
+        if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      }
+      closeTabRef.current(id);
+    });
+    const unlistenNew = listen("menu-new-tab", () => newTabRef.current());
+    // Chrome-style: first Cmd+Q arms a "press again to quit" hint; a second press
+    // within 2s quits. Otherwise the hint fades and the arm resets.
+    const unlistenQuit = listen("menu-quit-request", () => {
+      if (quitArmedRef.current) {
+        if (quitTimerRef.current !== null) clearTimeout(quitTimerRef.current);
+        exit(0);
+        return;
+      }
+      quitArmedRef.current = true;
+      setShowQuitHint(true);
+      if (quitTimerRef.current !== null) clearTimeout(quitTimerRef.current);
+      quitTimerRef.current = window.setTimeout(() => {
+        quitArmedRef.current = false;
+        setShowQuitHint(false);
+        quitTimerRef.current = null;
+      }, 2000);
+    });
+    return () => {
+      unlistenClose.then((fn) => fn());
+      unlistenNew.then((fn) => fn());
+      unlistenQuit.then((fn) => fn());
+      if (quitTimerRef.current !== null) clearTimeout(quitTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -1306,6 +1371,14 @@ function App() {
         />
       )}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
+      <div
+        className={`quit-hint${showQuitHint ? " visible" : ""}`}
+        role="status"
+        aria-live="polite"
+        aria-hidden={!showQuitHint}
+      >
+        Press <kbd>⌘Q</kbd> again to quit
+      </div>
     </>
   );
 

@@ -1872,6 +1872,41 @@ tr.cursor-selected td {
   overflow-y: auto;
 }
 
+/* ─── Confirm-quit hint (Chrome-style "press ⌘Q again") ────────────────── */
+
+.quit-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 15%;
+  z-index: 200;
+  padding: 12px 22px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.32);
+  pointer-events: none;
+  /* Kept mounted so it can fade both in and out. */
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  transition: opacity 240ms ease, transform 240ms ease;
+}
+
+.quit-hint.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.quit-hint kbd {
+  font: inherit;
+  font-weight: 600;
+  padding: 1px 6px;
+  margin: 0 2px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
 /* ─── Keyboard Help Modal ──────────────────────────────────────────────── */
 
 .kbd-help-modal {

@@ -1,4 +1,6 @@
 mod commands;
+#[cfg(target_os = "macos")]
+mod menu;
 
 use commands::AppState;
 use marrow_core::pr_parser;
@@ -18,6 +20,17 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
+        .on_menu_event(|app, event| {
+            // Cmd+W / Cmd+T are routed to the frontend, which owns the tab model.
+            // The frontend skips closing when a text field is focused. Cmd+Q has no
+            // accelerator (see menu.rs), so the only quit path is this explicit item.
+            match event.id().as_ref() {
+                "close_tab" => { let _ = app.emit("menu-close-tab", ()); }
+                "new_tab" => { let _ = app.emit("menu-new-tab", ()); }
+                "quit_request" => { let _ = app.emit("menu-quit-request", ()); }
+                _ => {}
+            }
+        })
         .manage(AppState {
             manifest_path: Mutex::new(manifest_path),
             pending_deep_link: Mutex::new(None),
@@ -25,6 +38,13 @@ pub fn run() {
             frontend_ready: Mutex::new(false),
         })
         .setup(|app| {
+            // Custom menu intercepts Ctrl+W / Ctrl+Q at the native layer (see menu.rs).
+            #[cfg(target_os = "macos")]
+            {
+                let menu = menu::build_menu(app.handle())?;
+                app.set_menu(menu)?;
+            }
+
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event: tauri_plugin_deep_link::OpenUrlEvent| {
                 if let Some(url) = event.urls().first() {

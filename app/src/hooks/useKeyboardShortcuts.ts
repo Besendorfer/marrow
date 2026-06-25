@@ -20,6 +20,10 @@ export interface ShortcutHandlers {
   /** Cycle to the next / previous tab (Ctrl+Tab / Ctrl+Shift+Tab). */
   onNextTab: () => void;
   onPrevTab: () => void;
+  /** Close the active tab (Ctrl+W on Win/Linux; Cmd+W is handled by the native menu on macOS). */
+  onCloseTab: () => void;
+  /** Open a new tab (Ctrl+T on Win/Linux; Cmd+T is handled by the native menu on macOS). */
+  onNewTab: () => void;
   // Tier 2/3 — diff-internal navigation/folding (no-ops when no diff is shown).
   onNextHunk: () => void;
   onPrevHunk: () => void;
@@ -85,6 +89,20 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
     function onKey(e: KeyboardEvent) {
       const h = handlersRef.current;
       const { enabled, overlayOpen } = optionsRef.current;
+
+      // Windows/Linux tab control (macOS uses Cmd via the native menu). Ctrl+W closes
+      // the active tab (when not typing), Ctrl+T opens a new tab, Ctrl+Q is a no-op.
+      // Handled before the typing guard so Ctrl+Q never quits even from a focused field.
+      if (e.ctrlKey && !e.metaKey && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === "q") { e.preventDefault(); return; }
+        if (k === "t") { e.preventDefault(); h.onNewTab(); return; }
+        if (k === "w") {
+          e.preventDefault();
+          if (!isEditable(e.target)) h.onCloseTab();
+          return;
+        }
+      }
 
       // Typing into a field never triggers shortcuts.
       if (isEditable(e.target)) return;
