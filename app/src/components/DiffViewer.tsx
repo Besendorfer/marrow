@@ -1859,18 +1859,28 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       .sort((a, b) => a.top - b.top);
   };
 
-  const scrollDiffTo = (top: number) =>
-    diffContentRef.current?.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-
   const goToAdjacentHunk = (dir: 1 | -1) => {
     const c = diffContentRef.current;
     if (!c) return;
-    const offs = hunkOffsets();
-    const target =
-      dir > 0
-        ? offs.find((o) => o.top > c.scrollTop + 4)
-        : [...offs].reverse().find((o) => o.top < c.scrollTop - 4);
-    if (target) scrollDiffTo(target.top);
+    const rows = navRows();
+    if (!rows.length) return;
+    // Step by hunk relative to the hunk the cursor is *in* (not its pixel offset),
+    // then move the cursor onto the target hunk's first navigable row (its first
+    // code line, or its fold row when collapsed) — same as j/k, hunk-sized jumps.
+    const offs = hunkOffsets(); // sorted by top
+    if (!offs.length) return;
+    const curTop = offsetWithin(rows[cursorIndex(rows)], c);
+    // Current hunk = the last one anchored at/above the cursor.
+    let cur = 0;
+    for (let i = 0; i < offs.length; i++) {
+      if (offs[i].top <= curTop + 4) cur = i;
+      else break;
+    }
+    const targetPos = cur + dir;
+    if (targetPos < 0 || targetPos >= offs.length) return;
+    const target = offs[targetPos];
+    const idx = rows.findIndex((r) => offsetWithin(r, c) >= target.top - 1);
+    moveCursorTo(rows, idx >= 0 ? idx : (dir > 0 ? rows.length - 1 : 0));
   };
   const nextHunk = () => goToAdjacentHunk(1);
   const prevHunk = () => goToAdjacentHunk(-1);
