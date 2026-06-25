@@ -1,14 +1,27 @@
 use serde::Deserialize;
 
+/// An AI review note (highlight) on a file, surfaced to the chat so questions
+/// like "is the warning on L287-318 legitimate?" resolve against it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatHighlight {
+    pub start_line: u64,
+    pub end_line: u64,
+    pub severity: String,
+    pub comment: String,
+}
+
 /// One file's diff/content supplied as grounding for the chat. `head_content` is
 /// the full post-change file (present only when the frontend chooses to include
-/// it); `unified_diff` is always present.
+/// it); `unified_diff` is always present. `highlights` are the AI notes the
+/// reviewer sees inline on this file.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatFileContext {
     pub path: String,
     pub unified_diff: String,
     #[serde(default)]
     pub head_content: Option<String>,
+    #[serde(default)]
+    pub highlights: Vec<ChatHighlight>,
 }
 
 /// The grounding context for a chat request: PR metadata plus the file(s) in
@@ -70,6 +83,20 @@ pub fn build_chat_system(ctx: &ChatContext) -> String {
         }
         out.push_str(&format!("\n=== FILE: {} ===\n", file.path));
 
+        // AI review notes the reviewer sees inline — so "the warning on L287-318"
+        // resolves to something concrete.
+        if !file.highlights.is_empty() {
+            out.push_str("AI review notes on this file:\n");
+            for h in &file.highlights {
+                let lines = if h.start_line == h.end_line {
+                    format!("L{}", h.start_line)
+                } else {
+                    format!("L{}-{}", h.start_line, h.end_line)
+                };
+                out.push_str(&format!("- [{}] {}: {}\n", h.severity, lines, h.comment));
+            }
+        }
+
         let diff = truncate(&file.unified_diff, PER_FILE_DIFF_BUDGET.min(remaining));
         remaining = remaining.saturating_sub(diff.chars().count());
         out.push_str("Diff:\n");
@@ -102,6 +129,7 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 unified_diff: diff.to_string(),
                 head_content: content.map(str::to_string),
+                highlights: vec![],
             }],
         }
     }
@@ -140,11 +168,27 @@ mod tests {
                     path: format!("f{i}.rs"),
                     unified_diff: big.clone(),
                     head_content: Some(big.clone()),
+                    highlights: vec![],
                 })
                 .collect(),
         };
         let sys = build_chat_system(&ctx);
         // Preamble + context, but bounded well under the sum of all inputs.
         assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 2000);
+    }
+
+    #[test]
+    fn highlights_are_rendered_with_line_ranges() {
+        let mut ctx = ctx_with("@@ -1 +1 @@\n+x\n", None);
+        ctx.files[0].highlights = vec![ChatHighlight {
+            start_line: 287,
+            end_line: 318,
+            severity: "warning".to_string(),
+            comment: "SSE parser splits on \\n only".to_string(),
+        }];
+        let sys = build_chat_system(&ctx);
+        assert!(sys.contains("AI review notes"));
+        assert!(sys.contains("L287-318"));
+        assert!(sys.contains("SSE parser splits"));
     }
 }

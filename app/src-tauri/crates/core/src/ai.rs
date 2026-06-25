@@ -430,7 +430,7 @@ async fn stream_claude_cli(
     turns: &[ChatTurn],
     on_delta: &mut (dyn FnMut(String) + Send),
 ) -> Result<String, String> {
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
     let mut prompt = String::new();
     prompt.push_str("System instructions:\n");
@@ -445,8 +445,18 @@ async fn stream_claude_cli(
     }
     prompt.push_str("Assistant:");
 
+    // `stream-json` + `--include-partial-messages` makes the CLI emit NDJSON with
+    // token-level `content_block_delta` events. Plain `--print` buffers the whole
+    // answer and prints it at the end (no visible streaming), so we parse the
+    // event stream instead.
     let mut child = Command::new(resolve_claude_binary())
-        .args(["--model", model, "--print"])
+        .args([
+            "--model", model,
+            "--print",
+            "--output-format", "stream-json",
+            "--include-partial-messages",
+            "--verbose",
+        ])
         .env("CLAUDECODE", "") // prevent recursive Claude Code invocation
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -470,36 +480,33 @@ async fn stream_claude_cli(
         // Drop stdin to close it, signaling EOF.
     }
 
+    // Read NDJSON line by line. Each `content_block_delta` with a `text_delta`
+    // carries one token chunk of the answer; everything else (init, usage,
+    // thinking deltas, result) is ignored. Splitting on `\n` never bisects a
+    // multibyte char, so each complete line decodes cleanly.
     let mut full = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let mut buf = [0u8; 4096];
-        let mut pending: Vec<u8> = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        let mut reader = tokio::io::BufReader::new(stdout);
+        let mut line = String::new();
         loop {
-            let n = stdout
-                .read(&mut buf)
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
                 .await
                 .map_err(|e| format!("Failed to read claude stdout: {}", e))?;
             if n == 0 {
                 break;
             }
-            pending.extend_from_slice(&buf[..n]);
-            // Emit only up to the last valid UTF-8 boundary; keep the remainder
-            // (a possibly-split multibyte char) buffered for the next read.
-            let valid = match std::str::from_utf8(&pending) {
-                Ok(s) => s.len(),
-                Err(e) => e.valid_up_to(),
-            };
-            if valid > 0 {
-                let text = String::from_utf8_lossy(&pending[..valid]).to_string();
-                pending.drain(..valid);
-                full.push_str(&text);
-                on_delta(text);
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
             }
-        }
-        if !pending.is_empty() {
-            let text = String::from_utf8_lossy(&pending).to_string();
-            full.push_str(&text);
-            on_delta(text);
+            if let Some(text) = cli_text_delta(trimmed) {
+                if !text.is_empty() {
+                    full.push_str(&text);
+                    on_delta(text);
+                }
+            }
         }
     }
 
@@ -518,6 +525,25 @@ async fn stream_claude_cli(
         return Err("claude CLI returned empty response".to_string());
     }
     Ok(full)
+}
+
+/// Extract the answer text from one NDJSON line of `claude --output-format
+/// stream-json --include-partial-messages`. Returns the text of a
+/// `content_block_delta` / `text_delta` event, or None for any other line.
+fn cli_text_delta(line: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(line).ok()?;
+    if json["type"] != "stream_event" {
+        return None;
+    }
+    let event = &json["event"];
+    if event["type"] != "content_block_delta" {
+        return None;
+    }
+    let delta = &event["delta"];
+    if delta["type"] != "text_delta" {
+        return None; // skip thinking_delta and others
+    }
+    delta["text"].as_str().map(str::to_string)
 }
 
 /// Upper bound on generated tokens for the Anthropic API (required by the API;
@@ -709,6 +735,20 @@ mod tests {
     // (model, override, has_base_url, has_anthropic_key)
     fn pick(model: &str, ov: &str, base: bool, anthropic: bool) -> Provider {
         choose_provider(model, ov, base, anthropic)
+    }
+
+    #[test]
+    fn cli_text_delta_extracts_only_text_deltas() {
+        let d = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}}"#;
+        assert_eq!(cli_text_delta(d).as_deref(), Some("Hello"));
+        // thinking deltas, non-stream events, and init lines yield nothing.
+        let thinking = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}}"#;
+        assert_eq!(cli_text_delta(thinking), None);
+        let init = r#"{"type":"system","subtype":"init"}"#;
+        assert_eq!(cli_text_delta(init), None);
+        let result = r#"{"type":"result","result":"Hello"}"#;
+        assert_eq!(cli_text_delta(result), None);
+        assert_eq!(cli_text_delta("not json"), None);
     }
 
     #[test]

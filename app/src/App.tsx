@@ -591,16 +591,18 @@ function App() {
   const chatRequestIdRef = useRef<Record<string, string>>({});
 
   /** The diff/content context for the chat, scoped to the selected file or the
-   * whole PR (relevant files only). Whole-PR omits full contents to save budget. */
-  function buildChatFiles(tab: Tab): Array<{ path: string; unified_diff: string; head_content?: string }> {
+   * whole PR (relevant files only). Whole-PR omits full contents to save budget.
+   * AI highlights (the inline notes) ride along so questions about "the warning
+   * on L287-318" resolve against them. */
+  function buildChatFiles(tab: Tab): Array<{ path: string; unified_diff: string; head_content?: string; highlights: FileDiff["highlights"] }> {
     const manifest = tab.manifest!;
     if (tab.chat.includeWholePr) {
       const relevant = manifest.files.filter((f) => f.classification === "RELEVANT");
       const files = relevant.length > 0 ? relevant : manifest.files;
-      return files.map((f) => ({ path: f.path, unified_diff: f.unified_diff }));
+      return files.map((f) => ({ path: f.path, unified_diff: f.unified_diff, highlights: f.highlights }));
     }
     const f = tab.selectedFile;
-    return f ? [{ path: f.path, unified_diff: f.unified_diff, head_content: f.head_content }] : [];
+    return f ? [{ path: f.path, unified_diff: f.unified_diff, head_content: f.head_content, highlights: f.highlights }] : [];
   }
 
   /** Append the assistant's answer, return the chat to idle, and persist. */

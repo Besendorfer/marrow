@@ -4470,3 +4470,17 @@ mark.search-highlight-current {
 }
 .chat-send-btn:disabled { opacity: 0.4; cursor: default; }
 .chat-stop-btn { background: var(--diff-remove-text, #f85149); color: #fff; }
+
+.chat-caret {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: chat-caret-blink 1s steps(2, start) infinite;
+}
+@keyframes chat-caret-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
