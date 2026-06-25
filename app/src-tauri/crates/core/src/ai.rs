@@ -498,7 +498,13 @@ async fn stream_claude_cli(
     // status while the agent uses tools between blocks. Splitting on `\n` never
     // bisects a multibyte char, so each complete line decodes cleanly.
     let mut full = String::new();
-    let mut last_index: Option<u64> = None;
+    // The CLI resets the content-block index to 0 for each new assistant message,
+    // so a tool call followed by more text reuses index 0 — index alone can't tell
+    // blocks apart. Instead, a new *text block start* after we've already emitted
+    // text means a gap (tool use / thinking) happened; insert a blank line before
+    // that block's text so segments don't run together.
+    let mut emitted_text = false;
+    let mut need_separator = false;
     if let Some(stdout) = child.stdout.take() {
         let mut reader = tokio::io::BufReader::new(stdout);
         let mut line = String::new();
@@ -516,16 +522,20 @@ async fn stream_claude_cli(
                 continue;
             }
             match cli_event(trimmed) {
-                Some(CliEvent::Text { index, text }) => {
-                    // A new text block after an earlier one means tool use happened
-                    // in between — separate them with a blank line.
-                    if last_index.is_some_and(|prev| prev != index) {
-                        full.push_str("\n\n");
-                        on(StreamUpdate::Delta("\n\n".to_string()));
+                Some(CliEvent::TextStart) => {
+                    if emitted_text {
+                        need_separator = true;
                     }
-                    last_index = Some(index);
+                }
+                Some(CliEvent::Text(text)) => {
                     if !text.is_empty() {
+                        if need_separator {
+                            full.push_str("\n\n");
+                            on(StreamUpdate::Delta("\n\n".to_string()));
+                            need_separator = false;
+                        }
                         full.push_str(&text);
+                        emitted_text = true;
                         on(StreamUpdate::Delta(text));
                     }
                 }
@@ -558,14 +568,16 @@ async fn stream_claude_cli(
 /// stream-json --include-partial-messages`.
 #[derive(Debug, PartialEq)]
 enum CliEvent {
-    /// A chunk of answer text in content block `index`.
-    Text { index: u64, text: String },
-    /// The agent started using a tool (between text blocks).
+    /// A text content block began (used to separate consecutive text segments).
+    TextStart,
+    /// A chunk of answer text.
+    Text(String),
+    /// The agent started using a tool (a gap between text blocks).
     ToolUse,
 }
 
 /// Parse one NDJSON line into a [`CliEvent`], or None for lines we don't surface
-/// (init, usage, thinking deltas, result, …).
+/// (init, usage, thinking deltas/blocks, result, …).
 fn cli_event(line: &str) -> Option<CliEvent> {
     let json: serde_json::Value = serde_json::from_str(line).ok()?;
     if json["type"] != "stream_event" {
@@ -573,13 +585,13 @@ fn cli_event(line: &str) -> Option<CliEvent> {
     }
     let event = &json["event"];
     match event["type"].as_str()? {
+        "content_block_start" => match event["content_block"]["type"].as_str()? {
+            "text" => Some(CliEvent::TextStart),
+            "tool_use" => Some(CliEvent::ToolUse),
+            _ => None, // thinking / other blocks
+        },
         "content_block_delta" if event["delta"]["type"] == "text_delta" => {
-            let index = event["index"].as_u64().unwrap_or(0);
-            let text = event["delta"]["text"].as_str()?.to_string();
-            Some(CliEvent::Text { index, text })
-        }
-        "content_block_start" if event["content_block"]["type"] == "tool_use" => {
-            Some(CliEvent::ToolUse)
+            Some(CliEvent::Text(event["delta"]["text"].as_str()?.to_string()))
         }
         _ => None,
     }
@@ -777,12 +789,16 @@ mod tests {
     }
 
     #[test]
-    fn cli_event_extracts_text_tool_and_ignores_rest() {
+    fn cli_event_classifies_text_textstart_tool_and_ignores_rest() {
         let d = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Hello"}}}"#;
-        assert_eq!(cli_event(d), Some(CliEvent::Text { index: 2, text: "Hello".to_string() }));
+        assert_eq!(cli_event(d), Some(CliEvent::Text("Hello".to_string())));
+        let text_start = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#;
+        assert_eq!(cli_event(text_start), Some(CliEvent::TextStart));
         let tool = r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","name":"Read"}}}"#;
         assert_eq!(cli_event(tool), Some(CliEvent::ToolUse));
-        // thinking deltas, non-stream events, and init/result lines yield nothing.
+        // thinking blocks/deltas, non-stream events, and init/result lines yield nothing.
+        let thinking_start = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}"#;
+        assert_eq!(cli_event(thinking_start), None);
         let thinking = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}}"#;
         assert_eq!(cli_event(thinking), None);
         let init = r#"{"type":"system","subtype":"init"}"#;
@@ -790,6 +806,45 @@ mod tests {
         let result = r#"{"type":"result","result":"Hello"}"#;
         assert_eq!(cli_event(result), None);
         assert_eq!(cli_event("not json"), None);
+    }
+
+    // The agent reuses content-block index 0 across messages, so a tool call
+    // between two text blocks looks like (TextStart, Text, ToolUse, TextStart,
+    // Text) with the same index — the separator must come from TextStart, not
+    // the index. This mirrors the loop logic in `stream_claude_cli`.
+    #[test]
+    fn separator_inserted_between_text_blocks_across_a_tool_gap() {
+        let events = [
+            CliEvent::TextStart,
+            CliEvent::Text("first.".to_string()),
+            CliEvent::ToolUse,
+            CliEvent::TextStart,
+            CliEvent::Text("second.".to_string()),
+        ];
+        let mut out = String::new();
+        let mut emitted_text = false;
+        let mut need_separator = false;
+        for ev in events {
+            match ev {
+                CliEvent::TextStart => {
+                    if emitted_text {
+                        need_separator = true;
+                    }
+                }
+                CliEvent::Text(text) => {
+                    if !text.is_empty() {
+                        if need_separator {
+                            out.push_str("\n\n");
+                            need_separator = false;
+                        }
+                        out.push_str(&text);
+                        emitted_text = true;
+                    }
+                }
+                CliEvent::ToolUse => {}
+            }
+        }
+        assert_eq!(out, "first.\n\nsecond.");
     }
 
     #[test]
