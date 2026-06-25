@@ -1636,23 +1636,31 @@ function App() {
             {activeTab.sidebarView === "guided" && activeTab.selectedFile && (() => {
               const idx = visibleOrder.indexOf(activeTab.selectedFile.path);
               const total = visibleOrder.length;
+              // idx === -1 means the current file dropped out of the list (e.g. it
+              // was just marked viewed and viewed files are hidden) — Next should
+              // still advance into the remaining files.
+              const inList = idx >= 0;
               return (
                 <div className="guided-nav">
                   <button
                     className="guided-nav-btn"
                     onClick={() => selectAdjacentFile(-1)}
-                    disabled={idx <= 0}
+                    disabled={inList ? idx <= 0 : total === 0}
                     title="Previous file in the guided path ([)"
                   >
                     &larr; Prev
                   </button>
                   <span className="guided-nav-pos">
-                    {idx >= 0 ? `File ${idx + 1} of ${total}` : `${total} files`}
+                    {inList
+                      ? `File ${idx + 1} of ${total}`
+                      : total > 0
+                        ? `${total} file${total === 1 ? "" : "s"} left`
+                        : "All files reviewed"}
                   </span>
                   <button
                     className="guided-nav-btn"
                     onClick={() => selectAdjacentFile(1)}
-                    disabled={idx < 0 || idx >= total - 1}
+                    disabled={total === 0 || (inList && idx >= total - 1)}
                     title="Next file in the guided path (])"
                   >
                     Next &rarr;
