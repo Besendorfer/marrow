@@ -507,6 +507,7 @@ async fn stream_claude_cli(
     let mut emitted_text = false;
     let mut need_separator = false;
     let mut last_text_at: Option<std::time::Instant> = None;
+    let mut cli_error: Option<String> = None;
     if let Some(stdout) = child.stdout.take() {
         let mut reader = tokio::io::BufReader::new(stdout);
         let mut line = String::new();
@@ -550,6 +551,9 @@ async fn stream_claude_cli(
                 Some(CliEvent::ToolUse) => {
                     on(StreamUpdate::Status(Some("Working…".to_string())));
                 }
+                Some(CliEvent::Error(msg)) => {
+                    cli_error = Some(msg);
+                }
                 None => {}
             }
         }
@@ -559,15 +563,26 @@ async fn stream_claude_cli(
         .wait()
         .await
         .map_err(|e| format!("Failed to wait for claude CLI: {}", e))?;
+
+    // The CLI reports failures as a JSON error event on stdout (captured above),
+    // not via stderr — prefer that message; fall back to stderr, then exit code.
+    if let Some(msg) = cli_error {
+        return Err(format!("claude CLI error: {msg}"));
+    }
     if !status.success() {
         let mut stderr = String::new();
         if let Some(mut err) = child.stderr.take() {
             let _ = err.read_to_string(&mut stderr).await;
         }
-        return Err(format!("claude CLI exited with {}: {}", status, stderr.trim()));
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("claude CLI exited with {status} (no error output). Check the model name in settings and that you're signed in to the claude CLI.")
+        } else {
+            format!("claude CLI exited with {status}: {detail}")
+        });
     }
     if full.trim().is_empty() {
-        return Err("claude CLI returned empty response".to_string());
+        return Err("claude CLI returned an empty response".to_string());
     }
     Ok(full)
 }
@@ -582,25 +597,42 @@ enum CliEvent {
     Text(String),
     /// The agent started using a tool (a gap between text blocks).
     ToolUse,
+    /// The CLI reported a failure (e.g. bad model, auth). The message is for the
+    /// user — the CLI emits this on stdout as JSON, not stderr.
+    Error(String),
 }
 
 /// Parse one NDJSON line into a [`CliEvent`], or None for lines we don't surface
-/// (init, usage, thinking deltas/blocks, result, …).
+/// (init, usage, thinking deltas/blocks, successful result, …).
 fn cli_event(line: &str) -> Option<CliEvent> {
     let json: serde_json::Value = serde_json::from_str(line).ok()?;
-    if json["type"] != "stream_event" {
-        return None;
-    }
-    let event = &json["event"];
-    match event["type"].as_str()? {
-        "content_block_start" => match event["content_block"]["type"].as_str()? {
-            "text" => Some(CliEvent::TextStart),
-            "tool_use" => Some(CliEvent::ToolUse),
-            _ => None, // thinking / other blocks
-        },
-        "content_block_delta" if event["delta"]["type"] == "text_delta" => {
-            Some(CliEvent::Text(event["delta"]["text"].as_str()?.to_string()))
+    match json["type"].as_str()? {
+        "stream_event" => {
+            let event = &json["event"];
+            match event["type"].as_str()? {
+                "content_block_start" => match event["content_block"]["type"].as_str()? {
+                    "text" => Some(CliEvent::TextStart),
+                    "tool_use" => Some(CliEvent::ToolUse),
+                    _ => None, // thinking / other blocks
+                },
+                "content_block_delta" if event["delta"]["type"] == "text_delta" => {
+                    Some(CliEvent::Text(event["delta"]["text"].as_str()?.to_string()))
+                }
+                _ => None,
+            }
         }
+        // A result flagged as an error carries a human message in `result`.
+        "result" if json["is_error"] == true => Some(CliEvent::Error(
+            json["result"].as_str().unwrap_or("the CLI reported an error").to_string(),
+        )),
+        // An assistant turn can carry a top-level `error` code with a text block.
+        "assistant" if json["error"].is_string() => Some(CliEvent::Error(
+            json["message"]["content"][0]["text"]
+                .as_str()
+                .or_else(|| json["error"].as_str())
+                .unwrap_or("the CLI reported an error")
+                .to_string(),
+        )),
         _ => None,
     }
 }
@@ -811,9 +843,26 @@ mod tests {
         assert_eq!(cli_event(thinking), None);
         let init = r#"{"type":"system","subtype":"init"}"#;
         assert_eq!(cli_event(init), None);
-        let result = r#"{"type":"result","result":"Hello"}"#;
+        // A successful result is not an error.
+        let result = r#"{"type":"result","is_error":false,"result":"Hello"}"#;
         assert_eq!(cli_event(result), None);
         assert_eq!(cli_event("not json"), None);
+    }
+
+    #[test]
+    fn cli_event_surfaces_error_messages() {
+        // The CLI puts the human-readable failure in `result` on an is_error event.
+        let err_result = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":404,"result":"There's an issue with the selected model (foo)."}"#;
+        assert_eq!(
+            cli_event(err_result),
+            Some(CliEvent::Error("There's an issue with the selected model (foo).".to_string()))
+        );
+        // An assistant turn carrying a top-level error code, with the text block.
+        let err_assistant = r#"{"type":"assistant","error":"model_not_found","message":{"content":[{"type":"text","text":"It may not exist or you may not have access."}]}}"#;
+        assert_eq!(
+            cli_event(err_assistant),
+            Some(CliEvent::Error("It may not exist or you may not have access.".to_string()))
+        );
     }
 
     // The agent reuses content-block index 0 across messages, so a tool call
@@ -850,7 +899,7 @@ mod tests {
                         emitted_text = true;
                     }
                 }
-                CliEvent::ToolUse => {}
+                CliEvent::ToolUse | CliEvent::Error(_) => {}
             }
         }
         assert_eq!(out, "first.\n\n[[thought:2]]\n\nsecond.");
