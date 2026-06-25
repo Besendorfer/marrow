@@ -1851,18 +1851,23 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       .sort((a, b) => a.top - b.top);
   };
 
-  const scrollDiffTo = (top: number) =>
-    diffContentRef.current?.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-
   const goToAdjacentHunk = (dir: 1 | -1) => {
     const c = diffContentRef.current;
     if (!c) return;
+    const rows = navRows();
+    if (!rows.length) return;
+    // Find the next/previous hunk relative to the cursor's current line, then move
+    // the cursor onto that hunk's first navigable row (its first code line, or its
+    // fold row when collapsed) — same as j/k, just hunk-sized jumps.
+    const curTop = offsetWithin(rows[cursorIndex(rows)], c);
     const offs = hunkOffsets();
     const target =
       dir > 0
-        ? offs.find((o) => o.top > c.scrollTop + 4)
-        : [...offs].reverse().find((o) => o.top < c.scrollTop - 4);
-    if (target) scrollDiffTo(target.top);
+        ? offs.find((o) => o.top > curTop + 4)
+        : [...offs].reverse().find((o) => o.top < curTop - 4);
+    if (!target) return;
+    const idx = rows.findIndex((r) => offsetWithin(r, c) >= target.top - 1);
+    moveCursorTo(rows, idx >= 0 ? idx : (dir > 0 ? rows.length - 1 : 0));
   };
   const nextHunk = () => goToAdjacentHunk(1);
   const prevHunk = () => goToAdjacentHunk(-1);
