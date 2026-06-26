@@ -49,8 +49,9 @@ function App() {
   const [showAiNotes, setShowAiNotes] = useState(true);
   const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
   const [expandAllHunks, setExpandAllHunks] = useState(false);
-  // Set when jumping from the triage card so the diff scrolls to the risk's line.
-  const [pendingJump, setPendingJump] = useState<{ path: string; line: number } | null>(null);
+  // Set when jumping from the triage card / tour so the diff scrolls to a line
+  // (and flashes through `endLine` when a range is given).
+  const [pendingJump, setPendingJump] = useState<{ path: string; line: number; endLine?: number } | null>(null);
   // The cinematic guided tour (auto-playing walkthrough of the active PR).
   const [tour, setTour] = useState<TourState>(IDLE_TOUR);
   const [error, setError] = useState<string | null>(null);
@@ -859,7 +860,7 @@ function App() {
   }
 
   // ─── Cinematic guided tour ──────────────────────────────────────────────
-  type TourCandidate = { path: string; line: number | null; kind: "intro" | "note"; severity?: string; seed: string };
+  type TourCandidate = { path: string; line: number | null; endLine?: number | null; kind: "intro" | "note"; severity?: string; seed: string };
 
   // Build the tour's stops (important parts only): walk the contract-first order;
   // for each file that carries a critical/warning note or is high-risk, add a
@@ -883,7 +884,7 @@ function App() {
         seed: rationale.get(file.path) || `${file.category}: ${file.reason}`,
       });
       for (const h of important) {
-        candidates.push({ path: file.path, line: h.start_line, kind: "note", severity: h.severity, seed: h.comment });
+        candidates.push({ path: file.path, line: h.start_line, endLine: h.end_line, kind: "note", severity: h.severity, seed: h.comment });
       }
     }
     return candidates;
@@ -909,6 +910,7 @@ function App() {
       const stops: TourStop[] = candidates.map((c, i) => ({
         path: c.path,
         line: c.line,
+        endLine: c.endLine,
         kind: c.kind,
         severity: c.severity,
         narration: result.narrations[i] || c.seed,
@@ -939,7 +941,9 @@ function App() {
     const file = tab?.manifest?.files.find((f) => f.path === stop.path);
     if (file) {
       setSelectedFile(file);
-      if (stop.line != null) setPendingJump({ path: stop.path, line: stop.line });
+      if (stop.line != null) {
+        setPendingJump({ path: stop.path, line: stop.line, endLine: stop.endLine ?? undefined });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tour.status, tour.index]);
@@ -1806,7 +1810,7 @@ function App() {
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} initialScrollLine={pendingJump && pendingJump.path === activeTab.selectedFile.path ? pendingJump.line : null} onInitialScrollConsumed={() => setPendingJump(null)} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} initialScrollLine={pendingJump && pendingJump.path === activeTab.selectedFile.path ? pendingJump.line : null} initialScrollEndLine={pendingJump && pendingJump.path === activeTab.selectedFile.path ? (pendingJump.endLine ?? null) : null} onInitialScrollConsumed={() => setPendingJump(null)} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
             ) : (activeTab.manifest.triage || activeTab.manifest.summary) ? (
               <div className="pr-summary">
                 {activeTab.manifest.triage && (

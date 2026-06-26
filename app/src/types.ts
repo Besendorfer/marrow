@@ -57,6 +57,8 @@ export interface TourStop {
   path: string;
   /** Head-side line to scroll to and flash; null = just show the file from the top. */
   line: number | null;
+  /** Head-side end line of the range to flash (defaults to `line` when absent). */
+  endLine?: number | null;
   /** "intro" = arriving at a file; "note" = a specific important change. */
   kind: "intro" | "note";
   severity?: string;

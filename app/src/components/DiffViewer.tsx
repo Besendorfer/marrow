@@ -118,6 +118,8 @@ interface DiffViewerProps {
   /** Line (head side) to scroll to on mount — set when arriving via a triage
    * jump. Consumed once, then `onInitialScrollConsumed` is called. */
   initialScrollLine?: number | null;
+  /** Head-side end line of the range to flash (defaults to `initialScrollLine`). */
+  initialScrollEndLine?: number | null;
   onInitialScrollConsumed?: () => void;
 }
 
@@ -1477,7 +1479,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery, expandAllHunks, initialScrollLine, onInitialScrollConsumed }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery, expandAllHunks, initialScrollLine, initialScrollEndLine, onInitialScrollConsumed }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -2105,6 +2107,10 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const nextFinding = () => stepFinding(1);
   const prevFinding = () => stepFinding(-1);
 
+  // A line range to flash (in addition to the single pending-scroll row), set
+  // when arriving at a tour stop with a multi-line highlight.
+  const flashRangeRef = useRef<{ start: number; end: number } | null>(null);
+
   // Scroll to + paint the cursor on the pending row once it has (re-)rendered.
   useEffect(() => {
     if (pendingScroll == null) return;
@@ -2117,6 +2123,20 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         setTimeout(() => el.classList.remove("finding-flash"), 1200);
         // Home the cursor exactly onto the landed row (carries data-cl/data-cs).
         if (el.dataset.cl != null) cursorRef.current = { cl: Number(el.dataset.cl), cs: el.dataset.cs as CursorPos["cs"] };
+      }
+      // Flash the whole highlighted range, not just the first row (capped so a
+      // pathological range can't flash hundreds of rows).
+      const range = flashRangeRef.current;
+      flashRangeRef.current = null;
+      if (range) {
+        const end = Math.min(range.end, range.start + 60);
+        for (let n = range.start; n <= end; n++) {
+          const row = c.querySelector<HTMLElement>(`#diff-line-${n}`);
+          if (row) {
+            row.classList.add("finding-flash");
+            setTimeout(() => row.classList.remove("finding-flash"), 1200);
+          }
+        }
       }
       paintCursor();
     }
@@ -2137,6 +2157,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         n.delete(hunk.index);
         return n;
       });
+    }
+    if (initialScrollEndLine != null && initialScrollEndLine > initialScrollLine) {
+      flashRangeRef.current = { start: initialScrollLine, end: initialScrollEndLine };
     }
     setPendingScroll(`diff-line-${initialScrollLine}`);
     onInitialScrollConsumed?.();
