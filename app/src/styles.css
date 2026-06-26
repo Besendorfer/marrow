@@ -4584,3 +4584,19 @@ mark.search-highlight-current {
   white-space: nowrap;
 }
 .settings-test-voice:hover { border-color: var(--accent); color: var(--accent); }
+
+.settings-callout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.settings-callout strong { color: var(--text-primary); font-size: 12.5px; }
+.settings-callout em { color: var(--accent); font-style: normal; }

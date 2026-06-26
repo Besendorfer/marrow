@@ -93,6 +93,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     }).catch(() => {});
   }
 
+  // Enhanced/Premium voices sound far better than the defaults; nudge the user to
+  // download one if none are installed.
+  const hasEnhancedVoice = voices.some((v) => /\((enhanced|premium)\)/i.test(v.name));
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -438,9 +442,20 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               <label className="settings-label" htmlFor="tts-voice">
                 Voice
               </label>
+              {!hasEnhancedVoice && (
+                <div className="settings-callout">
+                  <strong>For much better narration, install an Enhanced voice.</strong>
+                  <span>
+                    System Settings &rarr; Accessibility &rarr; Spoken Content &rarr;
+                    System Voice &rarr; Manage Voices… &rarr; English &rarr; download an
+                    <em> (Enhanced)</em> or <em>(Premium)</em> voice (e.g. Ava, Zoe, Evan).
+                    It'll appear here automatically.
+                  </span>
+                </div>
+              )}
               <p className="settings-hint">
-                System voices. The enhanced/premium voices (download in macOS System
-                Settings &rarr; Accessibility &rarr; Spoken Content) sound far better.
+                Voices from the macOS speech system. Enhanced/Premium voices sound far
+                better than the built-in defaults.
               </p>
               <select
                 id="tts-voice"
