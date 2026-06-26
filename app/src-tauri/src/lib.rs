@@ -87,6 +87,7 @@ pub fn run() {
             pending_deep_link: Mutex::new(None),
             pr_node_ids: Mutex::new(HashMap::new()),
             frontend_ready: Mutex::new(false),
+            tts_cancel: Mutex::new(None),
         })
         .setup(|app| {
             // Custom menu intercepts Ctrl+W / Ctrl+Q at the native layer (see menu.rs).
@@ -230,6 +231,9 @@ pub fn run() {
             commands::submit_review,
             commands::generate_review_body,
             commands::generate_tour,
+            commands::list_tts_voices,
+            commands::speak_tts,
+            commands::stop_tts,
             commands::update_review_comment,
             commands::create_review_comment,
             commands::toggle_reaction,

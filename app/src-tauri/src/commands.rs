@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
 use tauri::{command, State};
+use tokio_util::sync::CancellationToken;
 
 pub struct AppState {
     pub manifest_path: Mutex<Option<String>>,
@@ -25,6 +26,8 @@ pub struct AppState {
     // replay; after that point, hot-open emits suffice and we skip buffering
     // to avoid replaying stale URLs on the next cold-start.
     pub frontend_ready: Mutex<bool>,
+    // Cancels the in-flight tour-narration `say` process (see speak_tts/stop_tts).
+    pub tts_cancel: Mutex<Option<CancellationToken>>,
 }
 
 fn github_client() -> GithubClient {
@@ -709,6 +712,95 @@ pub async fn generate_tour(
         return Ok(fallback());
     }
     Ok(TourOut { opening, stops })
+}
+
+/// A system speech voice available to the macOS `say` command.
+#[derive(Debug, Serialize)]
+pub struct TtsVoice {
+    pub name: String,
+    pub lang: String,
+}
+
+/// List the system speech voices via `say -v '?'` (macOS). These include the
+/// high-quality enhanced/premium voices the WebView's Web Speech API can't reach.
+/// Returns empty on non-macOS or if `say` is unavailable.
+#[command]
+pub fn list_tts_voices() -> Vec<TtsVoice> {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(out) = std::process::Command::new("say").args(["-v", "?"]).output() else {
+            return Vec::new();
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut voices = Vec::new();
+        for line in text.lines() {
+            // "Ava (Enhanced)      en_US    # comment". The locale is the last
+            // whitespace token before the '#'; the name is everything before it.
+            let head = line.split('#').next().unwrap_or("");
+            let Some(lang) = head.split_whitespace().next_back() else { continue };
+            let name = match head.rfind(lang) {
+                Some(idx) => head[..idx].trim().to_string(),
+                None => continue,
+            };
+            if !name.is_empty() && lang.contains('_') {
+                voices.push(TtsVoice { name, lang: lang.to_string() });
+            }
+        }
+        // English voices first (most relevant for an English code review), then by name.
+        voices.sort_by(|a, b| {
+            let ord = |l: &str| if l.starts_with("en") { 0 } else { 1 };
+            ord(&a.lang).cmp(&ord(&b.lang)).then(a.name.cmp(&b.name))
+        });
+        return voices;
+    }
+    #[allow(unreachable_code)]
+    Vec::new()
+}
+
+/// Speak `text` via the macOS `say` command using `voice` at `rate_wpm` words per
+/// minute. Resolves `true` when speech finishes, `false` if cancelled by
+/// `stop_tts`. The frontend advances the tour on `true`.
+#[command]
+pub async fn speak_tts(
+    state: State<'_, AppState>,
+    text: String,
+    voice: String,
+    rate_wpm: u32,
+) -> Result<bool, String> {
+    // Replace any in-flight speech with this one.
+    let token = CancellationToken::new();
+    {
+        let mut guard = state.tts_cancel.lock().unwrap();
+        if let Some(prev) = guard.take() {
+            prev.cancel();
+        }
+        *guard = Some(token.clone());
+    }
+
+    let mut cmd = tokio::process::Command::new("say");
+    if !voice.is_empty() {
+        cmd.arg("-v").arg(&voice);
+    }
+    if rate_wpm > 0 {
+        cmd.arg("-r").arg(rate_wpm.to_string());
+    }
+    cmd.arg(&text);
+    cmd.kill_on_drop(true); // dropping the future on cancel kills `say`
+
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to run `say`: {e}"))?;
+    let finished = tokio::select! {
+        res = child.wait() => { res.map_err(|e| format!("`say` failed: {e}"))?; true }
+        _ = token.cancelled() => false,
+    };
+    Ok(finished)
+}
+
+/// Stop the current tour narration (kills the `say` process).
+#[command]
+pub fn stop_tts(state: State<AppState>) {
+    if let Some(token) = state.tts_cancel.lock().unwrap().take() {
+        token.cancel();
+    }
 }
 
 #[command]

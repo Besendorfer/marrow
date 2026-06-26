@@ -33,7 +33,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [ttsMuted, setTtsMuted] = useState(false);
   const [ttsVoice, setTtsVoice] = useState("");
   const [ttsRate, setTtsRate] = useState(1);
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [voices, setVoices] = useState<{ name: string; lang: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -77,23 +77,20 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setWatches((ws) => ws.filter((w) => w.id !== id));
     setSaved(false);
   }
-  // Load available speech-synthesis voices (they can populate asynchronously).
+  // Load the macOS system voices via the `say` backend.
   useEffect(() => {
-    if (!("speechSynthesis" in window)) return;
-    const load = () => setVoices(window.speechSynthesis.getVoices());
-    load();
-    window.speechSynthesis.addEventListener("voiceschanged", load);
-    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
+    invoke<{ name: string; lang: string }[]>("list_tts_voices")
+      .then(setVoices)
+      .catch(() => {});
   }, []);
 
   function testVoice() {
-    if (!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance("This is how the guided tour will sound.");
-    u.rate = ttsRate;
-    const v = voices.find((x) => x.name === ttsVoice);
-    if (v) u.voice = v;
-    window.speechSynthesis.speak(u);
+    invoke("stop_tts").catch(() => {});
+    invoke("speak_tts", {
+      text: "This is how the guided tour will sound.",
+      voice: ttsVoice,
+      rateWpm: Math.round(180 * ttsRate),
+    }).catch(() => {});
   }
 
   async function handleSave(e: React.FormEvent) {
@@ -422,7 +419,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             changes that matter (takes effect the next time you open a file).
           </p>
 
-          {"speechSynthesis" in window && (
+          {voices.length > 0 && (
             <>
               <div className="settings-divider" />
               <h3 className="settings-section-title">Tour narration</h3>
@@ -457,7 +454,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 <option value="">System default</option>
                 {voices.map((v) => (
                   <option key={v.name} value={v.name}>
-                    {v.name} ({v.lang}){v.localService ? "" : " — online"}
+                    {v.name} ({v.lang})
                   </option>
                 ))}
               </select>

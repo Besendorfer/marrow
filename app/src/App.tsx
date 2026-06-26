@@ -125,12 +125,17 @@ function App() {
   const [pendingJump, setPendingJump] = useState<{ path: string; line: number; endLine?: number } | null>(null);
   // The cinematic guided tour (auto-playing walkthrough of the active PR).
   const [tour, setTour] = useState<TourState>(IDLE_TOUR);
-  // Spoken narration (Web Speech API). Defaults come from settings; the player
-  // mute toggle overrides for the session.
+  // Spoken narration via the macOS `say` backend (high-quality system voices).
+  // Defaults come from settings; the player mute toggle overrides for the session.
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [ttsVoice, setTtsVoice] = useState("");
   const [ttsRate, setTtsRate] = useState(1);
-  const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
+  const [ttsAvailable, setTtsAvailable] = useState(false);
+  useEffect(() => {
+    invoke<{ name: string; lang: string }[]>("list_tts_voices")
+      .then((v) => setTtsAvailable(v.length > 0))
+      .catch(() => {});
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -991,15 +996,6 @@ function App() {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return;
     const manifest = tab.manifest;
-    // Unlock speech synthesis within this click gesture (WebKit may otherwise
-    // stay silent until a user interaction), since the real speak() fires later.
-    if (ttsSupported && ttsEnabled) {
-      try {
-        const warm = new SpeechSynthesisUtterance(" ");
-        warm.volume = 0;
-        window.speechSynthesis.speak(warm);
-      } catch { /* best-effort */ }
-    }
     const order = manifest.triage?.review_order ?? [];
     const rationale = new Map(order.map((o) => [o.path, o.rationale]));
     const files = tourFilesFor(manifest);
@@ -1053,7 +1049,7 @@ function App() {
   }
 
   function exitTour() {
-    if (ttsSupported) window.speechSynthesis.cancel();
+    invoke("stop_tts").catch(() => {});
     setTour(IDLE_TOUR);
   }
   function tourPrev() { setTour((t) => (t.status === "active" ? { ...t, index: Math.max(0, t.index - 1), playing: false } : t)); }
@@ -1096,7 +1092,7 @@ function App() {
       : null;
   // When narration is spoken, advancement is driven by speech ending (below);
   // otherwise fall back to the reading-time timer.
-  const ttsActive = ttsEnabled && ttsSupported;
+  const ttsActive = ttsEnabled && ttsAvailable;
   useEffect(() => {
     if (ttsActive || tour.status !== "active" || !tour.playing || stopDwell <= 0) return;
     const timer = setTimeout(() => {
@@ -1105,35 +1101,33 @@ function App() {
     return () => clearTimeout(timer);
   }, [ttsActive, tour.status, tour.playing, tour.index, stopDwell]);
 
-  // Speak the current stop; advance when it finishes. Re-runs on stop/play/mute
-  // changes (resuming re-speaks the current line, which is fine — they're short).
+  // Speak the current stop via the `say` backend; advance when it finishes. The
+  // cleanup stops the `say` process on pause / skip / mute / exit.
   useEffect(() => {
-    if (!ttsSupported) return;
-    const synth = window.speechSynthesis;
-    synth.cancel();
-    if (!ttsActive || tour.status !== "active" || !tour.playing) return;
+    if (!ttsActive || tour.status !== "active" || !tour.playing) {
+      invoke("stop_tts").catch(() => {});
+      return;
+    }
     const stop = tour.stops[tour.index];
     const text = stop?.narration?.trim();
     if (!text) return;
+    let cancelled = false;
     const atEnd = tour.index >= tour.stops.length - 1;
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = ttsRate;
-    if (ttsVoice) {
-      const voice = synth.getVoices().find((v) => v.name === ttsVoice);
-      if (voice) utter.voice = voice;
-    }
-    utter.onend = () => {
-      if (atEnd) return;
-      // Small breath between stops, then advance.
-      window.setTimeout(() => {
-        setTour((t) => (t.status === "active" && t.playing ? { ...t, index: Math.min(t.stops.length - 1, t.index + 1) } : t));
-      }, 550);
+    const rateWpm = Math.round(180 * ttsRate);
+    invoke<boolean>("speak_tts", { text, voice: ttsVoice, rateWpm })
+      .then((finished) => {
+        if (cancelled || !finished || atEnd) return;
+        window.setTimeout(() => {
+          setTour((t) => (t.status === "active" && t.playing ? { ...t, index: Math.min(t.stops.length - 1, t.index + 1) } : t));
+        }, 450);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      invoke("stop_tts").catch(() => {});
     };
-    // Voices can load late; speak on the next tick so a chosen voice is available.
-    synth.speak(utter);
-    return () => synth.cancel();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ttsActive, tour.status, tour.playing, tour.index]);
+  }, [ttsActive, tour.status, tour.playing, tour.index, ttsVoice, ttsRate]);
 
   // Leave the tour if the user switches tabs (its stops point at the old PR).
   useEffect(() => {
@@ -2009,7 +2003,7 @@ function App() {
               dwellMs={stopDwell}
               ttsDriven={ttsActive}
               muted={!ttsEnabled}
-              ttsSupported={ttsSupported}
+              ttsSupported={ttsAvailable}
               onToggleMute={() => setTtsEnabled((v) => !v)}
               onPrev={tourPrev}
               onNext={tourNext}
