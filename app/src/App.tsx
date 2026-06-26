@@ -877,9 +877,11 @@ function App() {
         .sort((a, b) => a.start_line - b.start_line);
       const highRisk = file.risk_level === "critical" || file.risk_level === "high";
       if (important.length === 0 && !highRisk) continue;
+      // Intro lands at the top of the file (line: null) — the reviewer gets
+      // oriented before the tour pans down into the specific changes.
       candidates.push({
         path: file.path,
-        line: important[0]?.start_line ?? file.highlights?.[0]?.start_line ?? null,
+        line: null,
         kind: "intro",
         seed: rationale.get(file.path) || `${file.category}: ${file.reason}`,
       });
@@ -915,9 +917,10 @@ function App() {
         severity: c.severity,
         narration: result.narrations[i] || c.seed,
       }));
-      // Lead with the opening as its own stop on the first file.
+      // Lead with the opening rundown as its own stop on the overview card
+      // (empty path = show the triage overview, not a file).
       if (result.opening.trim()) {
-        stops.unshift({ path: stops[0].path, line: null, kind: "intro", narration: result.opening });
+        stops.unshift({ path: "", line: null, kind: "intro", narration: result.opening });
       }
       setTour({ status: "active", stops, index: 0, playing: true, opening: result.opening });
     } catch (err) {
@@ -937,13 +940,17 @@ function App() {
     if (tour.status !== "active") return;
     const stop = tour.stops[tour.index];
     if (!stop) return;
+    // The opening rundown stop has no file — show the triage overview card.
+    if (!stop.path) {
+      updateTab(activeTabId, (t) => ({ ...t, selectedFile: null }));
+      return;
+    }
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     const file = tab?.manifest?.files.find((f) => f.path === stop.path);
     if (file) {
+      // Intro stops land at the file top; note stops are scrolled/flashed/panned
+      // by the DiffViewer via the derived `tourPan` prop below.
       setSelectedFile(file);
-      if (stop.line != null) {
-        setPendingJump({ path: stop.path, line: stop.line, endLine: stop.endLine ?? undefined });
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tour.status, tour.index]);
@@ -954,6 +961,13 @@ function App() {
     tour.status === "active" && tour.index < tour.stops.length - 1
       ? tourDwellMs(tour.stops[tour.index]?.narration ?? "")
       : 0;
+
+  // The pan for the current tour stop (note stops only; intro/overview = null).
+  const tourStop = tour.status === "active" ? tour.stops[tour.index] : null;
+  const tourPan =
+    tourStop && tourStop.path && tourStop.line != null
+      ? { line: tourStop.line, endLine: tourStop.endLine ?? tourStop.line, durationMs: stopDwell || 6500, seq: tour.index }
+      : null;
   useEffect(() => {
     if (tour.status !== "active" || !tour.playing || stopDwell <= 0) return;
     const timer = setTimeout(() => {
@@ -1810,7 +1824,7 @@ function App() {
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} initialScrollLine={pendingJump && pendingJump.path === activeTab.selectedFile.path ? pendingJump.line : null} initialScrollEndLine={pendingJump && pendingJump.path === activeTab.selectedFile.path ? (pendingJump.endLine ?? null) : null} onInitialScrollConsumed={() => setPendingJump(null)} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} initialScrollLine={pendingJump && pendingJump.path === activeTab.selectedFile.path ? pendingJump.line : null} initialScrollEndLine={pendingJump && pendingJump.path === activeTab.selectedFile.path ? (pendingJump.endLine ?? null) : null} onInitialScrollConsumed={() => setPendingJump(null)} tourPan={tourStop && tourStop.path === activeTab.selectedFile.path ? tourPan : null} tourPanPlaying={tour.playing} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
             ) : (activeTab.manifest.triage || activeTab.manifest.summary) ? (
               <div className="pr-summary">
                 {activeTab.manifest.triage && (
@@ -1831,19 +1845,19 @@ function App() {
             ) : (
               <div className="no-file-selected">Select a file to review</div>
             )}
+            <TourPlayer
+              tour={tour}
+              dwellMs={stopDwell}
+              onPrev={tourPrev}
+              onNext={tourNext}
+              onPlayPause={tourPlayPause}
+              onExit={exitTour}
+            />
           </div>
         </div>
         </div>
       )}
       {overlays}
-      <TourPlayer
-        tour={tour}
-        dwellMs={stopDwell}
-        onPrev={tourPrev}
-        onNext={tourNext}
-        onPlayPause={tourPlayPause}
-        onExit={exitTour}
-      />
     </div>
   );
 }

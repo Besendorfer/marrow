@@ -47,7 +47,7 @@ export function TourPlayer({ tour, dwellMs, onPrev, onNext, onPlayPause, onExit 
         />
       </div>
       <div className="tour-body">
-        <p className="tour-caption">{stop.narration}</p>
+        <p className="tour-caption" key={tour.index}>{stop.narration}</p>
         <div className="tour-controls">
           <span className="tour-progress">{tour.index + 1} / {total}</span>
           <button className="tour-btn" onClick={onPrev} disabled={atStart} title="Previous stop">

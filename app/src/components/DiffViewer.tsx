@@ -121,6 +121,11 @@ interface DiffViewerProps {
   /** Head-side end line of the range to flash (defaults to `initialScrollLine`). */
   initialScrollEndLine?: number | null;
   onInitialScrollConsumed?: () => void;
+  /** Cinematic tour pan: gently scroll through [line..endLine] over durationMs.
+   * `seq` changes per stop to (re)trigger it. */
+  tourPan?: { line: number; endLine: number; durationMs: number; seq: number } | null;
+  /** Whether the tour is playing (pauses/resumes the pan). */
+  tourPanPlaying?: boolean;
 }
 
 /** Imperative API for keyboard-driven navigation, folding, and the line cursor. */
@@ -1479,7 +1484,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery, expandAllHunks, initialScrollLine, initialScrollEndLine, onInitialScrollConsumed }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery, expandAllHunks, initialScrollLine, initialScrollEndLine, onInitialScrollConsumed, tourPan, tourPanPlaying }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -2165,6 +2170,95 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     onInitialScrollConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialScrollLine]);
+
+  // ── Cinematic tour pan ────────────────────────────────────────────────────
+  // Gently scroll through a highlighted region over the stop's dwell, with a
+  // soft flash, easing, and pause/resume.
+  const flashRange = (start: number, end: number) => {
+    const c = diffContentRef.current;
+    if (!c) return;
+    const last = Math.min(end, start + 60);
+    for (let n = start; n <= last; n++) {
+      const row = c.querySelector<HTMLElement>(`#diff-line-${n}`);
+      if (row) {
+        row.classList.add("finding-flash");
+        setTimeout(() => row.classList.remove("finding-flash"), 1400);
+      }
+    }
+  };
+
+  const panRef = useRef<{ raf: number | null; from: number; to: number; duration: number; elapsed: number; last: number } | null>(null);
+  const stopPanLoop = () => {
+    const p = panRef.current;
+    if (p?.raf != null) { cancelAnimationFrame(p.raf); p.raf = null; }
+  };
+  const panTick = (now: number) => {
+    const p = panRef.current;
+    const c = diffContentRef.current;
+    if (!p || !c) return;
+    p.elapsed += now - p.last;
+    p.last = now;
+    const t = Math.min(1, p.duration > 0 ? p.elapsed / p.duration : 1);
+    // easeInOutSine — slow start and finish, no jerk.
+    const eased = -(Math.cos(Math.PI * t) - 1) / 2;
+    c.scrollTop = p.from + (p.to - p.from) * eased;
+    p.raf = t < 1 ? requestAnimationFrame(panTick) : null;
+  };
+  const resumePan = () => {
+    const p = panRef.current;
+    if (!p || p.raf != null) return;
+    p.last = performance.now();
+    p.raf = requestAnimationFrame(panTick);
+  };
+
+  // Set up a pan for the current tour stop (keyed on seq).
+  useEffect(() => {
+    if (!tourPan) return;
+    const c = diffContentRef.current;
+    if (!c) return;
+    // Expand the hunk holding the line, then (after it renders) line up the pan.
+    const hunk = hunks.find((h) =>
+      h.lines.some((l) => l.newLineNum === tourPan.line || l.oldLineNum === tourPan.line),
+    );
+    if (hunk && collapsedHunks.has(hunk.index)) {
+      setCollapsedHunks((prev) => {
+        const n = new Set(prev);
+        n.delete(hunk.index);
+        return n;
+      });
+    }
+    const frame = requestAnimationFrame(() => {
+      const startEl = c.querySelector<HTMLElement>(`#diff-line-${tourPan.line}`);
+      if (!startEl) return;
+      const startOffset = offsetWithin(startEl, c);
+      const endEl = c.querySelector<HTMLElement>(`#diff-line-${tourPan.endLine}`) ?? startEl;
+      const endOffset = offsetWithin(endEl, c);
+      const maxScroll = Math.max(0, c.scrollHeight - c.clientHeight);
+      // Land the start line ~100px below the top, then drift down just enough to
+      // reveal the region + a little context — bounded so it stays gentle.
+      const from = Math.min(maxScroll, Math.max(0, startOffset - 100));
+      const reveal = Math.max(endOffset - startOffset + 160, c.clientHeight * 0.3);
+      const to = Math.min(maxScroll, from + Math.min(reveal, c.clientHeight * 0.7));
+      c.scrollTop = from;
+      flashRange(tourPan.line, tourPan.endLine);
+      panRef.current = { raf: null, from, to, duration: Math.max(2200, tourPan.durationMs - 800), elapsed: 0, last: 0 };
+      if (tourPanPlaying) resumePan();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      stopPanLoop();
+      panRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourPan?.seq]);
+
+  // Pause/resume the pan with the tour.
+  useEffect(() => {
+    if (!panRef.current) return;
+    if (tourPanPlaying) resumePan();
+    else stopPanLoop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourPanPlaying]);
 
   // No dep array: the handle is only ever called imperatively (on a keypress),
   // so rebuilding it each render keeps it always-fresh for free.

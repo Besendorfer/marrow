@@ -570,7 +570,7 @@ fn build_tour_prompt(pr_title: &str, summary: &str, seeds: &[TourSeed]) -> Strin
 
 Write a SHORT narration for each stop — 1 to 2 sentences, warm and clear but never chatty — that flows as a sequence (use light connective phrasing like "First,", "Next,", "Here,", "Now," where it reads naturally). For "intro" stops, orient the reviewer to the file's role in one sentence. For "note" stops, say what to notice and why it matters. Keep each concise so the reviewer is never overwhelmed. Don't restate the file path. Don't invent details beyond the seed and PR context.
 
-Also write a single-sentence "opening" that sets up the walkthrough.
+Also write an "opening": a 2-3 sentence high-level rundown, from the author's perspective, of what this PR sets out to accomplish and the broad approach it takes — the goal and shape of the change before we dive into specific files. Warm and orienting, not a list.
 
 Respond with ONLY a JSON object: {{"opening": "...", "stops": ["narration 1", "narration 2", ...]}} with EXACTLY {n} strings in "stops", in the given order.
 
