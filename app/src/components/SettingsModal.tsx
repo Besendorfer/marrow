@@ -29,7 +29,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [watches, setWatches] = useState<Watch[]>([]);
   const [perWatchCap, setPerWatchCap] = useState(50);
   const [showApprovedPrs, setShowApprovedPrs] = useState(false);
-  const [expandAllHunks, setExpandAllHunks] = useState(false);
+  const [expandAllHunks, setExpandAllHunks] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -51,7 +51,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setOpenaiBaseUrl(s.openai_base_url || "");
         setPerWatchCap(s.activity_per_watch_cap || 50);
         setShowApprovedPrs(s.show_approved_prs ?? false);
-        setExpandAllHunks(s.expand_all_hunks ?? false);
+        setExpandAllHunks(s.expand_all_hunks ?? true);
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
       setSaved(false);

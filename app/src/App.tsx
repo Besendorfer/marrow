@@ -48,7 +48,7 @@ function App() {
   const [showHunkSignificance, setShowHunkSignificance] = useState(true);
   const [showAiNotes, setShowAiNotes] = useState(true);
   const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
-  const [expandAllHunks, setExpandAllHunks] = useState(false);
+  const [expandAllHunks, setExpandAllHunks] = useState(true);
   // Set when jumping from the triage card / tour so the diff scrolls to a line
   // (and flashes through `endLine` when a range is given).
   const [pendingJump, setPendingJump] = useState<{ path: string; line: number; endLine?: number } | null>(null);
@@ -93,7 +93,7 @@ function App() {
       settingsRef.current = s;
       // Re-apply settings that drive live rendering so changes take effect without
       // a restart (the next file open picks up expand_all_hunks).
-      setExpandAllHunks(s.expand_all_hunks ?? false);
+      setExpandAllHunks(s.expand_all_hunks ?? true);
     }).catch(() => {});
   }, []);
 
@@ -341,7 +341,7 @@ function App() {
         setShowHunkSignificance(settings.show_hunk_significance ?? true);
         setShowAiNotes(settings.show_ai_notes ?? true);
         setHunkFilter(settings.hunk_filter || "all");
-        setExpandAllHunks(settings.expand_all_hunks ?? false);
+        setExpandAllHunks(settings.expand_all_hunks ?? true);
       } catch {
         // Use defaults on failure
       }

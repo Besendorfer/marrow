@@ -104,7 +104,7 @@ fn default_settings() -> Settings {
         activity_per_watch_cap: 50,
         activity_mini_player: true,
         show_approved_prs: false,
-        expand_all_hunks: false,
+        expand_all_hunks: true,
     }
 }
 
@@ -136,7 +136,7 @@ pub fn load_settings() -> Settings {
     let mut activity_per_watch_cap = 50u64;
     let mut activity_mini_player = true;
     let mut show_approved_prs = false;
-    let mut expand_all_hunks = false;
+    let mut expand_all_hunks = true;
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {

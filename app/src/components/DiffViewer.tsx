@@ -1136,10 +1136,11 @@ function UnifiedView({
       </colgroup>
       <tbody>
         {hunks.map((hunk) => {
-          const isLow = showSignificance && hunk.significance === "low";
           const isHigh = showSignificance && hunk.significance === "high";
           const isCollapsed = collapsedHunks.has(hunk.index);
-          const isDimmed = isLow && !isCollapsed;
+          // Low-significance hunks are no longer dimmed — expanded hunks all read
+          // at full strength.
+          const isDimmed = false;
 
           return (
             <Fragment key={hunk.index}>
@@ -1412,10 +1413,11 @@ function SplitView({
       </colgroup>
       <tbody>
         {hunks.map((hunk) => {
-          const isLow = showSignificance && hunk.significance === "low";
           const isHigh = showSignificance && hunk.significance === "high";
           const isCollapsed = collapsedHunks.has(hunk.index);
-          const isDimmed = isLow && !isCollapsed;
+          // Low-significance hunks are no longer dimmed — expanded hunks all read
+          // at full strength.
+          const isDimmed = false;
           const splitLines = isCollapsed ? [] : buildSplitLines(hunk.lines);
 
           return (

@@ -167,9 +167,9 @@ pub struct Settings {
     /// once you approve a PR, it drops out of the feed.
     #[serde(default)]
     pub show_approved_prs: bool,
-    /// When true, files open with every hunk expanded instead of auto-collapsing
-    /// low-significance hunks (issue #55).
-    #[serde(default)]
+    /// When true (the default), files open with every hunk expanded; turn it off
+    /// to auto-collapse low-significance hunks (issue #55).
+    #[serde(default = "default_true")]
     pub expand_all_hunks: bool,
 }
 
