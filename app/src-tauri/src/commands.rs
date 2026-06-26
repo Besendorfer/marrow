@@ -1,5 +1,7 @@
+use marrow_core::ai::{extract_json_object, AiBackend};
 use marrow_core::bedrock::{region_from_arn, BedrockClient};
 use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};
+use serde::{Deserialize, Serialize};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
 use marrow_core::types::{MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
@@ -533,6 +535,99 @@ pub fn load_cached_manifest_by_pr(pr_url: String) -> Result<Option<ReviewManifes
         &parsed.repo,
         parsed.number,
     ))
+}
+
+/// One candidate stop for the guided tour, built by the frontend from the
+/// triage order + important highlights. `kind` is "intro" (arriving at a file) or
+/// "note" (a specific change); `seed` is the terse note the AI rewrites.
+#[derive(Debug, Deserialize)]
+pub struct TourSeed {
+    pub path: String,
+    pub kind: String,
+    pub seed: String,
+    #[serde(default)]
+    pub severity: Option<String>,
+}
+
+/// Narration for a tour: a one-line opening plus one string per seed (in order).
+#[derive(Debug, Serialize)]
+pub struct TourNarration {
+    pub opening: String,
+    pub narrations: Vec<String>,
+}
+
+fn build_tour_prompt(pr_title: &str, summary: &str, seeds: &[TourSeed]) -> String {
+    let mut stops = String::new();
+    for (i, s) in seeds.iter().enumerate() {
+        let tag = match s.severity.as_deref() {
+            Some(sev) if s.kind == "note" => format!("note/{sev}"),
+            _ => s.kind.clone(),
+        };
+        stops.push_str(&format!("{}. [{}] {} — {}\n", i + 1, tag, s.path, s.seed));
+    }
+    format!(
+        r#"You are narrating a calm, guided walkthrough of a pull request for a code reviewer — think a gentle museum audio guide, not a lecture. You are given the tour stops IN ORDER. Each stop has a file path, a kind ("intro" = arriving at a new file, "note" = a specific change to look at), and a terse seed note.
+
+Write a SHORT narration for each stop — 1 to 2 sentences, warm and clear but never chatty — that flows as a sequence (use light connective phrasing like "First,", "Next,", "Here,", "Now," where it reads naturally). For "intro" stops, orient the reviewer to the file's role in one sentence. For "note" stops, say what to notice and why it matters. Keep each concise so the reviewer is never overwhelmed. Don't restate the file path. Don't invent details beyond the seed and PR context.
+
+Also write a single-sentence "opening" that sets up the walkthrough.
+
+Respond with ONLY a JSON object: {{"opening": "...", "stops": ["narration 1", "narration 2", ...]}} with EXACTLY {n} strings in "stops", in the given order.
+
+PR Title: {title}
+Summary: {summary}
+
+Stops:
+{stops}"#,
+        n = seeds.len(),
+        title = pr_title,
+        summary = if summary.trim().is_empty() { "(none)" } else { summary },
+        stops = stops,
+    )
+}
+
+#[command]
+pub async fn generate_tour(
+    pr_title: String,
+    summary: String,
+    seeds: Vec<TourSeed>,
+) -> Result<TourNarration, String> {
+    if seeds.is_empty() {
+        return Ok(TourNarration { opening: String::new(), narrations: vec![] });
+    }
+    let settings = load_settings();
+    let backend = AiBackend::from_settings(&settings).await?;
+    let prompt = build_tour_prompt(&pr_title, &summary, &seeds);
+
+    // Fallback narration if the AI call/parse fails: the seed text itself.
+    let fallback = || TourNarration {
+        opening: String::new(),
+        narrations: seeds.iter().map(|s| s.seed.clone()).collect(),
+    };
+
+    let raw = match backend.invoke(&prompt).await {
+        Ok(r) => r,
+        Err(_) => return Ok(fallback()),
+    };
+    let json = match extract_json_object(&raw) {
+        Ok(j) => j,
+        Err(_) => return Ok(fallback()),
+    };
+
+    let opening = json["opening"].as_str().unwrap_or_default().to_string();
+    let mut narrations: Vec<String> = json["stops"]
+        .as_array()
+        .map(|arr| arr.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect())
+        .unwrap_or_default();
+    // Align to the seeds: pad short, truncate long, and fill blanks from the seed.
+    narrations.resize(seeds.len(), String::new());
+    for (i, s) in seeds.iter().enumerate() {
+        if narrations[i].trim().is_empty() {
+            narrations[i] = s.seed.clone();
+        }
+    }
+
+    Ok(TourNarration { opening, narrations })
 }
 
 #[command]

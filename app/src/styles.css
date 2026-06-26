@@ -4450,3 +4450,85 @@ mark.search-highlight-current {
   color: var(--text-primary);
   cursor: pointer;
 }
+
+/* ─── Triage action buttons ─────────────────────────────────────────────── */
+.triage-actions { display: flex; gap: 8px; }
+.triage-tour {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.triage-tour:hover { background: rgba(88, 166, 255, 0.12); }
+
+/* ─── Cinematic guided tour player ──────────────────────────────────────── */
+.tour-player {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  width: min(720px, calc(100vw - 64px));
+  background: rgba(22, 27, 34, 0.92);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  overflow: hidden;
+  animation: tour-rise 0.3s ease;
+}
+@keyframes tour-rise {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+.tour-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.tour-spinner { display: inline-block; animation: spin 1.2s linear infinite; color: var(--accent); }
+
+.tour-dwell-track { height: 3px; background: var(--bg-tertiary); }
+.tour-dwell-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  animation-name: tour-dwell;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes tour-dwell { from { width: 0; } to { width: 100%; } }
+
+.tour-body { padding: 14px 18px 12px; }
+.tour-caption {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.tour-controls { display: flex; align-items: center; gap: 8px; }
+.tour-progress { font-size: 11px; color: var(--text-muted); margin-right: auto; }
+.tour-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.tour-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.tour-btn:disabled { opacity: 0.35; cursor: default; }
+.tour-playpause { min-width: 36px; }
+.tour-exit:hover { border-color: var(--diff-remove-text); color: var(--diff-remove-text); }

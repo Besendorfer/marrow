@@ -229,6 +229,7 @@ pub fn run() {
             commands::get_my_review_state,
             commands::submit_review,
             commands::generate_review_body,
+            commands::generate_tour,
             commands::update_review_comment,
             commands::create_review_comment,
             commands::toggle_reaction,

@@ -13,6 +13,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
 import { TriageCard } from "./components/TriageCard";
+import { TourPlayer } from "./components/TourPlayer";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
 import { ReviewPicker } from "./components/ReviewPicker";
@@ -22,12 +23,21 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, TourState, TourStop } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
 function isOpenerTab(tab: Tab): boolean {
   return !tab.manifest && !tab.loading && !tab.error;
+}
+
+const IDLE_TOUR: TourState = { status: "idle", stops: [], index: 0, playing: false, opening: "" };
+
+/** How long a tour stop lingers before auto-advancing — scaled to reading time
+ * (~200 wpm), clamped so short notes don't flash and long ones don't drag. */
+function tourDwellMs(narration: string): number {
+  const words = narration.trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(4500, Math.min(13000, 2800 + words * 320));
 }
 
 function App() {
@@ -41,6 +51,8 @@ function App() {
   const [expandAllHunks, setExpandAllHunks] = useState(false);
   // Set when jumping from the triage card so the diff scrolls to the risk's line.
   const [pendingJump, setPendingJump] = useState<{ path: string; line: number } | null>(null);
+  // The cinematic guided tour (auto-playing walkthrough of the active PR).
+  const [tour, setTour] = useState<TourState>(IDLE_TOUR);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -229,7 +241,7 @@ function App() {
       onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
-      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); },
+      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); exitTour(); },
       onNextTab: () => selectAdjacentTab(1),
       onPrevTab: () => selectAdjacentTab(-1),
       onCloseTab: () => { if (activeTabId) closeTab(activeTabId); },
@@ -845,6 +857,111 @@ function App() {
     updateTab(activeTabId, (t) => ({ ...t, sidebarView: "guided", selectedFile: target ?? t.selectedFile }));
     setPendingJump(null);
   }
+
+  // ─── Cinematic guided tour ──────────────────────────────────────────────
+  type TourCandidate = { path: string; line: number | null; kind: "intro" | "note"; severity?: string; seed: string };
+
+  // Build the tour's stops (important parts only): walk the contract-first order;
+  // for each file that carries a critical/warning note or is high-risk, add a
+  // brief intro then a stop at each important highlight.
+  function buildTourCandidates(manifest: ReviewManifest): TourCandidate[] {
+    const order = manifest.triage?.review_order ?? [];
+    const rationale = new Map(order.map((o) => [o.path, o.rationale]));
+    const candidates: TourCandidate[] = [];
+    for (const item of order) {
+      const file = manifest.files.find((f) => f.path === item.path);
+      if (!file) continue;
+      const important = (file.highlights ?? [])
+        .filter((h) => h.severity === "critical" || h.severity === "warning")
+        .sort((a, b) => a.start_line - b.start_line);
+      const highRisk = file.risk_level === "critical" || file.risk_level === "high";
+      if (important.length === 0 && !highRisk) continue;
+      candidates.push({
+        path: file.path,
+        line: important[0]?.start_line ?? file.highlights?.[0]?.start_line ?? null,
+        kind: "intro",
+        seed: rationale.get(file.path) || `${file.category}: ${file.reason}`,
+      });
+      for (const h of important) {
+        candidates.push({ path: file.path, line: h.start_line, kind: "note", severity: h.severity, seed: h.comment });
+      }
+    }
+    return candidates;
+  }
+
+  async function handleStartTour() {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return;
+    const manifest = tab.manifest;
+    const candidates = buildTourCandidates(manifest);
+    if (candidates.length === 0) {
+      addToast("info", "Nothing stands out to tour — use the guided list to review in order");
+      return;
+    }
+    updateTab(activeTabId, (t) => ({ ...t, sidebarView: "guided" }));
+    setTour({ ...IDLE_TOUR, status: "loading" });
+    try {
+      const result = await invoke<{ opening: string; narrations: string[] }>("generate_tour", {
+        prTitle: manifest.pr_title,
+        summary: manifest.summary,
+        seeds: candidates.map((c) => ({ path: c.path, kind: c.kind, seed: c.seed, severity: c.severity ?? null })),
+      });
+      const stops: TourStop[] = candidates.map((c, i) => ({
+        path: c.path,
+        line: c.line,
+        kind: c.kind,
+        severity: c.severity,
+        narration: result.narrations[i] || c.seed,
+      }));
+      // Lead with the opening as its own stop on the first file.
+      if (result.opening.trim()) {
+        stops.unshift({ path: stops[0].path, line: null, kind: "intro", narration: result.opening });
+      }
+      setTour({ status: "active", stops, index: 0, playing: true, opening: result.opening });
+    } catch (err) {
+      setTour(IDLE_TOUR);
+      addToast("error", `Couldn't build the tour: ${String(err)}`);
+    }
+  }
+
+  function exitTour() { setTour(IDLE_TOUR); }
+  function tourPrev() { setTour((t) => (t.status === "active" ? { ...t, index: Math.max(0, t.index - 1), playing: false } : t)); }
+  function tourNext() { setTour((t) => (t.status === "active" ? { ...t, index: Math.min(t.stops.length - 1, t.index + 1) } : t)); }
+  function tourPlayPause() { setTour((t) => (t.status === "active" ? { ...t, playing: !t.playing } : t)); }
+
+  // Drive the diff for the current tour stop: select its file and scroll/flash
+  // the line (reusing the triage-jump machinery).
+  useEffect(() => {
+    if (tour.status !== "active") return;
+    const stop = tour.stops[tour.index];
+    if (!stop) return;
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    const file = tab?.manifest?.files.find((f) => f.path === stop.path);
+    if (file) {
+      setSelectedFile(file);
+      if (stop.line != null) setPendingJump({ path: stop.path, line: stop.line });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tour.status, tour.index]);
+
+  // The current stop's dwell (0 on the last stop) — drives both the auto-advance
+  // timer and the progress-bar fill.
+  const stopDwell =
+    tour.status === "active" && tour.index < tour.stops.length - 1
+      ? tourDwellMs(tour.stops[tour.index]?.narration ?? "")
+      : 0;
+  useEffect(() => {
+    if (tour.status !== "active" || !tour.playing || stopDwell <= 0) return;
+    const timer = setTimeout(() => {
+      setTour((t) => (t.status === "active" ? { ...t, index: Math.min(t.stops.length - 1, t.index + 1) } : t));
+    }, stopDwell);
+    return () => clearTimeout(timer);
+  }, [tour.status, tour.playing, tour.index, stopDwell]);
+
+  // Leave the tour if the user switches tabs (its stops point at the old PR).
+  useEffect(() => {
+    setTour((t) => (t.status === "idle" ? t : IDLE_TOUR));
+  }, [activeTabId]);
 
   function toggleViewed(filePath: string) {
     const tab = tabs.find((t) => t.id === activeTabId);
@@ -1697,6 +1814,7 @@ function App() {
                     triage={activeTab.manifest.triage}
                     onJump={handleTriageJump}
                     onStartGuided={handleStartGuided}
+                    onStartTour={handleStartTour}
                   />
                 )}
                 {activeTab.manifest.summary && (
@@ -1714,6 +1832,14 @@ function App() {
         </div>
       )}
       {overlays}
+      <TourPlayer
+        tour={tour}
+        dwellMs={stopDwell}
+        onPrev={tourPrev}
+        onNext={tourNext}
+        onPlayPause={tourPlayPause}
+        onExit={exitTour}
+      />
     </div>
   );
 }

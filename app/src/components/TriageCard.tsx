@@ -6,6 +6,8 @@ interface TriageCardProps {
   onJump: (path: string, startLine?: number | null) => void;
   /** Begin the guided fastest-path review from the first ordered file. */
   onStartGuided: () => void;
+  /** Begin the auto-playing cinematic tour. */
+  onStartTour: () => void;
 }
 
 /**
@@ -13,16 +15,21 @@ interface TriageCardProps {
  * with jump links, plus an entry point into the guided path. Shown when no file
  * is selected. Primes the reviewer on risk before they start reading in order.
  */
-export function TriageCard({ triage, onJump, onStartGuided }: TriageCardProps) {
+export function TriageCard({ triage, onJump, onStartGuided, onStartTour }: TriageCardProps) {
   const risks = triage.top_risks;
   return (
     <div className="triage-card">
       <div className="triage-header">
         <h3>What to review first</h3>
         {triage.review_order.length > 0 && (
-          <button className="triage-start" onClick={onStartGuided}>
-            Start guided review &rarr;
-          </button>
+          <div className="triage-actions">
+            <button className="triage-tour" onClick={onStartTour} title="Sit back — an auto-playing, narrated walkthrough">
+              ▶ Take the tour
+            </button>
+            <button className="triage-start" onClick={onStartGuided}>
+              Start guided review &rarr;
+            </button>
+          </div>
         )}
       </div>
       {risks.length === 0 ? (

@@ -52,6 +52,28 @@ export interface TriageReport {
   review_order: ReviewOrderItem[];
 }
 
+/** One stop in the cinematic guided tour. */
+export interface TourStop {
+  path: string;
+  /** Head-side line to scroll to and flash; null = just show the file from the top. */
+  line: number | null;
+  /** "intro" = arriving at a file; "note" = a specific important change. */
+  kind: "intro" | "note";
+  severity?: string;
+  /** AI-written narration shown as the caption. */
+  narration: string;
+}
+
+/** Auto-playing tour state (App-level, for the active review). */
+export interface TourState {
+  status: "idle" | "loading" | "active";
+  stops: TourStop[];
+  index: number;
+  playing: boolean;
+  /** One-line scene-setter shown before the first stop. */
+  opening: string;
+}
+
 export interface ReviewManifest {
   pr_title: string;
   pr_url: string;
