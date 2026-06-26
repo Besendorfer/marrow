@@ -105,6 +105,9 @@ fn default_settings() -> Settings {
         activity_mini_player: true,
         show_approved_prs: false,
         expand_all_hunks: true,
+        tts_muted: false,
+        tts_voice: String::new(),
+        tts_rate: 1.0,
     }
 }
 
@@ -137,6 +140,9 @@ pub fn load_settings() -> Settings {
     let mut activity_mini_player = true;
     let mut show_approved_prs = false;
     let mut expand_all_hunks = true;
+    let mut tts_muted = false;
+    let mut tts_voice = String::new();
+    let mut tts_rate: f32 = 1.0;
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -177,6 +183,12 @@ pub fn load_settings() -> Settings {
             show_approved_prs = val == "true";
         } else if let Some(val) = line.strip_prefix("expand_all_hunks=") {
             expand_all_hunks = val == "true";
+        } else if let Some(val) = line.strip_prefix("tts_muted=") {
+            tts_muted = val == "true";
+        } else if let Some(val) = line.strip_prefix("tts_voice=") {
+            tts_voice = val.to_string();
+        } else if let Some(val) = line.strip_prefix("tts_rate=") {
+            tts_rate = val.parse().unwrap_or(1.0);
         }
     }
 
@@ -199,6 +211,9 @@ pub fn load_settings() -> Settings {
         activity_mini_player,
         show_approved_prs,
         expand_all_hunks,
+        tts_muted,
+        tts_voice,
+        tts_rate,
     }
 }
 
@@ -247,6 +262,9 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     ));
     content.push_str(&format!("show_approved_prs={}\n", settings.show_approved_prs));
     content.push_str(&format!("expand_all_hunks={}\n", settings.expand_all_hunks));
+    content.push_str(&format!("tts_muted={}\n", settings.tts_muted));
+    content.push_str(&format!("tts_voice={}\n", settings.tts_voice));
+    content.push_str(&format!("tts_rate={}\n", settings.tts_rate));
 
     fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;
 

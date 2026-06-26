@@ -212,6 +212,9 @@ export interface Settings {
   activity_mini_player: boolean;
   show_approved_prs: boolean;
   expand_all_hunks: boolean;
+  tts_muted: boolean;
+  tts_voice: string;
+  tts_rate: number;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";

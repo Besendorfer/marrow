@@ -171,6 +171,19 @@ pub struct Settings {
     /// to auto-collapse low-significance hunks (issue #55).
     #[serde(default = "default_true")]
     pub expand_all_hunks: bool,
+    /// Mute the guided tour's spoken narration by default.
+    #[serde(default)]
+    pub tts_muted: bool,
+    /// Preferred speech-synthesis voice name for tour narration ("" = system default).
+    #[serde(default)]
+    pub tts_voice: String,
+    /// Tour narration speaking rate (1.0 = normal).
+    #[serde(default = "default_tts_rate")]
+    pub tts_rate: f32,
+}
+
+fn default_tts_rate() -> f32 {
+    1.0
 }
 
 fn default_true() -> bool {

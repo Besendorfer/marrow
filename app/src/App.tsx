@@ -125,8 +125,11 @@ function App() {
   const [pendingJump, setPendingJump] = useState<{ path: string; line: number; endLine?: number } | null>(null);
   // The cinematic guided tour (auto-playing walkthrough of the active PR).
   const [tour, setTour] = useState<TourState>(IDLE_TOUR);
-  // Spoken narration (Web Speech API). On by default; toggled in the player.
+  // Spoken narration (Web Speech API). Defaults come from settings; the player
+  // mute toggle overrides for the session.
   const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [ttsVoice, setTtsVoice] = useState("");
+  const [ttsRate, setTtsRate] = useState(1);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -168,6 +171,9 @@ function App() {
       // Re-apply settings that drive live rendering so changes take effect without
       // a restart (the next file open picks up expand_all_hunks).
       setExpandAllHunks(s.expand_all_hunks ?? true);
+      setTtsEnabled(!(s.tts_muted ?? false));
+      setTtsVoice(s.tts_voice ?? "");
+      setTtsRate(s.tts_rate ?? 1);
     }).catch(() => {});
   }, []);
 
@@ -416,6 +422,9 @@ function App() {
         setShowAiNotes(settings.show_ai_notes ?? true);
         setHunkFilter(settings.hunk_filter || "all");
         setExpandAllHunks(settings.expand_all_hunks ?? true);
+        setTtsEnabled(!(settings.tts_muted ?? false));
+        setTtsVoice(settings.tts_voice ?? "");
+        setTtsRate(settings.tts_rate ?? 1);
       } catch {
         // Use defaults on failure
       }
@@ -1108,7 +1117,11 @@ function App() {
     if (!text) return;
     const atEnd = tour.index >= tour.stops.length - 1;
     const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 0.98;
+    utter.rate = ttsRate;
+    if (ttsVoice) {
+      const voice = synth.getVoices().find((v) => v.name === ttsVoice);
+      if (voice) utter.voice = voice;
+    }
     utter.onend = () => {
       if (atEnd) return;
       // Small breath between stops, then advance.

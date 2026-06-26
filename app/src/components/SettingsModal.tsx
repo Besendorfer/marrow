@@ -30,6 +30,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [perWatchCap, setPerWatchCap] = useState(50);
   const [showApprovedPrs, setShowApprovedPrs] = useState(false);
   const [expandAllHunks, setExpandAllHunks] = useState(true);
+  const [ttsMuted, setTtsMuted] = useState(false);
+  const [ttsVoice, setTtsVoice] = useState("");
+  const [ttsRate, setTtsRate] = useState(1);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -52,6 +56,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setPerWatchCap(s.activity_per_watch_cap || 50);
         setShowApprovedPrs(s.show_approved_prs ?? false);
         setExpandAllHunks(s.expand_all_hunks ?? true);
+        setTtsMuted(s.tts_muted ?? false);
+        setTtsVoice(s.tts_voice ?? "");
+        setTtsRate(s.tts_rate ?? 1);
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
       setSaved(false);
@@ -69,6 +76,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   function removeWatch(id: string) {
     setWatches((ws) => ws.filter((w) => w.id !== id));
     setSaved(false);
+  }
+  // Load available speech-synthesis voices (they can populate asynchronously).
+  useEffect(() => {
+    if (!("speechSynthesis" in window)) return;
+    const load = () => setVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.addEventListener("voiceschanged", load);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
+  }, []);
+
+  function testVoice() {
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance("This is how the guided tour will sound.");
+    u.rate = ttsRate;
+    const v = voices.find((x) => x.name === ttsVoice);
+    if (v) u.voice = v;
+    window.speechSynthesis.speak(u);
   }
 
   async function handleSave(e: React.FormEvent) {
@@ -93,6 +118,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           activity_per_watch_cap: perWatchCap,
           show_approved_prs: showApprovedPrs,
           expand_all_hunks: expandAllHunks,
+          tts_muted: ttsMuted,
+          tts_voice: ttsVoice,
+          tts_rate: ttsRate,
         },
       });
       // Persist watches alongside settings, dropping blank rows.
@@ -393,6 +421,69 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             When off, low-significance hunks start collapsed so you can focus on the
             changes that matter (takes effect the next time you open a file).
           </p>
+
+          {"speechSynthesis" in window && (
+            <>
+              <div className="settings-divider" />
+              <h3 className="settings-section-title">Tour narration</h3>
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  checked={!ttsMuted}
+                  onChange={(e) => {
+                    setTtsMuted(!e.target.checked);
+                    setSaved(false);
+                  }}
+                />
+                Narrate guided tours out loud by default
+              </label>
+
+              <label className="settings-label" htmlFor="tts-voice">
+                Voice
+              </label>
+              <p className="settings-hint">
+                System voices. The enhanced/premium voices (download in macOS System
+                Settings &rarr; Accessibility &rarr; Spoken Content) sound far better.
+              </p>
+              <select
+                id="tts-voice"
+                className="settings-input"
+                value={ttsVoice}
+                onChange={(e) => {
+                  setTtsVoice(e.target.value);
+                  setSaved(false);
+                }}
+              >
+                <option value="">System default</option>
+                {voices.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} ({v.lang}){v.localService ? "" : " — online"}
+                  </option>
+                ))}
+              </select>
+
+              <label className="settings-label" htmlFor="tts-rate">
+                Speed — {ttsRate.toFixed(2)}×
+              </label>
+              <div className="settings-rate-row">
+                <input
+                  id="tts-rate"
+                  type="range"
+                  min={0.6}
+                  max={1.6}
+                  step={0.05}
+                  value={ttsRate}
+                  onChange={(e) => {
+                    setTtsRate(parseFloat(e.target.value));
+                    setSaved(false);
+                  }}
+                />
+                <button type="button" className="settings-test-voice" onClick={testVoice}>
+                  ▶ Test
+                </button>
+              </div>
+            </>
+          )}
 
           <div className="settings-divider" />
           <h3 className="settings-section-title">Browser Integration</h3>
