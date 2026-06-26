@@ -125,6 +125,9 @@ function App() {
   const [pendingJump, setPendingJump] = useState<{ path: string; line: number; endLine?: number } | null>(null);
   // The cinematic guided tour (auto-playing walkthrough of the active PR).
   const [tour, setTour] = useState<TourState>(IDLE_TOUR);
+  // Spoken narration (Web Speech API). On by default; toggled in the player.
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -979,6 +982,15 @@ function App() {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return;
     const manifest = tab.manifest;
+    // Unlock speech synthesis within this click gesture (WebKit may otherwise
+    // stay silent until a user interaction), since the real speak() fires later.
+    if (ttsSupported && ttsEnabled) {
+      try {
+        const warm = new SpeechSynthesisUtterance(" ");
+        warm.volume = 0;
+        window.speechSynthesis.speak(warm);
+      } catch { /* best-effort */ }
+    }
     const order = manifest.triage?.review_order ?? [];
     const rationale = new Map(order.map((o) => [o.path, o.rationale]));
     const files = tourFilesFor(manifest);
@@ -1031,7 +1043,10 @@ function App() {
     }
   }
 
-  function exitTour() { setTour(IDLE_TOUR); }
+  function exitTour() {
+    if (ttsSupported) window.speechSynthesis.cancel();
+    setTour(IDLE_TOUR);
+  }
   function tourPrev() { setTour((t) => (t.status === "active" ? { ...t, index: Math.max(0, t.index - 1), playing: false } : t)); }
   function tourNext() { setTour((t) => (t.status === "active" ? { ...t, index: Math.min(t.stops.length - 1, t.index + 1) } : t)); }
   function tourPlayPause() { setTour((t) => (t.status === "active" ? { ...t, playing: !t.playing } : t)); }
@@ -1070,13 +1085,42 @@ function App() {
     tourStop && tourStop.path && tourStop.line != null
       ? { line: tourStop.line, endLine: tourStop.endLine ?? tourStop.line, durationMs: stopDwell || 6500, seq: tour.index }
       : null;
+  // When narration is spoken, advancement is driven by speech ending (below);
+  // otherwise fall back to the reading-time timer.
+  const ttsActive = ttsEnabled && ttsSupported;
   useEffect(() => {
-    if (tour.status !== "active" || !tour.playing || stopDwell <= 0) return;
+    if (ttsActive || tour.status !== "active" || !tour.playing || stopDwell <= 0) return;
     const timer = setTimeout(() => {
       setTour((t) => (t.status === "active" ? { ...t, index: Math.min(t.stops.length - 1, t.index + 1) } : t));
     }, stopDwell);
     return () => clearTimeout(timer);
-  }, [tour.status, tour.playing, tour.index, stopDwell]);
+  }, [ttsActive, tour.status, tour.playing, tour.index, stopDwell]);
+
+  // Speak the current stop; advance when it finishes. Re-runs on stop/play/mute
+  // changes (resuming re-speaks the current line, which is fine — they're short).
+  useEffect(() => {
+    if (!ttsSupported) return;
+    const synth = window.speechSynthesis;
+    synth.cancel();
+    if (!ttsActive || tour.status !== "active" || !tour.playing) return;
+    const stop = tour.stops[tour.index];
+    const text = stop?.narration?.trim();
+    if (!text) return;
+    const atEnd = tour.index >= tour.stops.length - 1;
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.98;
+    utter.onend = () => {
+      if (atEnd) return;
+      // Small breath between stops, then advance.
+      window.setTimeout(() => {
+        setTour((t) => (t.status === "active" && t.playing ? { ...t, index: Math.min(t.stops.length - 1, t.index + 1) } : t));
+      }, 550);
+    };
+    // Voices can load late; speak on the next tick so a chosen voice is available.
+    synth.speak(utter);
+    return () => synth.cancel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsActive, tour.status, tour.playing, tour.index]);
 
   // Leave the tour if the user switches tabs (its stops point at the old PR).
   useEffect(() => {
@@ -1950,6 +1994,10 @@ function App() {
             <TourPlayer
               tour={tour}
               dwellMs={stopDwell}
+              ttsDriven={ttsActive}
+              muted={!ttsEnabled}
+              ttsSupported={ttsSupported}
+              onToggleMute={() => setTtsEnabled((v) => !v)}
               onPrev={tourPrev}
               onNext={tourNext}
               onPlayPause={tourPlayPause}

@@ -4556,3 +4556,17 @@ mark.search-highlight-current {
 .tour-tag-walk { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
 .tour-tag-critical { background: var(--risk-critical-bg); color: var(--risk-critical); }
 .tour-tag-warning { background: var(--risk-high-bg); color: var(--risk-high); }
+
+.tour-dwell-speaking {
+  height: 100%;
+  width: 35%;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: tour-speaking 1.4s ease-in-out infinite;
+}
+@keyframes tour-speaking {
+  0% { margin-left: -35%; opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { margin-left: 100%; opacity: 0.4; }
+}
+.tour-mute.muted { opacity: 0.7; }

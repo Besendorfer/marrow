@@ -5,6 +5,13 @@ interface TourPlayerProps {
   /** Milliseconds the current stop will dwell before auto-advancing (drives the
    * progress bar animation); 0 when paused or on the last stop. */
   dwellMs: number;
+  /** True when advancement is driven by spoken narration (not the timer). */
+  ttsDriven: boolean;
+  /** Narration is muted. */
+  muted: boolean;
+  /** The platform supports speech synthesis. */
+  ttsSupported: boolean;
+  onToggleMute: () => void;
   onPrev: () => void;
   onNext: () => void;
   onPlayPause: () => void;
@@ -16,7 +23,7 @@ interface TourPlayerProps {
  * the window showing the current narration, a dwell progress bar, and minimal
  * transport controls. The scrolling/flashing of the diff is driven by App.
  */
-export function TourPlayer({ tour, dwellMs, onPrev, onNext, onPlayPause, onExit }: TourPlayerProps) {
+export function TourPlayer({ tour, dwellMs, ttsDriven, muted, ttsSupported, onToggleMute, onPrev, onNext, onPlayPause, onExit }: TourPlayerProps) {
   if (tour.status === "loading") {
     return (
       <div className="tour-player tour-loading">
@@ -35,16 +42,21 @@ export function TourPlayer({ tour, dwellMs, onPrev, onNext, onPlayPause, onExit 
 
   return (
     <div className="tour-player">
-      {/* Dwell progress: re-keyed per stop so the fill animation restarts. */}
+      {/* Progress: a timed fill when paced by the reader, or an indeterminate
+          shimmer while narration is being spoken. */}
       <div className="tour-dwell-track">
-        <div
-          key={tour.index}
-          className="tour-dwell-fill"
-          style={{
-            animationDuration: dwellMs > 0 ? `${dwellMs}ms` : "0ms",
-            animationPlayState: tour.playing && !atEnd ? "running" : "paused",
-          }}
-        />
+        {ttsDriven && tour.playing && !atEnd ? (
+          <div className="tour-dwell-speaking" key={`spk-${tour.index}`} />
+        ) : (
+          <div
+            key={tour.index}
+            className="tour-dwell-fill"
+            style={{
+              animationDuration: dwellMs > 0 ? `${dwellMs}ms` : "0ms",
+              animationPlayState: tour.playing && !atEnd ? "running" : "paused",
+            }}
+          />
+        )}
       </div>
       <div className="tour-body">
         {stop.kind === "note" ? (
@@ -64,6 +76,15 @@ export function TourPlayer({ tour, dwellMs, onPrev, onNext, onPlayPause, onExit 
           <button className="tour-btn" onClick={onNext} disabled={atEnd} title="Next stop">
             &rsaquo;
           </button>
+          {ttsSupported && (
+            <button
+              className={`tour-btn tour-mute${muted ? " muted" : ""}`}
+              onClick={onToggleMute}
+              title={muted ? "Turn on narration" : "Mute narration"}
+            >
+              {muted ? "🔇" : "🔊"}
+            </button>
+          )}
           <button className="tour-btn tour-exit" onClick={onExit} title="Exit tour (Esc)">
             ✕
           </button>
