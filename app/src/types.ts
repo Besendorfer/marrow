@@ -59,8 +59,9 @@ export interface TourStop {
   line: number | null;
   /** Head-side end line of the range to flash (defaults to `line` when absent). */
   endLine?: number | null;
-  /** "intro" = arriving at a file; "note" = a specific important change. */
-  kind: "intro" | "note";
+  /** "intro" = arriving at a file; "walk" = explaining substantive code;
+   * "note" = a flagged issue. */
+  kind: "intro" | "walk" | "note";
   severity?: string;
   /** AI-written narration shown as the caption. */
   narration: string;

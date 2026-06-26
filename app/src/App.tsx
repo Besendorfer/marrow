@@ -40,6 +40,77 @@ function tourDwellMs(narration: string): number {
   return Math.max(4500, Math.min(13000, 2800 + words * 320));
 }
 
+/** A stop as returned by the generate_tour command (line numbers are the AI's). */
+interface RawTourStop {
+  path: string;
+  start_line?: number | null;
+  end_line?: number | null;
+  kind: string;
+  narration: string;
+}
+
+/** Snap an AI-chosen line to the nearest real changed line (within 6), or null
+ * if it's too far off to trust. */
+function snapToValid(valid: number[], line: number): number | null {
+  if (valid.length === 0) return line;
+  let best = valid[0];
+  let bestD = Math.abs(valid[0] - line);
+  for (const v of valid) {
+    const d = Math.abs(v - line);
+    if (d < bestD) { best = v; bestD = d; }
+  }
+  return bestD <= 6 ? best : null;
+}
+
+/** Validate + assemble the AI's stops into the final tour: ground each line range
+ * against real lines, keep contract-first file order, guarantee an intro per file
+ * and that every flagged highlight gets a stop, and order stops top-to-bottom. */
+function assembleTourStops(
+  raw: RawTourStop[],
+  files: FileDiff[],
+  validByPath: Map<string, number[]>,
+  highlightsByPath: Map<string, FileDiff["highlights"]>,
+  rationale: Map<string, string>,
+): TourStop[] {
+  const fileSet = new Set(files.map((f) => f.path));
+  const groups = new Map<string, TourStop[]>();
+  const groupFor = (p: string) => {
+    let g = groups.get(p);
+    if (!g) { g = []; groups.set(p, g); }
+    return g;
+  };
+
+  for (const s of raw) {
+    if (!fileSet.has(s.path)) continue;
+    const g = groupFor(s.path);
+    if (s.kind === "intro" || s.start_line == null) {
+      g.push({ path: s.path, line: null, kind: "intro", narration: s.narration });
+      continue;
+    }
+    const valid = validByPath.get(s.path) ?? [];
+    const start = snapToValid(valid, s.start_line);
+    if (start == null) continue; // can't ground it to a real line — drop
+    const maxLine = valid.length ? valid[valid.length - 1] : start;
+    const end = Math.max(start, Math.min(s.end_line ?? start, maxLine));
+    g.push({ path: s.path, line: start, endLine: end, kind: s.kind === "note" ? "note" : "walk", narration: s.narration });
+  }
+
+  const out: TourStop[] = [];
+  for (const f of files) {
+    const g = groupFor(f.path);
+    // Guarantee every flagged highlight has a stop (the issues are "good to keep").
+    for (const h of highlightsByPath.get(f.path) ?? []) {
+      const covered = g.some((st) => st.line != null && st.line >= h.start_line - 2 && st.line <= h.end_line + 2);
+      if (!covered) g.push({ path: f.path, line: h.start_line, endLine: h.end_line, kind: "note", severity: h.severity, narration: h.comment });
+    }
+    const intro = g.find((s) => s.kind === "intro")
+      ?? { path: f.path, line: null, kind: "intro" as const, narration: rationale.get(f.path) || "" };
+    const rest = g.filter((s) => s.kind !== "intro").sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+    if (rest.length > 0) out.push(intro, ...rest); // skip files the AI gave nothing for
+  }
+  return out;
+}
+
 function App() {
   const nextTabId = useRef(1);
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -860,67 +931,98 @@ function App() {
   }
 
   // ─── Cinematic guided tour ──────────────────────────────────────────────
-  type TourCandidate = { path: string; line: number | null; endLine?: number | null; kind: "intro" | "note"; severity?: string; seed: string };
 
-  // Build the tour's stops (important parts only): walk the contract-first order;
-  // for each file that carries a critical/warning note or is high-risk, add a
-  // brief intro then a stop at each important highlight.
-  function buildTourCandidates(manifest: ReviewManifest): TourCandidate[] {
+  // Annotate a unified diff with head-side line numbers so the AI can reference
+  // exact lines ("[L52] + ..."). Returns the annotated text and the set of valid
+  // head lines (added + context) for validating the AI's chosen ranges.
+  function annotateDiff(diff: string): { text: string; valid: number[] } {
+    const out: string[] = [];
+    const valid: number[] = [];
+    let head = 0;
+    for (const line of diff.split("\n")) {
+      if (line.startsWith("@@")) {
+        const m = line.match(/\+(\d+)/);
+        if (m) head = parseInt(m[1], 10);
+        out.push(line);
+      } else if (line.startsWith("+")) {
+        out.push(`[L${head}] ${line}`);
+        valid.push(head);
+        head++;
+      } else if (line.startsWith("-")) {
+        out.push(`[del] ${line}`);
+      } else {
+        out.push(`[L${head}] ${line}`);
+        valid.push(head);
+        head++;
+      }
+    }
+    return { text: out.join("\n"), valid };
+  }
+
+  // The significant files to tour (contract-first order, capped): high-risk
+  // files or files with a critical/warning highlight.
+  function tourFilesFor(manifest: ReviewManifest): FileDiff[] {
     const order = manifest.triage?.review_order ?? [];
-    const rationale = new Map(order.map((o) => [o.path, o.rationale]));
-    const candidates: TourCandidate[] = [];
+    const out: FileDiff[] = [];
     for (const item of order) {
       const file = manifest.files.find((f) => f.path === item.path);
       if (!file) continue;
-      const important = (file.highlights ?? [])
-        .filter((h) => h.severity === "critical" || h.severity === "warning")
-        .sort((a, b) => a.start_line - b.start_line);
+      const hasImportant = (file.highlights ?? []).some((h) => h.severity === "critical" || h.severity === "warning");
       const highRisk = file.risk_level === "critical" || file.risk_level === "high";
-      if (important.length === 0 && !highRisk) continue;
-      // Intro lands at the top of the file (line: null) — the reviewer gets
-      // oriented before the tour pans down into the specific changes.
-      candidates.push({
-        path: file.path,
-        line: null,
-        kind: "intro",
-        seed: rationale.get(file.path) || `${file.category}: ${file.reason}`,
-      });
-      for (const h of important) {
-        candidates.push({ path: file.path, line: h.start_line, endLine: h.end_line, kind: "note", severity: h.severity, seed: h.comment });
-      }
+      if (hasImportant || highRisk) out.push(file);
+      if (out.length >= 7) break;
     }
-    return candidates;
+    return out;
   }
 
   async function handleStartTour() {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return;
     const manifest = tab.manifest;
-    const candidates = buildTourCandidates(manifest);
-    if (candidates.length === 0) {
+    const order = manifest.triage?.review_order ?? [];
+    const rationale = new Map(order.map((o) => [o.path, o.rationale]));
+    const files = tourFilesFor(manifest);
+    if (files.length === 0) {
       addToast("info", "Nothing stands out to tour — use the guided list to review in order");
       return;
     }
+
+    // Per-file valid head lines (for snapping the AI's ranges to real lines) and
+    // the important highlights we guarantee are kept.
+    const validByPath = new Map<string, number[]>();
+    const highlightsByPath = new Map<string, FileDiff["highlights"]>();
+    const reqFiles = files.map((f) => {
+      const { text, valid } = annotateDiff(f.unified_diff);
+      validByPath.set(f.path, valid);
+      const important = (f.highlights ?? [])
+        .filter((h) => h.severity === "critical" || h.severity === "warning")
+        .sort((a, b) => a.start_line - b.start_line);
+      highlightsByPath.set(f.path, important);
+      return {
+        path: f.path,
+        rationale: rationale.get(f.path) || `${f.category}: ${f.reason}`,
+        risk_level: f.risk_level,
+        diff: text,
+        highlights: important.map((h) => ({ start_line: h.start_line, end_line: h.end_line, severity: h.severity, comment: h.comment })),
+      };
+    });
+
     updateTab(activeTabId, (t) => ({ ...t, sidebarView: "guided" }));
     setTour({ ...IDLE_TOUR, status: "loading" });
     try {
-      const result = await invoke<{ opening: string; narrations: string[] }>("generate_tour", {
+      const result = await invoke<{ opening: string; stops: RawTourStop[] }>("generate_tour", {
         prTitle: manifest.pr_title,
         summary: manifest.summary,
-        seeds: candidates.map((c) => ({ path: c.path, kind: c.kind, seed: c.seed, severity: c.severity ?? null })),
+        files: reqFiles,
       });
-      const stops: TourStop[] = candidates.map((c, i) => ({
-        path: c.path,
-        line: c.line,
-        endLine: c.endLine,
-        kind: c.kind,
-        severity: c.severity,
-        narration: result.narrations[i] || c.seed,
-      }));
-      // Lead with the opening rundown as its own stop on the overview card
-      // (empty path = show the triage overview, not a file).
+      const stops = assembleTourStops(result.stops, files, validByPath, highlightsByPath, rationale);
       if (result.opening.trim()) {
         stops.unshift({ path: "", line: null, kind: "intro", narration: result.opening });
+      }
+      if (stops.length === 0) {
+        setTour(IDLE_TOUR);
+        addToast("error", "The tour came back empty — try again");
+        return;
       }
       setTour({ status: "active", stops, index: 0, playing: true, opening: result.opening });
     } catch (err) {

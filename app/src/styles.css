@@ -4541,3 +4541,18 @@ mark.search-highlight-current {
 .tour-btn:disabled { opacity: 0.35; cursor: default; }
 .tour-playpause { min-width: 36px; }
 .tour-exit:hover { border-color: var(--diff-remove-text); color: var(--diff-remove-text); }
+
+.tour-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 5px;
+  margin-bottom: 8px;
+  animation: tour-caption-fade 0.55s ease;
+}
+.tour-tag-walk { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+.tour-tag-critical { background: var(--risk-critical-bg); color: var(--risk-critical); }
+.tour-tag-warning { background: var(--risk-high-bg); color: var(--risk-high); }

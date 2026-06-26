@@ -47,6 +47,11 @@ export function TourPlayer({ tour, dwellMs, onPrev, onNext, onPlayPause, onExit 
         />
       </div>
       <div className="tour-body">
+        {stop.kind === "note" ? (
+          <span className={`tour-tag tour-tag-${stop.severity ?? "warning"}`} key={`tag-${tour.index}`}>⚠ Concern</span>
+        ) : stop.kind === "walk" ? (
+          <span className="tour-tag tour-tag-walk" key={`tag-${tour.index}`}>Walkthrough</span>
+        ) : null}
         <p className="tour-caption" key={tour.index}>{stop.narration}</p>
         <div className="tour-controls">
           <span className="tour-progress">{tour.index + 1} / {total}</span>

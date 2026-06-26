@@ -537,52 +537,101 @@ pub fn load_cached_manifest_by_pr(pr_url: String) -> Result<Option<ReviewManifes
     ))
 }
 
-/// One candidate stop for the guided tour, built by the frontend from the
-/// triage order + important highlights. `kind` is "intro" (arriving at a file) or
-/// "note" (a specific change); `seed` is the terse note the AI rewrites.
+/// A flagged issue (AI highlight) on a file, with its line range, passed into the
+/// tour so the AI can narrate it in place.
 #[derive(Debug, Deserialize)]
-pub struct TourSeed {
+pub struct TourHighlight {
+    pub start_line: u64,
+    pub end_line: u64,
+    pub severity: String,
+    pub comment: String,
+}
+
+/// A significant file the tour should walk through. `diff` is annotated with
+/// head-side line numbers (`[L52] + ...`) so the AI can reference exact lines.
+#[derive(Debug, Deserialize)]
+pub struct TourFile {
     pub path: String,
-    pub kind: String,
-    pub seed: String,
     #[serde(default)]
-    pub severity: Option<String>,
+    pub rationale: String,
+    #[serde(default)]
+    pub risk_level: String,
+    pub diff: String,
+    #[serde(default)]
+    pub highlights: Vec<TourHighlight>,
 }
 
-/// Narration for a tour: a one-line opening plus one string per seed (in order).
+/// One stop the AI emitted: a file, an optional line range to focus, a kind, and
+/// the narration. `kind` is "intro" | "walk" | "note".
+#[derive(Debug, Clone, Serialize)]
+pub struct TourStopOut {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u64>,
+    pub kind: String,
+    pub narration: String,
+}
+
+/// The generated tour: an opening rundown plus an ordered list of stops.
 #[derive(Debug, Serialize)]
-pub struct TourNarration {
+pub struct TourOut {
     pub opening: String,
-    pub narrations: Vec<String>,
+    pub stops: Vec<TourStopOut>,
 }
 
-fn build_tour_prompt(pr_title: &str, summary: &str, seeds: &[TourSeed]) -> String {
-    let mut stops = String::new();
-    for (i, s) in seeds.iter().enumerate() {
-        let tag = match s.severity.as_deref() {
-            Some(sev) if s.kind == "note" => format!("note/{sev}"),
-            _ => s.kind.clone(),
-        };
-        stops.push_str(&format!("{}. [{}] {} — {}\n", i + 1, tag, s.path, s.seed));
+fn build_tour_prompt(pr_title: &str, summary: &str, files: &[TourFile]) -> String {
+    const PER_FILE_BUDGET: usize = 2600;
+    let mut files_block = String::new();
+    for f in files {
+        files_block.push_str(&format!("\n=== FILE: {} [{}] ===\n", f.path, f.risk_level));
+        if !f.rationale.trim().is_empty() {
+            files_block.push_str(&format!("Role: {}\n", f.rationale));
+        }
+        if !f.highlights.is_empty() {
+            files_block.push_str("Flagged issues:\n");
+            for h in &f.highlights {
+                files_block.push_str(&format!(
+                    "- L{}-{} [{}]: {}\n",
+                    h.start_line, h.end_line, h.severity, h.comment
+                ));
+            }
+        }
+        files_block.push_str("Diff (head-side line numbers in [Lnn]):\n");
+        let diff: String = f.diff.chars().take(PER_FILE_BUDGET).collect();
+        files_block.push_str(&diff);
+        files_block.push('\n');
     }
+
     format!(
-        r#"You are narrating a calm, guided walkthrough of a pull request for a code reviewer — think a gentle museum audio guide, not a lecture. You are given the tour stops IN ORDER. Each stop has a file path, a kind ("intro" = arriving at a new file, "note" = a specific change to look at), and a terse seed note.
+        r#"You are the narrator of a calm, cinematic guided tour of a pull request, for a reviewer who wants to be walked through the important code hands-free. Think a thoughtful senior engineer pair-reviewing, not a lecture.
 
-Write a SHORT narration for each stop — 1 to 2 sentences, warm and clear but never chatty — that flows as a sequence (use light connective phrasing like "First,", "Next,", "Here,", "Now," where it reads naturally). For "intro" stops, orient the reviewer to the file's role in one sentence. For "note" stops, say what to notice and why it matters. Keep each concise so the reviewer is never overwhelmed. Don't restate the file path. Don't invent details beyond the seed and PR context.
+For EACH file below, in order, produce a small sequence of stops:
+1. ONE "intro" stop (no line numbers) — one sentence on the file's role in the change.
+2. A few "walk" stops that take the reviewer THROUGH the substantive code that makes this file significant. Focus a tight line range (use the [Lnn] head-side numbers). Explain what the code does and why it matters. For the 1-2 most important spots, you may go essentially line-by-line (single-line or 2-3 line ranges), discussing what each part does. This is the heart of the tour — show, don't just summarize.
+3. A "note" stop for each flagged issue, at its line range, explaining the concern.
 
-Also write an "opening": a 2-3 sentence high-level rundown, from the author's perspective, of what this PR sets out to accomplish and the broad approach it takes — the goal and shape of the change before we dive into specific files. Warm and orienting, not a list.
+Rules:
+- Each narration is 1-2 sentences, warm and clear, flowing as a sequence ("First," / "Here," / "Notice," / "Now,"). Never chatty; never overwhelming.
+- start_line/end_line MUST be head-side numbers that actually appear as [Lnn] in that file's diff. Prefer tight ranges. "intro" stops omit line numbers.
+- Don't invent code or details not in the diff. Don't restate the file path.
+- Keep the total reasonable — a handful of stops per file, weighted toward the significant ones.
 
-Respond with ONLY a JSON object: {{"opening": "...", "stops": ["narration 1", "narration 2", ...]}} with EXACTLY {n} strings in "stops", in the given order.
+Also write an "opening": a 2-3 sentence high-level rundown, from the author's perspective, of what this PR sets out to accomplish and its broad approach — before diving into files.
+
+Respond with ONLY a JSON object:
+{{"opening": "...", "stops": [{{"path": "...", "start_line": 52, "end_line": 60, "kind": "walk", "narration": "..."}}, ...]}}
+"intro" stops omit start_line/end_line. Stops must be grouped by file in the given file order.
 
 PR Title: {title}
 Summary: {summary}
 
-Stops:
-{stops}"#,
-        n = seeds.len(),
+Files:
+{files_block}"#,
         title = pr_title,
         summary = if summary.trim().is_empty() { "(none)" } else { summary },
-        stops = stops,
+        files_block = files_block,
     )
 }
 
@@ -590,19 +639,38 @@ Stops:
 pub async fn generate_tour(
     pr_title: String,
     summary: String,
-    seeds: Vec<TourSeed>,
-) -> Result<TourNarration, String> {
-    if seeds.is_empty() {
-        return Ok(TourNarration { opening: String::new(), narrations: vec![] });
+    files: Vec<TourFile>,
+) -> Result<TourOut, String> {
+    if files.is_empty() {
+        return Ok(TourOut { opening: String::new(), stops: vec![] });
     }
     let settings = load_settings();
     let backend = AiBackend::from_settings(&settings).await?;
-    let prompt = build_tour_prompt(&pr_title, &summary, &seeds);
+    let prompt = build_tour_prompt(&pr_title, &summary, &files);
 
-    // Fallback narration if the AI call/parse fails: the seed text itself.
-    let fallback = || TourNarration {
-        opening: String::new(),
-        narrations: seeds.iter().map(|s| s.seed.clone()).collect(),
+    // Fallback if the AI call/parse fails: an intro per file + its issues, using
+    // the seed text directly so the tour still runs.
+    let fallback = || {
+        let mut stops = Vec::new();
+        for f in &files {
+            stops.push(TourStopOut {
+                path: f.path.clone(),
+                start_line: None,
+                end_line: None,
+                kind: "intro".to_string(),
+                narration: f.rationale.clone(),
+            });
+            for h in &f.highlights {
+                stops.push(TourStopOut {
+                    path: f.path.clone(),
+                    start_line: Some(h.start_line),
+                    end_line: Some(h.end_line),
+                    kind: "note".to_string(),
+                    narration: h.comment.clone(),
+                });
+            }
+        }
+        TourOut { opening: String::new(), stops }
     };
 
     let raw = match backend.invoke(&prompt).await {
@@ -615,19 +683,32 @@ pub async fn generate_tour(
     };
 
     let opening = json["opening"].as_str().unwrap_or_default().to_string();
-    let mut narrations: Vec<String> = json["stops"]
+    let stops: Vec<TourStopOut> = json["stops"]
         .as_array()
-        .map(|arr| arr.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    let path = v["path"].as_str()?.to_string();
+                    let narration = v["narration"].as_str().unwrap_or_default().to_string();
+                    if narration.trim().is_empty() {
+                        return None;
+                    }
+                    Some(TourStopOut {
+                        path,
+                        start_line: v["start_line"].as_u64(),
+                        end_line: v["end_line"].as_u64(),
+                        kind: v["kind"].as_str().unwrap_or("walk").to_string(),
+                        narration,
+                    })
+                })
+                .collect()
+        })
         .unwrap_or_default();
-    // Align to the seeds: pad short, truncate long, and fill blanks from the seed.
-    narrations.resize(seeds.len(), String::new());
-    for (i, s) in seeds.iter().enumerate() {
-        if narrations[i].trim().is_empty() {
-            narrations[i] = s.seed.clone();
-        }
-    }
 
-    Ok(TourNarration { opening, narrations })
+    if stops.is_empty() {
+        return Ok(fallback());
+    }
+    Ok(TourOut { opening, stops })
 }
 
 #[command]
