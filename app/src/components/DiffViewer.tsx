@@ -91,6 +91,8 @@ interface CommentingOn {
   startLine: number;
   endLine: number;
   side: "LEFT" | "RIGHT";
+  /** Pre-filled draft body (e.g. when posting an AI note as a comment). */
+  initialBody?: string;
 }
 
 interface DiffViewerProps {
@@ -212,6 +214,7 @@ function InlineCommentForm({
   codeSnippet,
   lineRange,
   lang,
+  initialValue,
 }: {
   onSubmit: (body: string) => void;
   onCancel: () => void;
@@ -219,10 +222,23 @@ function InlineCommentForm({
   codeSnippet?: string;
   lineRange?: string;
   lang?: string;
+  initialValue?: string;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialValue ?? "");
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // When pre-filled (posting an AI note as a draft), drop the cursor at the end
+  // so the reviewer can edit immediately.
+  useEffect(() => {
+    if (!initialValue) return;
+    const ta = textareaRef.current;
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handleSubmit() {
     if (!text.trim() || submitting) return;
@@ -839,9 +855,9 @@ function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight;
         <button
           className="highlight-post-comment"
           onClick={(e) => { e.stopPropagation(); onPostAsComment(highlight); }}
-          title="Post this AI note as a review comment"
+          title="Draft a review comment from this AI note (you can edit before posting)"
         >
-          Post as comment
+          Comment…
         </button>
       )}
     </div>
@@ -1046,6 +1062,7 @@ function UnifiedHunkLines({
                 codeSnippet={codeSnippet}
                 lineRange={lineRange}
                 lang={lang}
+                initialValue={commentingOn?.initialBody}
               />
             )}
           </Fragment>
@@ -1321,6 +1338,7 @@ function SplitHunkLines({
                 codeSnippet={codeSnippet}
                 lineRange={lineRange}
                 lang={lang}
+                initialValue={commentingOn?.initialBody}
               />
             )}
           </Fragment>
@@ -1499,16 +1517,22 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 
   function handlePostHighlightAsComment(h: Highlight) {
     if (!onCreateComment) return;
+    // Open the comment composer pre-filled with the AI note as an editable draft
+    // (issue #73) instead of posting immediately — the reviewer tweaks, then sends.
     const body = `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`;
-    const isRange = h.start_line !== h.end_line;
-    onCreateComment(
-      file.path,
-      h.end_line,
-      "RIGHT",
-      body,
-      isRange ? h.start_line : undefined,
-      isRange ? "RIGHT" : undefined,
+    // Expand the hunk holding the line so the composer is visible, then scroll to it.
+    const hunk = hunks.find((hk) =>
+      hk.lines.some((l) => l.newLineNum === h.start_line || l.newLineNum === h.end_line),
     );
+    if (hunk && collapsedHunks.has(hunk.index)) {
+      setCollapsedHunks((prev) => {
+        const next = new Set(prev);
+        next.delete(hunk.index);
+        return next;
+      });
+    }
+    setCommentingOn({ startLine: h.start_line, endLine: h.end_line, side: "RIGHT", initialBody: body });
+    setPendingScroll(`diff-line-${h.end_line}`);
   }
 
   useEffect(() => {
@@ -2178,9 +2202,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
                 <button
                   className="highlight-post-comment"
                   onClick={(e) => { e.stopPropagation(); handlePostHighlightAsComment(h); }}
-                  title="Post this AI note as a review comment"
+                  title="Draft a review comment from this AI note (you can edit before posting)"
                 >
-                  Post as comment
+                  Comment…
                 </button>
               )}
               {onToggleHighlightDismissed && (
