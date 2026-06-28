@@ -91,6 +91,8 @@ interface CommentingOn {
   startLine: number;
   endLine: number;
   side: "LEFT" | "RIGHT";
+  /** Pre-filled draft body (e.g. when posting an AI note as a comment). */
+  initialBody?: string;
 }
 
 interface DiffViewerProps {
@@ -212,6 +214,7 @@ function InlineCommentForm({
   codeSnippet,
   lineRange,
   lang,
+  initialValue,
 }: {
   onSubmit: (body: string) => void;
   onCancel: () => void;
@@ -219,10 +222,22 @@ function InlineCommentForm({
   codeSnippet?: string;
   lineRange?: string;
   lang?: string;
+  initialValue?: string;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialValue ?? "");
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Pre-filled drafts (posting an AI note) start with the caret at the end so the
+  // reviewer can edit immediately; an empty composer is unaffected. This is
+  // mount-only by design: the form remounts each time the composer opens, so it
+  // never needs to react to a later `initialValue`. We read the textarea's own
+  // value (not the `initialValue` prop) so the effect depends only on the stable
+  // ref — keeping the empty deps honest, no lint suppression needed.
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (ta && ta.value) ta.setSelectionRange(ta.value.length, ta.value.length);
+  }, []);
 
   function handleSubmit() {
     if (!text.trim() || submitting) return;
@@ -839,9 +854,9 @@ function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight;
         <button
           className="highlight-post-comment"
           onClick={(e) => { e.stopPropagation(); onPostAsComment(highlight); }}
-          title="Post this AI note as a review comment"
+          title="Draft a review comment from this AI note (you can edit before posting)"
         >
-          Post as comment
+          Comment…
         </button>
       )}
     </div>
@@ -1046,6 +1061,7 @@ function UnifiedHunkLines({
                 codeSnippet={codeSnippet}
                 lineRange={lineRange}
                 lang={lang}
+                initialValue={commentingOn?.initialBody}
               />
             )}
           </Fragment>
@@ -1321,6 +1337,7 @@ function SplitHunkLines({
                 codeSnippet={codeSnippet}
                 lineRange={lineRange}
                 lang={lang}
+                initialValue={commentingOn?.initialBody}
               />
             )}
           </Fragment>
@@ -1497,18 +1514,29 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     setDragging(null);
   }
 
+  // Un-collapse the hunk containing `line` so it renders, then queue a scroll to
+  // it. Shared by the AI-note composer and finding navigation.
+  function revealLine(line: number) {
+    const hunk = hunks.find((h) =>
+      h.lines.some((l) => l.newLineNum === line || l.oldLineNum === line),
+    );
+    if (hunk && collapsedHunks.has(hunk.index)) {
+      setCollapsedHunks((prev) => {
+        const next = new Set(prev);
+        next.delete(hunk.index);
+        return next;
+      });
+    }
+    setPendingScroll(`diff-line-${line}`);
+  }
+
   function handlePostHighlightAsComment(h: Highlight) {
     if (!onCreateComment) return;
+    // Open the comment composer pre-filled with the AI note as an editable draft
+    // (issue #73) instead of posting immediately — the reviewer tweaks, then sends.
     const body = `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`;
-    const isRange = h.start_line !== h.end_line;
-    onCreateComment(
-      file.path,
-      h.end_line,
-      "RIGHT",
-      body,
-      isRange ? h.start_line : undefined,
-      isRange ? "RIGHT" : undefined,
-    );
+    revealLine(h.end_line); // the composer renders at the end line
+    setCommentingOn({ startLine: h.start_line, endLine: h.end_line, side: "RIGHT", initialBody: body });
   }
 
   useEffect(() => {
@@ -2054,21 +2082,11 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const goToFinding = () => {
     const f = sortedFindings[findingIdxRef.current];
     if (!f) return;
-    // Expand the containing hunk if collapsed, then move the cursor + scroll once
-    // it has rendered. Findings live on the new (right) side.
-    const hunk = hunks.find((h) =>
-      h.lines.some((l) => l.newLineNum === f.start_line || l.oldLineNum === f.start_line),
-    );
-    if (hunk && collapsedHunks.has(hunk.index)) {
-      setCollapsedHunks((prev) => {
-        const n = new Set(prev);
-        n.delete(hunk.index);
-        return n;
-      });
-    }
+    // Reveal the line, then home the cursor onto it. Findings live on the new
+    // (right) side.
+    revealLine(f.start_line);
     cursorRef.current = { cl: f.start_line, cs: "RIGHT" };
     anchorRef.current = null;
-    setPendingScroll(`diff-line-${f.start_line}`);
   };
 
   const stepFinding = (dir: 1 | -1) => {
@@ -2178,9 +2196,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
                 <button
                   className="highlight-post-comment"
                   onClick={(e) => { e.stopPropagation(); handlePostHighlightAsComment(h); }}
-                  title="Post this AI note as a review comment"
+                  title="Draft a review comment from this AI note (you can edit before posting)"
                 >
-                  Post as comment
+                  Comment…
                 </button>
               )}
               {onToggleHighlightDismissed && (
