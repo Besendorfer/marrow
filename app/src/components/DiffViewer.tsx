@@ -228,13 +228,15 @@ function InlineCommentForm({
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // When pre-filled (posting an AI note as a draft), drop the cursor at the end
-  // so the reviewer can edit immediately. The textarea's `autoFocus` already
-  // focuses it; this just moves the caret off the start.
+  // Pre-filled drafts (posting an AI note) start with the caret at the end so the
+  // reviewer can edit immediately; an empty composer is unaffected. This is
+  // mount-only by design: the form remounts each time the composer opens, so it
+  // never needs to react to a later `initialValue`. We read the textarea's own
+  // value (not the `initialValue` prop) so the effect depends only on the stable
+  // ref — keeping the empty deps honest, no lint suppression needed.
   useEffect(() => {
     const ta = textareaRef.current;
-    if (ta && initialValue) ta.setSelectionRange(ta.value.length, ta.value.length);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (ta && ta.value) ta.setSelectionRange(ta.value.length, ta.value.length);
   }, []);
 
   function handleSubmit() {
