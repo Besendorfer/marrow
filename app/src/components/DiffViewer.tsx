@@ -229,14 +229,11 @@ function InlineCommentForm({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // When pre-filled (posting an AI note as a draft), drop the cursor at the end
-  // so the reviewer can edit immediately.
+  // so the reviewer can edit immediately. The textarea's `autoFocus` already
+  // focuses it; this just moves the caret off the start.
   useEffect(() => {
-    if (!initialValue) return;
     const ta = textareaRef.current;
-    if (ta) {
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-    }
+    if (ta && initialValue) ta.setSelectionRange(ta.value.length, ta.value.length);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1515,14 +1512,11 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     setDragging(null);
   }
 
-  function handlePostHighlightAsComment(h: Highlight) {
-    if (!onCreateComment) return;
-    // Open the comment composer pre-filled with the AI note as an editable draft
-    // (issue #73) instead of posting immediately — the reviewer tweaks, then sends.
-    const body = `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`;
-    // Expand the hunk holding the line so the composer is visible, then scroll to it.
-    const hunk = hunks.find((hk) =>
-      hk.lines.some((l) => l.newLineNum === h.start_line || l.newLineNum === h.end_line),
+  // Un-collapse the hunk containing `line` so it renders, then queue a scroll to
+  // it. Shared by the AI-note composer and finding navigation.
+  function revealLine(line: number) {
+    const hunk = hunks.find((h) =>
+      h.lines.some((l) => l.newLineNum === line || l.oldLineNum === line),
     );
     if (hunk && collapsedHunks.has(hunk.index)) {
       setCollapsedHunks((prev) => {
@@ -1531,8 +1525,16 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         return next;
       });
     }
+    setPendingScroll(`diff-line-${line}`);
+  }
+
+  function handlePostHighlightAsComment(h: Highlight) {
+    if (!onCreateComment) return;
+    // Open the comment composer pre-filled with the AI note as an editable draft
+    // (issue #73) instead of posting immediately — the reviewer tweaks, then sends.
+    const body = `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`;
+    revealLine(h.end_line); // the composer renders at the end line
     setCommentingOn({ startLine: h.start_line, endLine: h.end_line, side: "RIGHT", initialBody: body });
-    setPendingScroll(`diff-line-${h.end_line}`);
   }
 
   useEffect(() => {
@@ -2078,21 +2080,11 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const goToFinding = () => {
     const f = sortedFindings[findingIdxRef.current];
     if (!f) return;
-    // Expand the containing hunk if collapsed, then move the cursor + scroll once
-    // it has rendered. Findings live on the new (right) side.
-    const hunk = hunks.find((h) =>
-      h.lines.some((l) => l.newLineNum === f.start_line || l.oldLineNum === f.start_line),
-    );
-    if (hunk && collapsedHunks.has(hunk.index)) {
-      setCollapsedHunks((prev) => {
-        const n = new Set(prev);
-        n.delete(hunk.index);
-        return n;
-      });
-    }
+    // Reveal the line, then home the cursor onto it. Findings live on the new
+    // (right) side.
+    revealLine(f.start_line);
     cursorRef.current = { cl: f.start_line, cs: "RIGHT" };
     anchorRef.current = null;
-    setPendingScroll(`diff-line-${f.start_line}`);
   };
 
   const stepFinding = (dir: 1 | -1) => {
