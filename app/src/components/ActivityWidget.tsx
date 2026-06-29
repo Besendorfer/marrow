@@ -235,26 +235,25 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
         </span>
         {unreadCount > 0 && <span className="aw-head__badge">{unreadCount}</span>}
         <span className="aw-head__spacer" />
-        {/* The floating window is glance-and-jump: any click activates Marrow,
-            which the app-active poll treats as "you're back" and hides the
-            widget — so its only useful action is clicking a PR row. The
-            interactive controls live on the in-app dock, where they work. */}
+        {/* Interactive controls work in BOTH variants now: the floating panel
+            hides only when the MAIN window gains focus, and clicking these
+            focuses the panel, not main — so they don't dismiss it. */}
+        <button
+          className={`aw-iconbtn ${unreadOnly ? "aw-iconbtn--on" : ""}`}
+          onClick={() => setUnreadOnly((v) => !v)}
+          title={unreadOnly ? "Showing unread" : "Showing all"}
+        >
+          {unreadOnly ? "Unread" : "All"}
+        </button>
+        <button
+          className={`aw-iconbtn ${showControls || query.trim() || source !== "all" ? "aw-iconbtn--on" : ""}`}
+          onClick={() => setShowControls((v) => !v)}
+          title="Search & filter"
+        >
+          ⌕
+        </button>
         {variant === "dock" && (
           <>
-            <button
-              className={`aw-iconbtn ${unreadOnly ? "aw-iconbtn--on" : ""}`}
-              onClick={() => setUnreadOnly((v) => !v)}
-              title={unreadOnly ? "Showing unread" : "Showing all"}
-            >
-              {unreadOnly ? "Unread" : "All"}
-            </button>
-            <button
-              className={`aw-iconbtn ${showControls || query.trim() || source !== "all" ? "aw-iconbtn--on" : ""}`}
-              onClick={() => setShowControls((v) => !v)}
-              title="Search & filter"
-            >
-              ⌕
-            </button>
             <button
               className={`aw-iconbtn ${floatingEnabled ? "aw-iconbtn--on" : ""}`}
               onClick={toggleFloating}
@@ -321,38 +320,35 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
       {/* Tier 1 — "now playing". Hidden by CSS in the tall list layout. */}
       {focus && (
         <div className="aw-focus">
-          {/* Transport is interactive, so dock-only (see header note). */}
-          {variant === "dock" && (
-            <div className="aw-focus__transport">
-              <button
-                className="aw-iconbtn"
-                onClick={() => setFocusIdx((i) => Math.max(0, i - 1))}
-                disabled={safeIdx === 0}
-                title="Previous"
-              >
-                ‹
-              </button>
-              <button
-                className="aw-iconbtn"
-                onClick={() => setFocusIdx((i) => Math.min(visible.length - 1, i + 1))}
-                disabled={safeIdx >= visible.length - 1}
-                title="Next"
-              >
-                ›
-              </button>
-              <span className="aw-focus__pos">
-                {safeIdx + 1}/{visible.length}
-              </span>
-              <span className="aw-head__spacer" />
-              <button
-                className="aw-iconbtn"
-                onClick={() => snooze(focus)}
-                title="Snooze until this PR changes"
-              >
-                Snooze
-              </button>
-            </div>
-          )}
+          <div className="aw-focus__transport">
+            <button
+              className="aw-iconbtn"
+              onClick={() => setFocusIdx((i) => Math.max(0, i - 1))}
+              disabled={safeIdx === 0}
+              title="Previous"
+            >
+              ‹
+            </button>
+            <button
+              className="aw-iconbtn"
+              onClick={() => setFocusIdx((i) => Math.min(visible.length - 1, i + 1))}
+              disabled={safeIdx >= visible.length - 1}
+              title="Next"
+            >
+              ›
+            </button>
+            <span className="aw-focus__pos">
+              {safeIdx + 1}/{visible.length}
+            </span>
+            <span className="aw-head__spacer" />
+            <button
+              className="aw-iconbtn"
+              onClick={() => snooze(focus)}
+              title="Snooze until this PR changes"
+            >
+              Snooze
+            </button>
+          </div>
           <ActivityRow item={focus} onActivate={activate} />
         </div>
       )}
