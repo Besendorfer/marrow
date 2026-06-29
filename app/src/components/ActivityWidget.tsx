@@ -157,6 +157,27 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
     invoke("set_mini_player_enabled", { enabled: next }).catch(() => {});
   }
 
+  // Floating window: report pointer activity so the backend keeps the panel up
+  // while you're using it (and lets it hide when macOS merely re-focuses it on a
+  // Cmd+Tab back, where there's no pointer activity).
+  useEffect(() => {
+    if (variant !== "window") return;
+    let last = 0;
+    const mark = () => {
+      const now = Date.now();
+      if (now - last > 150) {
+        last = now;
+        invoke("mark_widget_interaction").catch(() => {});
+      }
+    };
+    window.addEventListener("pointermove", mark);
+    window.addEventListener("pointerdown", mark);
+    return () => {
+      window.removeEventListener("pointermove", mark);
+      window.removeEventListener("pointerdown", mark);
+    };
+  }, [variant]);
+
   // Load configured watches so the source dropdown lists every watch — even one
   // that currently has no activity in the feed.
   useEffect(() => {

@@ -84,6 +84,7 @@ pub fn run() {
             pending_deep_link: Mutex::new(None),
             pr_node_ids: Mutex::new(HashMap::new()),
             frontend_ready: Mutex::new(false),
+            widget_interacted_at: Mutex::new(None),
         })
         .setup(|app| {
             // Custom menu intercepts Ctrl+W / Ctrl+Q at the native layer (see menu.rs).
@@ -188,16 +189,22 @@ pub fn run() {
                                 return;
                             };
                             let active = NSApplication::sharedApplication(mtm).isActive();
-                            // The widget panel itself being focused means the user is
-                            // interacting with it (drag/resize/✕) — clicking a webview
-                            // activates the app, but we must NOT hide while they're in
-                            // the panel. Hide only when Marrow is active AND the panel
-                            // is not the focused window (i.e. they returned to main).
+                            // Keep the panel up only while you're actually using it:
+                            // it's the focused window AND you touched it recently.
+                            // That distinguishes real interaction (drag/resize/✕ —
+                            // which activate the app) from macOS merely re-focusing the
+                            // panel when you Cmd+Tab back; in the latter case there's no
+                            // recent touch, so the panel hides on return.
                             let panel_focused = h
                                 .get_webview_window("activity-widget")
                                 .map(|w| w.is_focused().unwrap_or(false))
                                 .unwrap_or(false);
-                            let want_visible = !active || panel_focused;
+                            let touched_recently = h
+                                .try_state::<commands::AppState>()
+                                .and_then(|s| s.widget_interacted_at.lock().ok().and_then(|t| *t))
+                                .map(|t| t.elapsed() < std::time::Duration::from_millis(1500))
+                                .unwrap_or(false);
+                            let want_visible = !active || (panel_focused && touched_recently);
                             let code = if want_visible { 1 } else { 2 };
                             if last.swap(code, Ordering::Relaxed) != code {
                                 let _ = commands::set_activity_window_visible(h, want_visible);
@@ -246,6 +253,7 @@ pub fn run() {
             commands::mark_pr_seen,
             commands::set_activity_window_visible,
             commands::set_mini_player_enabled,
+            commands::mark_widget_interaction,
             commands::dismiss_mini_player,
             commands::open_pr_in_main,
         ])
