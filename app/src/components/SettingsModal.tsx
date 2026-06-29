@@ -29,7 +29,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [watches, setWatches] = useState<Watch[]>([]);
   const [perWatchCap, setPerWatchCap] = useState(50);
-  const [miniPlayer, setMiniPlayer] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -51,7 +50,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setOpenaiBaseUrl(s.openai_base_url || "");
         setCurrentSettings(s);
         setPerWatchCap(s.activity_per_watch_cap || 50);
-        setMiniPlayer(s.activity_mini_player ?? true);
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
       setSaved(false);
@@ -92,7 +90,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           show_ai_notes: currentSettings?.show_ai_notes ?? true,
           hunk_filter: currentSettings?.hunk_filter ?? "all",
           activity_per_watch_cap: perWatchCap,
-          activity_mini_player: miniPlayer,
+          // Controlled by the dock toggle / floating ✕; preserve it here.
+          activity_mini_player: currentSettings?.activity_mini_player ?? true,
         },
       });
       // Persist watches alongside settings, dropping blank rows.
@@ -341,18 +340,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               + Add watch
             </button>
           </div>
-
-          <label className="settings-checkbox">
-            <input
-              type="checkbox"
-              checked={miniPlayer}
-              onChange={(e) => {
-                setMiniPlayer(e.target.checked);
-                setSaved(false);
-              }}
-            />
-            Show the floating mini-player when Marrow is in the background
-          </label>
 
           <label className="settings-label" htmlFor="per-watch-cap">
             Max PRs per watch

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { PrActivityItem, Watch } from "../types";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { PrActivityItem, Settings, Watch } from "../types";
 import { useActivityFeed, prRefOf } from "../hooks/useActivityFeed";
 
 interface ActivityWidgetProps {
@@ -132,6 +133,32 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   const [source, setSource] = useState("all"); // a raw reason string, or "all"
   const [watchLabels, setWatchLabels] = useState<string[]>([]);
   const [showControls, setShowControls] = useState(false);
+  // Whether the floating window auto-shows when Marrow is backgrounded (dock only).
+  const [floatingEnabled, setFloatingEnabled] = useState(true);
+
+  // Keep the dock's floating-window toggle in sync with the persisted setting —
+  // on mount and whenever the main window regains focus (so it reflects a ✕
+  // dismissal made from the floating window while we were away).
+  useEffect(() => {
+    if (variant !== "dock") return;
+    const load = () =>
+      invoke<Settings>("get_settings")
+        .then((s) => setFloatingEnabled(s.activity_mini_player ?? true))
+        .catch(() => {});
+    load();
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) load();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [variant]);
+
+  function toggleFloating() {
+    const next = !floatingEnabled;
+    setFloatingEnabled(next);
+    invoke("set_mini_player_enabled", { enabled: next }).catch(() => {});
+  }
 
   // Load configured watches so the source dropdown lists every watch — even one
   // that currently has no activity in the feed.
@@ -234,9 +261,22 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
           ⌕
         </button>
         {variant === "dock" && (
-          <button className="aw-iconbtn" onClick={() => setCollapsedPersist(true)} title="Collapse">
-            –
-          </button>
+          <>
+            <button
+              className={`aw-iconbtn ${floatingEnabled ? "aw-iconbtn--on" : ""}`}
+              onClick={toggleFloating}
+              title={
+                floatingEnabled
+                  ? "Floating window: on — shows when Marrow is in the background"
+                  : "Floating window: off"
+              }
+            >
+              ⧉
+            </button>
+            <button className="aw-iconbtn" onClick={() => setCollapsedPersist(true)} title="Collapse">
+              –
+            </button>
+          </>
         )}
         {variant === "window" && (
           <button

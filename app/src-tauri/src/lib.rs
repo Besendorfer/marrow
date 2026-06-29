@@ -193,6 +193,7 @@ pub fn run() {
             commands::save_watches,
             commands::mark_pr_seen,
             commands::set_activity_window_visible,
+            commands::set_mini_player_enabled,
             commands::dismiss_mini_player,
             commands::open_pr_in_main,
         ])

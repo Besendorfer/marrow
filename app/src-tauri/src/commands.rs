@@ -196,6 +196,15 @@ pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Resu
     Ok(())
 }
 
+/// Toggle whether the floating mini-player auto-shows when Marrow is in the
+/// background (the in-app dock's toggle writes this).
+#[command]
+pub fn set_mini_player_enabled(enabled: bool) -> Result<(), String> {
+    let mut settings = load_settings();
+    settings.activity_mini_player = enabled;
+    save_settings_to_disk(&settings)
+}
+
 /// Dismiss the floating mini-player from its own ✕: persistently disable
 /// auto-show (so navigating away won't bring it back), close the window, and on
 /// macOS hide the app so focus returns to whatever the user was in — rather
