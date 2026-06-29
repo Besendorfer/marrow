@@ -1303,14 +1303,25 @@ function App() {
 
   // Show the floating activity mini-player whenever the main window is NOT the
   // focused window — i.e. you've navigated to another app/window (this also
-  // covers minimize and hide, which unfocus the window). Hidden again when the
-  // main window regains focus, so the two are never on screen together.
+  // covers minimize and hide). Hidden again when the main window regains focus,
+  // so the two are never on screen together. We listen on BOTH the Tauri window
+  // focus event and the DOM window focus/blur: the Tauri "focus" can miss the
+  // return trip (e.g. Cmd+Tab where the always-on-top widget was last key), and
+  // the DOM events fire reliably when the main webview itself (de)focuses.
   useEffect(() => {
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      invoke("set_activity_window_visible", { visible: !focused }).catch(() => {});
-    });
+    const setVisible = (visible: boolean) =>
+      invoke("set_activity_window_visible", { visible }).catch(() => {});
+    const onFocus = () => setVisible(false);
+    const onBlur = () => setVisible(true);
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) =>
+      setVisible(!focused)
+    );
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
     return () => {
       unlisten.then((fn) => fn());
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
     };
   }, []);
 
