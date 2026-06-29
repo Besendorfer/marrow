@@ -470,8 +470,8 @@ impl GithubClient {
         let url = format!(
             "https://api.github.com/search/issues?q={}&sort={}&order={}&per_page=100",
             urlencoding::encode(query),
-            sort,
-            order
+            urlencoding::encode(sort),
+            urlencoding::encode(order)
         );
         let resp = self
             .send_checked(&url, "application/vnd.github.v3+json")
