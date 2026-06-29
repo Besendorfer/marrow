@@ -1249,6 +1249,11 @@ function App() {
       const pollableTabs = currentTabs.filter((t) => t.manifest && !t.isRefreshing);
       await Promise.allSettled(
         pollableTabs.map(async (tab) => {
+          // check_pr_updates only watches head SHA + comment count, which a merge
+          // usually doesn't move — so refresh the viewer's review/merge state
+          // directly to keep the "Merged"/"Approved" badges live.
+          fetchMyReviewState(tab.id, tab.manifest!.pr_url);
+
           const status = await invoke<PrUpdateStatus>("check_pr_updates", {
             prUrl: tab.manifest!.pr_url,
             currentHeadSha: tab.manifest!.head_sha,

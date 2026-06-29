@@ -28,6 +28,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
   const [watches, setWatches] = useState<Watch[]>([]);
   const [perWatchCap, setPerWatchCap] = useState(50);
+  const [showApprovedPrs, setShowApprovedPrs] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -48,6 +49,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setProvider(s.provider || "");
         setOpenaiBaseUrl(s.openai_base_url || "");
         setPerWatchCap(s.activity_per_watch_cap || 50);
+        setShowApprovedPrs(s.show_approved_prs ?? false);
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
       setSaved(false);
@@ -87,6 +89,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           provider: provider.trim(),
           openai_base_url: openaiBaseUrl.trim(),
           activity_per_watch_cap: perWatchCap,
+          show_approved_prs: showApprovedPrs,
         },
       });
       // Persist watches alongside settings, dropping blank rows.
@@ -355,6 +358,22 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               setSaved(false);
             }}
           />
+
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={showApprovedPrs}
+              onChange={(e) => {
+                setShowApprovedPrs(e.target.checked);
+                setSaved(false);
+              }}
+            />
+            Show PRs I've approved
+          </label>
+          <p className="settings-hint">
+            By default, approving a PR removes it from the mini-player feed.
+            Enable this to keep approved PRs in the list.
+          </p>
 
           <div className="settings-divider" />
           <h3 className="settings-section-title">Browser Integration</h3>
