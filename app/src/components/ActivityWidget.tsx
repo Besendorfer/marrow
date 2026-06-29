@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PrActivityItem, Settings, Watch } from "../types";
@@ -131,6 +131,21 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   // Whether the floating window auto-shows when Marrow is backgrounded (dock only).
   const [floatingEnabled, setFloatingEnabled] = useState(true);
 
+  // Height tier: show the "now playing" focus bar only when the widget is too
+  // short for a useful list; otherwise show the list. Height-axis container
+  // queries don't match in the macOS WKWebView, so measure the height directly.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setCompact(entry.contentRect.height < 180);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [collapsed]);
+
   // Keep the dock's floating-window toggle in sync with the persisted setting —
   // on mount and whenever the main window regains focus (so it reflects a ✕
   // dismissal made from the floating window while we were away).
@@ -219,7 +234,10 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   }
 
   return (
-    <div className={`activity-widget activity-widget--${variant}`}>
+    <div
+      ref={rootRef}
+      className={`activity-widget activity-widget--${variant} ${compact ? "aw--compact" : ""}`}
+    >
       <header className="aw-head" data-tauri-drag-region>
         <Equalizer />
         <span className="aw-head__title">
@@ -309,8 +327,8 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
       </div>
       )}
 
-      {/* Tier 1 — "now playing". Hidden by CSS in the tall list layout. */}
-      {focus && (
+      {/* Tier 1 — "now playing". Shown only when too short for a list. */}
+      {compact && focus && (
         <div className="aw-focus">
           <div className="aw-focus__transport">
             <button
@@ -337,25 +355,27 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
         </div>
       )}
 
-      {/* Tier 2 — the feed. */}
-      <div className="aw-feed">
-        {visible.length === 0 ? (
-          <div className="aw-empty">
-            {query.trim() || source !== "all"
-              ? "No matches"
-              : unreadOnly
-                ? "Nothing unread"
-                : "No PR activity yet"}
-          </div>
-        ) : (
-          visible.map((item) => (
-            <ActivityRow key={item.prUrl} item={item} onActivate={activate} />
-          ))
-        )}
-        {truncatedTotal > 0 && (
-          <div className="aw-truncated">+{truncatedTotal} more not shown</div>
-        )}
-      </div>
+      {/* Tier 2 — the feed. Hidden only when the compact focus bar takes over. */}
+      {(!compact || !focus) && (
+        <div className="aw-feed">
+          {visible.length === 0 ? (
+            <div className="aw-empty">
+              {query.trim() || source !== "all"
+                ? "No matches"
+                : unreadOnly
+                  ? "Nothing unread"
+                  : "No PR activity yet"}
+            </div>
+          ) : (
+            visible.map((item) => (
+              <ActivityRow key={item.prUrl} item={item} onActivate={activate} />
+            ))
+          )}
+          {truncatedTotal > 0 && (
+            <div className="aw-truncated">+{truncatedTotal} more not shown</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

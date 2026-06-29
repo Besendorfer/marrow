@@ -3969,8 +3969,9 @@ mark.search-highlight-current {
   box-sizing: border-box;
 }
 
-/* In-app dock: a resizable, fixed-corner panel. `container-type: size` lets the
-   inner layout respond to the panel's own width AND height. */
+/* In-app dock: a resizable, fixed-corner panel. `container-type: inline-size`
+   lets the inner layout respond to the panel's own width; height tiers are
+   JS-driven (block-axis container queries don't match in the WKWebView). */
 .activity-widget--dock {
   position: fixed;
   right: 16px;
@@ -3984,7 +3985,7 @@ mark.search-highlight-current {
   resize: both;
   overflow: hidden;
   z-index: 50;
-  container: aw / size;
+  container: aw / inline-size;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
@@ -4002,7 +4003,7 @@ mark.search-highlight-current {
   inset: 0;
   width: 100vw;
   height: 100vh;
-  container: aw / size;
+  container: aw / inline-size;
   display: flex;
   flex-direction: column;
   /* The OS window is frameless + transparent; the widget paints its own
@@ -4209,32 +4210,28 @@ mark.search-highlight-current {
   padding: 0 6px;
 }
 
-/* ---- Container-query layouts ---- */
+/* ---- Layout tiers ---- */
 
-/* List (tall): the feed is the star; drop the duplicated focus block. */
-@container aw (min-height: 360px) {
-  .aw-focus { display: none; }
+/* Compact (short): a single horizontal strip — the "now playing" PR + transport,
+   no scrolling feed. Driven by `.aw--compact` (toggled in JS from a measured
+   height) because height-axis container queries don't match in the macOS
+   WKWebView. The list/focus swap itself is done by conditional render. */
+.activity-widget.aw--compact .aw-controls { display: none; }
+.activity-widget.aw--compact .aw-focus {
+  flex: 1;
+  border-bottom: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
+.activity-widget.aw--compact .aw-focus__transport { margin-bottom: 0; flex: none; }
+/* Let the PR row consume the remaining width so the title isn't truncated
+   while empty space sits to its right. */
+.activity-widget.aw--compact .aw-focus .aw-row { flex: 1; min-width: 0; }
 
-/* Bar (short): a single horizontal strip — focus + transport, no scroll feed. */
-@container aw (max-height: 150px) {
-  .activity-widget { flex-direction: column; }
-  .aw-feed, .aw-controls { display: none; }
-  .aw-focus {
-    flex: 1;
-    border-bottom: none;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-  }
-  .aw-focus__transport { margin-bottom: 0; flex: none; }
-  /* Let the PR row consume the remaining width so the title isn't truncated
-     while empty space sits to its right. */
-  .aw-focus .aw-row { flex: 1; min-width: 0; }
-}
-
-/* Narrow: shed chips and time to stay tidy. */
+/* Narrow: shed chips and time to stay tidy. (Width-axis container queries do
+   work in the WKWebView, so this one stays a container query.) */
 @container aw (max-width: 248px) {
   .aw-chip--reason, .aw-row__time { display: none; }
 }
