@@ -26,7 +26,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [geminiKey, setGeminiKey] = useState("");
   const [provider, setProvider] = useState("");
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
-  const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [watches, setWatches] = useState<Watch[]>([]);
   const [perWatchCap, setPerWatchCap] = useState(50);
   const [saving, setSaving] = useState(false);
@@ -48,7 +47,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setGeminiKey(s.gemini_api_key || "");
         setProvider(s.provider || "");
         setOpenaiBaseUrl(s.openai_base_url || "");
-        setCurrentSettings(s);
         setPerWatchCap(s.activity_per_watch_cap || 50);
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
@@ -73,8 +71,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     e.preventDefault();
     setSaving(true);
     try {
+      // Re-read fresh and override only the fields this modal edits, so settings
+      // changed elsewhere since the modal opened (e.g. activity_mini_player via
+      // the dock toggle or the floating ✕) aren't clobbered by a stale snapshot.
+      const fresh = await invoke<Settings>("get_settings");
       await invoke("save_settings", {
         settings: {
+          ...fresh,
           model: model.trim(),
           github_token: githubToken.trim(),
           aws_profile: awsProfile.trim(),
@@ -83,15 +86,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           gemini_api_key: geminiKey.trim(),
           provider: provider.trim(),
           openai_base_url: openaiBaseUrl.trim(),
-          filter_older: currentSettings?.filter_older ?? true,
-          filter_team: currentSettings?.filter_team ?? true,
-          view_mode: currentSettings?.view_mode ?? "split",
-          show_hunk_significance: currentSettings?.show_hunk_significance ?? true,
-          show_ai_notes: currentSettings?.show_ai_notes ?? true,
-          hunk_filter: currentSettings?.hunk_filter ?? "all",
           activity_per_watch_cap: perWatchCap,
-          // Controlled by the dock toggle / floating ✕; preserve it here.
-          activity_mini_player: currentSettings?.activity_mini_player ?? true,
         },
       });
       // Persist watches alongside settings, dropping blank rows.
