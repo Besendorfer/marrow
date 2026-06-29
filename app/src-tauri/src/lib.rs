@@ -173,7 +173,7 @@ pub fn run() {
             {
                 use std::sync::atomic::{AtomicU8, Ordering};
                 let poll_handle = app.handle().clone();
-                let last_state = std::sync::Arc::new(AtomicU8::new(0)); // 0 unknown, 1 active, 2 inactive
+                let last_state = std::sync::Arc::new(AtomicU8::new(0)); // 0 unknown, 1 show, 2 hide
                 tauri::async_runtime::spawn(async move {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -182,14 +182,25 @@ pub fn run() {
                         let _ = poll_handle.run_on_main_thread(move || {
                             use objc2::MainThreadMarker;
                             use objc2_app_kit::NSApplication;
+                            use tauri::Manager;
 
                             let Some(mtm) = MainThreadMarker::new() else {
                                 return;
                             };
                             let active = NSApplication::sharedApplication(mtm).isActive();
-                            let code = if active { 1 } else { 2 };
+                            // The widget panel itself being focused means the user is
+                            // interacting with it (drag/resize/✕) — clicking a webview
+                            // activates the app, but we must NOT hide while they're in
+                            // the panel. Hide only when Marrow is active AND the panel
+                            // is not the focused window (i.e. they returned to main).
+                            let panel_focused = h
+                                .get_webview_window("activity-widget")
+                                .map(|w| w.is_focused().unwrap_or(false))
+                                .unwrap_or(false);
+                            let want_visible = !active || panel_focused;
+                            let code = if want_visible { 1 } else { 2 };
                             if last.swap(code, Ordering::Relaxed) != code {
-                                let _ = commands::set_activity_window_visible(h, !active);
+                                let _ = commands::set_activity_window_visible(h, want_visible);
                             }
                         });
                     }
