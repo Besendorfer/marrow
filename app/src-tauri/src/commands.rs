@@ -180,6 +180,10 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
         match win.to_panel() {
             Ok(panel) => {
                 panel.set_style_mask(NONACTIVATING_RESIZABLE);
+                // NSPanels are released-when-closed by default; turn that off so a
+                // stray close() can't deallocate it out from under Tauri (which
+                // aborts with a foreign-exception runtime error).
+                panel.set_released_when_closed(false);
                 // order_front_regardless (NOT show()/makeKeyAndOrderFront): showing
                 // it must not make it key, or activation gets pulled back to Marrow
                 // and the app-active poll flip-flops (flashing) while you're away.
@@ -253,21 +257,34 @@ pub fn set_mini_player_enabled(enabled: bool) -> Result<(), String> {
 }
 
 /// Dismiss the floating mini-player from its own ✕: persistently disable
-/// auto-show (so navigating away won't bring it back), close the window, and on
-/// macOS hide the app so focus returns to whatever the user was in — rather
-/// than yanking them into the main Marrow window. Re-enable via Settings.
+/// auto-show (so navigating away won't bring it back) and hide the window. On
+/// macOS, hide the app too so focus returns to whatever the user was in rather
+/// than the main Marrow window. Re-enable via the dock toggle.
+///
+/// We HIDE the panel (order_out), not close()/destroy it: an NSPanel is released
+/// when closed by default, and destroying it while Tauri still holds a reference
+/// raises an Objective-C exception that aborts the process. The disabled setting
+/// keeps it from reappearing; the hidden panel is reused if re-enabled.
 #[command]
 pub fn dismiss_mini_player(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
     let mut settings = load_settings();
     settings.activity_mini_player = false;
     let _ = save_settings_to_disk(&settings);
-    if let Some(win) = app.get_webview_window("activity-widget") {
-        let _ = win.close();
-    }
+
     #[cfg(target_os = "macos")]
     {
+        use tauri_nspanel::ManagerExt;
+        if let Ok(panel) = app.get_webview_panel("activity-widget") {
+            panel.order_out(None);
+        }
         let _ = app.hide();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri::Manager;
+        if let Some(win) = app.get_webview_window("activity-widget") {
+            let _ = win.hide();
+        }
     }
     Ok(())
 }
