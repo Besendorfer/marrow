@@ -570,7 +570,9 @@ function App() {
         (t) => t.manifest && canonicalPrKey(t.manifest.pr_url) === key
       );
       if (alreadyOpen) {
-        setActiveTabId(alreadyOpen.id);
+        // handleSelectTab (not bare setActiveTabId) also clears the tab's
+        // unread badge, matching the deep-link open path.
+        handleSelectTab(alreadyOpen.id);
         return;
       }
     }
