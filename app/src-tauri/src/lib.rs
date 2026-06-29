@@ -182,12 +182,16 @@ pub fn run() {
                             let enabled =
                                 marrow_core::config::load_settings().activity_mini_player;
 
+                            // Show the widget only while Marrow is NOT the
+                            // active app; hide it the moment Marrow is active.
+                            // (No is_focused guard: on Cmd+Tab the always-on-top
+                            // widget itself becomes key, so guarding on focus
+                            // would never let it hide.)
                             match h.get_webview_window("activity-widget") {
                                 Some(win) => {
                                     let visible = win.is_visible().unwrap_or(false);
-                                    let focused = win.is_focused().unwrap_or(false);
                                     if active {
-                                        if visible && !focused {
+                                        if visible {
                                             let _ = win.hide();
                                         }
                                     } else if enabled && !visible {
