@@ -135,6 +135,7 @@ export interface PrUpdateStatus {
   comment_count_changed: boolean;
   new_head_sha: string | null;
   new_comment_count: number | null;
+  merged: boolean;
 }
 
 export interface SearchMatch {

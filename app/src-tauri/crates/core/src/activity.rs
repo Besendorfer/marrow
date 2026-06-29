@@ -158,7 +158,14 @@ fn diff(seen: &Observed, now: &Observed) -> Vec<String> {
             deltas.push("new-comments".to_string());
         }
     }
-    if now.review_state.is_some() && now.review_state != seen.review_state {
+    // Only when we previously knew a state to compare against. A None→known
+    // transition is "first time we learned it" (e.g. the first poll after
+    // enrichment starts populating review_state for watch PRs), not a change —
+    // flagging it would mark the whole backlog "review changed" at once.
+    if now.review_state.is_some()
+        && seen.review_state.is_some()
+        && now.review_state != seen.review_state
+    {
         deltas.push("review-state-changed".to_string());
     }
     if let (Some(now_t), Some(seen_t)) = (now.unresolved_threads, seen.unresolved_threads) {
@@ -400,6 +407,26 @@ mod tests {
         assert!(payload.items[0].unread, "new commits keep it unread");
         assert!(payload.items[0].deltas.contains(&"new-commits".to_string()));
         assert!(!payload.items[0].deltas.contains(&"updated".to_string()));
+    }
+
+    #[test]
+    fn first_known_review_state_is_not_a_change() {
+        // seen had no review_state (pre-enrichment); now enrichment supplies one.
+        let seen = Observed {
+            updated_at: "t".into(),
+            review_state: None,
+            ..Default::default()
+        };
+        let now = Observed {
+            updated_at: "t".into(),
+            review_state: Some("pending".into()),
+            ..Default::default()
+        };
+        let d = diff(&seen, &now);
+        assert!(
+            !d.contains(&"review-state-changed".to_string()),
+            "None→known is not a change"
+        );
     }
 
     #[test]

@@ -1249,16 +1249,31 @@ function App() {
       const pollableTabs = currentTabs.filter((t) => t.manifest && !t.isRefreshing);
       await Promise.allSettled(
         pollableTabs.map(async (tab) => {
-          // check_pr_updates only watches head SHA + comment count, which a merge
-          // usually doesn't move — so refresh the viewer's review/merge state
-          // directly to keep the "Merged"/"Approved" badges live.
-          fetchMyReviewState(tab.id, tab.manifest!.pr_url);
-
           const status = await invoke<PrUpdateStatus>("check_pr_updates", {
             prUrl: tab.manifest!.pr_url,
             currentHeadSha: tab.manifest!.head_sha,
             currentCommentCount: tab.lastCommentCount ?? 0,
           });
+
+          // A merge moves neither head SHA nor comment count, so check_pr_updates
+          // now reports it directly — flip the "Merged" badge without a separate
+          // per-tab get_my_review_state poll (which also raced the optimistic
+          // post-submit review state). Approval state stays fresh via the
+          // load/refresh/submit fetches.
+          if (status.merged) {
+            updateTab(tab.id, (t) =>
+              t.myReviewState?.is_merged
+                ? t
+                : {
+                    ...t,
+                    myReviewState: {
+                      status: t.myReviewState?.status ?? "pending",
+                      is_re_requested: t.myReviewState?.is_re_requested ?? false,
+                      is_merged: true,
+                    },
+                  }
+            );
+          }
 
           if (!status.has_changes) return;
 

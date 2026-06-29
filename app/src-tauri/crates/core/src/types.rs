@@ -245,6 +245,9 @@ pub struct PrUpdateStatus {
     pub comment_count_changed: bool,
     pub new_head_sha: Option<String>,
     pub new_comment_count: Option<u32>,
+    /// Whether the PR is now merged. Independent of `has_changes` (a merge moves
+    /// neither head SHA nor comment count), so the GUI checks it separately.
+    pub merged: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
