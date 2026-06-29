@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { PrActivityItem } from "../types";
+import type { PrActivityItem, Watch } from "../types";
 import { useActivityFeed, prRefOf } from "../hooks/useActivityFeed";
 
 interface ActivityWidgetProps {
@@ -131,14 +131,24 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   // Temporary feed filters (not persisted).
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("all"); // a raw reason string, or "all"
+  const [watchLabels, setWatchLabels] = useState<string[]>([]);
 
-  // The distinct sources present in the feed (watch labels, review-requested,
-  // notifications, …), for the source dropdown.
+  // Load configured watches so the source dropdown lists every watch — even one
+  // that currently has no activity in the feed.
+  useEffect(() => {
+    invoke<Watch[]>("get_watches")
+      .then((ws) => setWatchLabels(ws.map((w) => w.label).filter(Boolean)))
+      .catch(() => {});
+  }, []);
+
+  // Distinct sources: configured watches plus any other reasons present in the
+  // feed (review-requested, notifications, …).
   const sources = useMemo(() => {
     const set = new Set<string>();
+    for (const l of watchLabels) set.add(`watching:${l}`);
     for (const i of items) for (const r of i.reasons) set.add(r);
     return Array.from(set).sort();
-  }, [items]);
+  }, [watchLabels, items]);
 
   function setCollapsedPersist(v: boolean) {
     setCollapsed(v);

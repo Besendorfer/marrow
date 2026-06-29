@@ -4219,8 +4219,18 @@ mark.search-highlight-current {
 @container aw (max-height: 150px) {
   .activity-widget { flex-direction: column; }
   .aw-feed, .aw-controls { display: none; }
-  .aw-focus { flex: 1; border-bottom: none; display: flex; align-items: center; gap: 10px; }
-  .aw-focus__transport { margin-bottom: 0; }
+  .aw-focus {
+    flex: 1;
+    border-bottom: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .aw-focus__transport { margin-bottom: 0; flex: none; }
+  /* Let the PR row consume the remaining width so the title isn't truncated
+     while empty space sits to its right. */
+  .aw-focus .aw-row { flex: 1; min-width: 0; }
 }
 
 /* Narrow: shed chips and time to stay tidy. */
