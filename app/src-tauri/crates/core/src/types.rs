@@ -122,6 +122,10 @@ pub struct Settings {
     /// reported as "+N more". Useful to raise for org-wide watches.
     #[serde(default = "default_per_watch_cap")]
     pub activity_per_watch_cap: u64,
+    /// Whether the floating mini-player auto-shows when the main window loses
+    /// focus. The widget's ✕ turns this off; the Settings checkbox turns it on.
+    #[serde(default = "default_true")]
+    pub activity_mini_player: bool,
 }
 
 fn default_true() -> bool {

@@ -102,6 +102,7 @@ fn default_settings() -> Settings {
         show_ai_notes: true,
         hunk_filter: "all".to_string(),
         activity_per_watch_cap: 50,
+        activity_mini_player: true,
     }
 }
 
@@ -131,6 +132,7 @@ pub fn load_settings() -> Settings {
     let mut show_ai_notes = true;
     let mut hunk_filter = "all".to_string();
     let mut activity_per_watch_cap = 50u64;
+    let mut activity_mini_player = true;
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -165,6 +167,8 @@ pub fn load_settings() -> Settings {
             if let Ok(n) = val.parse::<u64>() {
                 activity_per_watch_cap = n;
             }
+        } else if let Some(val) = line.strip_prefix("activity_mini_player=") {
+            activity_mini_player = val == "true";
         }
     }
 
@@ -184,6 +188,7 @@ pub fn load_settings() -> Settings {
         show_ai_notes,
         hunk_filter,
         activity_per_watch_cap,
+        activity_mini_player,
     }
 }
 
@@ -225,6 +230,10 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     content.push_str(&format!(
         "activity_per_watch_cap={}\n",
         settings.activity_per_watch_cap
+    ));
+    content.push_str(&format!(
+        "activity_mini_player={}\n",
+        settings.activity_mini_player
     ));
 
     fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;

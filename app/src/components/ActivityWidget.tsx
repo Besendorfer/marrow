@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PrActivityItem, Watch } from "../types";
 import { useActivityFeed, prRefOf } from "../hooks/useActivityFeed";
 
@@ -242,8 +241,8 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
         {variant === "window" && (
           <button
             className="aw-iconbtn"
-            onClick={() => getCurrentWindow().close().catch(() => {})}
-            title="Close"
+            onClick={() => invoke("dismiss_mini_player").catch(() => {})}
+            title="Dismiss (disable until re-enabled in Settings)"
           >
             ✕
           </button>

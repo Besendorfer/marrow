@@ -164,6 +164,10 @@ fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String> {
 #[command]
 pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
     use tauri::Manager;
+    // Respect the user's opt-out: never auto-show when the feature is disabled.
+    if visible && !load_settings().activity_mini_player {
+        return Ok(());
+    }
     match app.get_webview_window("activity-widget") {
         Some(win) => {
             if visible {
@@ -174,6 +178,26 @@ pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Resu
         }
         None if visible => build_activity_window(&app)?,
         None => {}
+    }
+    Ok(())
+}
+
+/// Dismiss the floating mini-player from its own ✕: persistently disable
+/// auto-show (so navigating away won't bring it back), close the window, and on
+/// macOS hide the app so focus returns to whatever the user was in — rather
+/// than yanking them into the main Marrow window. Re-enable via Settings.
+#[command]
+pub fn dismiss_mini_player(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let mut settings = load_settings();
+    settings.activity_mini_player = false;
+    let _ = save_settings_to_disk(&settings);
+    if let Some(win) = app.get_webview_window("activity-widget") {
+        let _ = win.close();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.hide();
     }
     Ok(())
 }
