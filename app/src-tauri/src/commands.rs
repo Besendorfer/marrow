@@ -85,7 +85,7 @@ pub async fn check_pr_updates(
 ) -> Result<PrUpdateStatus, String> {
     let github = github_client();
     let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
-    let (new_head_sha, new_comment_count) = github
+    let (new_head_sha, new_comment_count, merged) = github
         .get_pr_status(&parsed.owner, &parsed.repo, parsed.number)
         .await?;
 
@@ -98,6 +98,7 @@ pub async fn check_pr_updates(
         comment_count_changed,
         new_head_sha: if head_sha_changed { Some(new_head_sha) } else { None },
         new_comment_count: if comment_count_changed { Some(new_comment_count) } else { None },
+        merged,
     })
 }
 

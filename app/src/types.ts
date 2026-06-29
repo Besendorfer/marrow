@@ -135,6 +135,7 @@ export interface PrUpdateStatus {
   comment_count_changed: boolean;
   new_head_sha: string | null;
   new_comment_count: number | null;
+  merged: boolean;
 }
 
 export interface SearchMatch {
@@ -162,6 +163,7 @@ export interface Settings {
   hunk_filter: HunkSignificanceFilter;
   activity_per_watch_cap: number;
   activity_mini_player: boolean;
+  show_approved_prs: boolean;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";

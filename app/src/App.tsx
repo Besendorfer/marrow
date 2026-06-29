@@ -1255,6 +1255,26 @@ function App() {
             currentCommentCount: tab.lastCommentCount ?? 0,
           });
 
+          // A merge moves neither head SHA nor comment count, so check_pr_updates
+          // now reports it directly — flip the "Merged" badge without a separate
+          // per-tab get_my_review_state poll (which also raced the optimistic
+          // post-submit review state). Approval state stays fresh via the
+          // load/refresh/submit fetches.
+          if (status.merged) {
+            updateTab(tab.id, (t) =>
+              t.myReviewState?.is_merged
+                ? t
+                : {
+                    ...t,
+                    myReviewState: {
+                      status: t.myReviewState?.status ?? "pending",
+                      is_re_requested: t.myReviewState?.is_re_requested ?? false,
+                      is_merged: true,
+                    },
+                  }
+            );
+          }
+
           if (!status.has_changes) return;
 
           if (status.head_sha_changed) {

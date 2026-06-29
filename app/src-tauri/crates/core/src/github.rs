@@ -167,6 +167,25 @@ fn resolve_user_review_status(reviews: &[serde_json::Value], username: &str) -> 
     status
 }
 
+/// Parse the viewer's `(review_status, is_re_requested)` from a `pullRequest`
+/// GraphQL node carrying `reviews { nodes { author{login} state } }` and
+/// `reviewRequests { nodes { requestedReviewer { ... on User { login } } } }`.
+/// Shared by `get_my_review_state` and the activity-feed enrichment so the two
+/// paths can't disagree on the viewer's review state.
+fn resolve_review_state(pr: &serde_json::Value, viewer: &str) -> (String, bool) {
+    let is_re_requested = pr
+        .pointer("/reviewRequests/nodes")
+        .and_then(|v| v.as_array())
+        .map(|nodes| is_user_in_review_requests(nodes, viewer))
+        .unwrap_or(false);
+    let status = pr
+        .pointer("/reviews/nodes")
+        .and_then(|v| v.as_array())
+        .map(|reviews| resolve_user_review_status(reviews, viewer))
+        .unwrap_or_else(|| "pending".to_string());
+    (status, is_re_requested)
+}
+
 impl GithubClient {
     pub fn new(token: Option<String>) -> Self {
         Self {
@@ -241,13 +260,15 @@ impl GithubClient {
         Ok(result)
     }
 
-    /// Lightweight check: returns (head_sha, review_comment_count) from a single REST call.
+    /// Lightweight check: returns (head_sha, review_comment_count, merged) from a
+    /// single REST call. `merged` lets the GUI's existing update-poll flip the
+    /// "Merged" badge without a separate GraphQL round-trip per tab.
     pub async fn get_pr_status(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
-    ) -> Result<(String, u32), String> {
+    ) -> Result<(String, u32, bool), String> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/pulls/{}",
             owner, repo, pr_number
@@ -271,7 +292,12 @@ impl GithubClient {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
-        Ok((head_sha, comment_count))
+        let merged = json
+            .get("merged")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        Ok((head_sha, comment_count, merged))
     }
 
     pub async fn is_pr_open(
@@ -1409,17 +1435,7 @@ impl GithubClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let is_re_requested = pr
-            .pointer("/reviewRequests/nodes")
-            .and_then(|v| v.as_array())
-            .map(|nodes| is_user_in_review_requests(nodes, viewer_login))
-            .unwrap_or(false);
-
-        let status = pr
-            .pointer("/reviews/nodes")
-            .and_then(|v| v.as_array())
-            .map(|reviews| resolve_user_review_status(reviews, viewer_login))
-            .unwrap_or_else(|| "pending".to_string());
+        let (status, is_re_requested) = resolve_review_state(pr, viewer_login);
 
         Ok(MyReviewState {
             status,
@@ -1480,6 +1496,8 @@ fn search_item_to_observed(
             updated_at: item.updated_at,
             ..Default::default()
         },
+        last_actor: None,
+        is_re_requested: false,
     })
 }
 
@@ -1504,6 +1522,8 @@ fn review_item_to_observed(
             unresolved_threads: Some(item.unresolved_thread_count),
             ..Default::default()
         },
+        last_actor: None,
+        is_re_requested: false,
     }
 }
 
@@ -1646,6 +1666,8 @@ impl GithubClient {
                     updated_at,
                     ..Default::default()
                 },
+                last_actor: None,
+                is_re_requested: false,
             });
         }
         Ok(NotificationsResult {
@@ -1653,6 +1675,88 @@ impl GithubClient {
             poll_interval,
             last_modified,
         })
+    }
+
+    /// Enrich the merged feed with per-PR data the search/notification sources
+    /// can't give us, in batched GraphQL queries (best-effort):
+    ///  - the viewer's own review status + whether a re-review is currently
+    ///    requested → `review_state` / `is_re_requested`, so `compute_activity`
+    ///    can hide approved PRs while keeping re-requested ones visible;
+    ///  - the latest comment's author → `last_actor`, so the viewer's own comment
+    ///    doesn't read as an "updated" delta;
+    ///  - `merged` → drop PRs merged out from under a stale notification.
+    ///
+    /// Chunks run concurrently (the upstream sources already do; don't regress to
+    /// serial here).
+    async fn enrich_observations(
+        &self,
+        observations: &mut Vec<crate::activity::ObservedPr>,
+        viewer: &str,
+    ) {
+        if observations.is_empty() {
+            return;
+        }
+        const CHUNK: usize = 40;
+        let pr_fragment = r#"
+            merged
+            reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }
+            reviews(last: 100) { nodes { author { login } state } }
+            comments(last: 1) { nodes { author { login } } }
+        "#;
+
+        // Build one query per chunk from immutable reads, then fire them all at once.
+        let queries: Vec<String> = observations
+            .chunks(CHUNK)
+            .map(|chunk| {
+                let parts: Vec<String> = chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| {
+                        format!(
+                            "pr{}: repository(owner: \"{}\", name: \"{}\") {{ pullRequest(number: {}) {{ {} }} }}",
+                            i, o.owner, o.repo, o.number, pr_fragment
+                        )
+                    })
+                    .collect();
+                format!("{{ {} }}", parts.join("\n"))
+            })
+            .collect();
+
+        let results = futures::future::join_all(
+            queries
+                .into_iter()
+                .map(|q| self.graphql_request(serde_json::json!({ "query": q }))),
+        )
+        .await;
+
+        // Apply each chunk's response to its own slice of observations — the chunk
+        // *is* the slice, so positional aliases (pr0..) map 1:1 with no index
+        // math. Collect merged PRs to drop after (can't remove from a &mut slice
+        // mid-iteration).
+        let mut merged_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (chunk, result) in observations.chunks_mut(CHUNK).zip(results) {
+            let Ok(result) = result else { continue };
+            let Some(data) = result.get("data") else { continue };
+            for (i, o) in chunk.iter_mut().enumerate() {
+                let Some(pr) = data.pointer(&format!("/pr{}/pullRequest", i)) else {
+                    continue;
+                };
+                if pr.get("merged").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    merged_urls.insert(o.pr_url.clone());
+                    continue;
+                }
+                let (status, is_re_requested) = resolve_review_state(pr, viewer);
+                o.observed.review_state = Some(status);
+                o.is_re_requested = is_re_requested;
+                if let Some(login) = pr
+                    .pointer("/comments/nodes/0/author/login")
+                    .and_then(|v| v.as_str())
+                {
+                    o.last_actor = Some(login.to_string());
+                }
+            }
+        }
+        observations.retain(|o| !merged_urls.contains(&o.pr_url));
     }
 
     /// Gather the full activity set for the mini-player: involved PRs (review
@@ -1676,12 +1780,13 @@ impl GithubClient {
 
         // Involved PRs + notifications require a known viewer. They're
         // independent, so fetch them concurrently once we have the username.
-        if let Ok(username) = self.get_authenticated_user().await {
+        let viewer = self.get_authenticated_user().await.ok();
+        if let Some(username) = viewer.as_deref() {
             let cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
                 .format("%Y-%m-%d")
                 .to_string();
             let (review_requests, notifications) = tokio::join!(
-                self.get_review_requests(&username, &cutoff, true),
+                self.get_review_requests(username, &cutoff, true),
                 self.get_notifications(notif_since),
             );
             if let Ok(items) = review_requests {
@@ -1721,11 +1826,20 @@ impl GithubClient {
             }
         }
 
+        // Enrich the deduped set in one batched query (review status, latest
+        // comment author, merged-state) so features that need per-PR detail work
+        // across all sources, not just review-requested PRs.
+        let mut observations: Vec<crate::activity::ObservedPr> = merged.into_values().collect();
+        if let Some(username) = viewer.as_deref() {
+            self.enrich_observations(&mut observations, username).await;
+        }
+
         CollectedActivity {
-            observations: merged.into_values().collect(),
+            observations,
             truncated,
             notif_poll_interval,
             notif_last_modified,
+            viewer,
         }
     }
 }
@@ -1744,4 +1858,7 @@ pub struct CollectedActivity {
     pub truncated: HashMap<String, u32>,
     pub notif_poll_interval: Option<u64>,
     pub notif_last_modified: Option<String>,
+    /// The authenticated user's login (when a token resolved), so the app layer
+    /// can suppress the viewer's own-comment "updated" deltas in compute_activity.
+    pub viewer: Option<String>,
 }

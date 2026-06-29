@@ -18,7 +18,7 @@ use ratatui::{DefaultTerminal, Frame};
 use syntect::easy::HighlightLines;
 use syntect::parsing::SyntaxReference;
 
-use marrow_core::types::{FileDiff, Highlight, ReviewManifest, ReviewThread};
+use marrow_core::types::{FileDiff, Highlight, MyReviewState, ReviewManifest, ReviewThread};
 
 /// Enter the alternate screen, run the viewer, and always restore the terminal.
 pub fn run(manifest: &ReviewManifest) -> io::Result<()> {
@@ -124,6 +124,9 @@ struct App<'a> {
     viewed: HashMap<String, String>,
     /// PR node id, looked up lazily and cached for GitHub viewed-state sync.
     pr_node_id: Option<String>,
+    /// The viewer's review/merge state (None = not fetched yet). Fetched on the
+    /// one-time startup load and on manual refresh; drives the header badges.
+    my_review_state: Option<MyReviewState>,
     /// Last action result, shown in the header.
     status: Option<String>,
     /// Wrap long lines (sidebar paths and diff code) instead of truncating.
@@ -180,6 +183,7 @@ impl<'a> App<'a> {
             full_file: false,
             viewed,
             pr_node_id: None,
+            my_review_state: None,
             status: None,
             wrap: true,
             // A wide default so caches built before the first frame (and in unit
@@ -587,6 +591,9 @@ impl<'a> App<'a> {
             if !self.threads_autoloaded {
                 self.threads_autoloaded = true;
                 self.ensure_threads_loaded();
+                // Also fetch merge/approval state so the header badges show a PR
+                // that was already merged or that you've already approved.
+                self.refresh_my_review_state();
                 self.cache_idx = None;
                 continue;
             }
@@ -655,8 +662,8 @@ impl<'a> App<'a> {
                 KeyCode::Char('V') => self.toggle_viewed(),
                 KeyCode::Char('T') => self.open_threads(),
                 // Manual refresh: pull comments/replies from others in place.
-                KeyCode::F(5) => self.refresh_threads(),
-                KeyCode::Char('r') if ctrl => self.refresh_threads(),
+                KeyCode::F(5) => self.refresh_remote(),
+                KeyCode::Char('r') if ctrl => self.refresh_remote(),
                 KeyCode::Char('r') => self.begin_reply(),
                 KeyCode::Char('x') => self.toggle_resolve(),
                 KeyCode::Char('/') => {
@@ -926,6 +933,24 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Manual refresh (F5 / Ctrl-R): re-fetch review threads and the viewer's
+    /// review/merge state together, so a merge or new approval shows on demand.
+    fn refresh_remote(&mut self) {
+        self.refresh_threads();
+        self.refresh_my_review_state();
+    }
+
+    /// Fetch the viewer's review/merge state for the header badges. Best-effort:
+    /// a failure leaves the previous state (and no badge) rather than nagging.
+    fn refresh_my_review_state(&mut self) {
+        let Some((github, pr)) = self.github_and_pr() else {
+            return;
+        };
+        if let Ok(state) = block_on(github.get_my_review_state(&pr.owner, &pr.repo, pr.number)) {
+            self.my_review_state = Some(state);
+        }
+    }
+
     /// Start a reply to the thread under the cursor — either in the Threads view
     /// or on an inline thread shown in a file's diff.
     fn begin_reply(&mut self) {
@@ -1161,6 +1186,26 @@ impl<'a> App<'a> {
             ),
             Span::raw(format!(" {} #{}", self.manifest.pr_title, self.manifest.pr_number)),
         ];
+        if let Some(state) = &self.my_review_state {
+            if state.is_merged {
+                header.push(Span::styled(
+                    " MERGED ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            if state.status == "approved" {
+                header.push(Span::styled(
+                    " ✓ APPROVED ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
         if let Some(s) = &self.status {
             let color = if s.starts_with("error") { Color::Red } else { Color::Green };
             header.push(Span::styled(format!("   {s}"), Style::default().fg(color)));

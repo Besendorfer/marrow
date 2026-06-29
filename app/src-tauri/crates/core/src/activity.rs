@@ -67,6 +67,14 @@ pub struct ObservedPr {
     /// Why this PR is in the feed, e.g. "review-requested", "watching:acme-web".
     pub reasons: Vec<String>,
     pub observed: Observed,
+    /// Login of the latest comment's author, filled in by enrichment. Transient
+    /// (never persisted): used to suppress an "updated" delta when the viewer's
+    /// own comment is what bumped `updated_at`.
+    pub last_actor: Option<String>,
+    /// Whether a re-review is currently requested from the viewer, filled in by
+    /// enrichment. Transient: lets the approved-filter keep an approved-but-
+    /// re-requested PR visible (it wants a fresh look) instead of hiding it.
+    pub is_re_requested: bool,
 }
 
 /// A feed row emitted to the UI. Field names are camelCase on the wire to match
@@ -154,7 +162,14 @@ fn diff(seen: &Observed, now: &Observed) -> Vec<String> {
             deltas.push("new-comments".to_string());
         }
     }
-    if now.review_state.is_some() && now.review_state != seen.review_state {
+    // Only when we previously knew a state to compare against. A None→known
+    // transition is "first time we learned it" (e.g. the first poll after
+    // enrichment starts populating review_state for watch PRs), not a change —
+    // flagging it would mark the whole backlog "review changed" at once.
+    if now.review_state.is_some()
+        && seen.review_state.is_some()
+        && now.review_state != seen.review_state
+    {
         deltas.push("review-state-changed".to_string());
     }
     if let (Some(now_t), Some(seen_t)) = (now.unresolved_threads, seen.unresolved_threads) {
@@ -168,6 +183,17 @@ fn diff(seen: &Observed, now: &Observed) -> Vec<String> {
     deltas
 }
 
+/// Whether the PR's latest comment was authored by the viewer (case-insensitive).
+/// `viewer` empty (e.g. no token) ⇒ never, so behavior is unchanged.
+fn is_self_authored(pr: &ObservedPr, viewer: &str) -> bool {
+    !viewer.is_empty()
+        && pr
+            .last_actor
+            .as_deref()
+            .map(|a| a.eq_ignore_ascii_case(viewer))
+            .unwrap_or(false)
+}
+
 /// Turn this poll's observations into a feed payload by diffing against the
 /// persisted seen-state. A PR never seen before is `unread` with a `new` delta;
 /// a PR whose observable fields all match its seen-state is read with no deltas.
@@ -176,13 +202,29 @@ pub fn compute_activity(
     store: &ActivityStore,
     truncated: HashMap<String, u32>,
     fetched_at: String,
+    viewer: &str,
+    show_approved: bool,
 ) -> PrActivityPayload {
     let mut items: Vec<PrActivityItem> = observations
         .into_iter()
+        // Once you've approved a PR, drop it from the feed unless you opt to keep
+        // approved PRs — but always keep one whose review is freshly re-requested.
+        .filter(|pr| {
+            show_approved
+                || pr.is_re_requested
+                || pr.observed.review_state.as_deref() != Some("approved")
+        })
         .map(|pr| {
             let (deltas, unread) = match store.prs.get(&pr.pr_url) {
                 Some(seen) => {
-                    let d = diff(&seen.observed, &pr.observed);
+                    let mut d = diff(&seen.observed, &pr.observed);
+                    // Your own comment bumps `updated_at` but isn't news: drop the
+                    // generic "updated" delta when the latest comment was yours.
+                    // Concrete deltas (new commits, review-state, CI, threads)
+                    // still stand on their own.
+                    if is_self_authored(&pr, viewer) {
+                        d.retain(|x| x != "updated");
+                    }
                     let unread = !d.is_empty();
                     (d, unread)
                 }
@@ -257,6 +299,8 @@ mod tests {
             draft: false,
             reasons: vec!["watching:x".into()],
             observed,
+            last_actor: None,
+            is_re_requested: false,
         }
     }
 
@@ -268,6 +312,8 @@ mod tests {
             &store,
             HashMap::new(),
             "now".into(),
+            "",
+            true,
         );
         assert_eq!(payload.items.len(), 1);
         assert!(payload.items[0].unread);
@@ -283,6 +329,8 @@ mod tests {
             &store,
             HashMap::new(),
             "now".into(),
+            "",
+            true,
         );
         assert!(!payload.items[0].unread);
         assert!(payload.items[0].deltas.is_empty());
@@ -297,6 +345,8 @@ mod tests {
             &store,
             HashMap::new(),
             "now".into(),
+            "",
+            true,
         );
         assert!(payload.items[0].unread);
         assert!(payload.items[0].deltas.contains(&"updated".to_string()));
@@ -330,6 +380,107 @@ mod tests {
     }
 
     #[test]
+    fn own_comment_does_not_mark_unread() {
+        let mut store = ActivityStore::default();
+        mark_seen(&mut store, "u1", obs("2026-01-01T00:00:00Z"), "seen".into());
+        // updated_at moved, but the latest comment is the viewer's own.
+        let mut p = pr("u1", obs("2026-02-01T00:00:00Z"));
+        p.last_actor = Some("Me".into());
+        let payload = compute_activity(vec![p], &store, HashMap::new(), "now".into(), "me", true);
+        assert!(!payload.items[0].unread, "own comment should not be unread");
+        assert!(!payload.items[0].deltas.contains(&"updated".to_string()));
+    }
+
+    #[test]
+    fn others_comment_still_marks_unread() {
+        let mut store = ActivityStore::default();
+        mark_seen(&mut store, "u1", obs("2026-01-01T00:00:00Z"), "seen".into());
+        let mut p = pr("u1", obs("2026-02-01T00:00:00Z"));
+        p.last_actor = Some("someone-else".into());
+        let payload = compute_activity(vec![p], &store, HashMap::new(), "now".into(), "me", true);
+        assert!(payload.items[0].unread);
+        assert!(payload.items[0].deltas.contains(&"updated".to_string()));
+    }
+
+    #[test]
+    fn own_comment_still_unread_when_a_concrete_delta_moved() {
+        let mut store = ActivityStore::default();
+        let seen = Observed {
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            head_sha: Some("aaa".into()),
+            ..Default::default()
+        };
+        mark_seen(&mut store, "u1", seen, "seen".into());
+        // My own comment bumped updated_at, but a new commit also landed.
+        let now = Observed {
+            updated_at: "2026-02-01T00:00:00Z".into(),
+            head_sha: Some("bbb".into()),
+            ..Default::default()
+        };
+        let mut p = pr("u1", now);
+        p.last_actor = Some("me".into());
+        let payload = compute_activity(vec![p], &store, HashMap::new(), "now".into(), "me", true);
+        assert!(payload.items[0].unread, "new commits keep it unread");
+        assert!(payload.items[0].deltas.contains(&"new-commits".to_string()));
+        assert!(!payload.items[0].deltas.contains(&"updated".to_string()));
+    }
+
+    #[test]
+    fn first_known_review_state_is_not_a_change() {
+        // seen had no review_state (pre-enrichment); now enrichment supplies one.
+        let seen = Observed {
+            updated_at: "t".into(),
+            review_state: None,
+            ..Default::default()
+        };
+        let now = Observed {
+            updated_at: "t".into(),
+            review_state: Some("pending".into()),
+            ..Default::default()
+        };
+        let d = diff(&seen, &now);
+        assert!(
+            !d.contains(&"review-state-changed".to_string()),
+            "None→known is not a change"
+        );
+    }
+
+    fn approved(url: &str, re_requested: bool) -> ObservedPr {
+        let mut p = pr(url, obs("2026-01-01T00:00:00Z"));
+        p.observed.review_state = Some("approved".into());
+        p.is_re_requested = re_requested;
+        p
+    }
+
+    #[test]
+    fn approved_prs_are_filtered_unless_opted_in_or_re_requested() {
+        let store = ActivityStore::default();
+        // Default (show_approved = false): a plain approved PR is dropped, but an
+        // approved PR with a re-review requested stays.
+        let payload = compute_activity(
+            vec![approved("approved-url", false), approved("re-req-url", true)],
+            &store,
+            HashMap::new(),
+            "now".into(),
+            "",
+            false,
+        );
+        let urls: Vec<&str> = payload.items.iter().map(|i| i.pr_url.as_str()).collect();
+        assert_eq!(urls, vec!["re-req-url"], "approved dropped, re-requested kept");
+
+        // show_approved = true keeps both.
+        let payload = compute_activity(
+            vec![approved("approved-url", false)],
+            &store,
+            HashMap::new(),
+            "now".into(),
+            "",
+            true,
+        );
+        assert_eq!(payload.items.len(), 1, "show_approved keeps approved PRs");
+    }
+
+    #[test]
     fn unread_items_sort_first() {
         let mut store = ActivityStore::default();
         mark_seen(&mut store, "seen-url", obs("2026-05-01T00:00:00Z"), "s".into());
@@ -341,6 +492,8 @@ mod tests {
             &store,
             HashMap::new(),
             "now".into(),
+            "",
+            true,
         );
         assert_eq!(payload.items[0].pr_url, "new-url", "unread sorts before read");
     }

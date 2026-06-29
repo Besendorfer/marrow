@@ -126,6 +126,10 @@ pub struct Settings {
     /// focus. The widget's ✕ turns this off; the dock's ⧉ toggle turns it on.
     #[serde(default = "default_true")]
     pub activity_mini_player: bool,
+    /// Keep PRs in the activity feed after you've approved them. Off by default:
+    /// once you approve a PR, it drops out of the feed.
+    #[serde(default)]
+    pub show_approved_prs: bool,
 }
 
 fn default_true() -> bool {
@@ -241,6 +245,9 @@ pub struct PrUpdateStatus {
     pub comment_count_changed: bool,
     pub new_head_sha: Option<String>,
     pub new_comment_count: Option<u32>,
+    /// Whether the PR is now merged. Independent of `has_changes` (a merge moves
+    /// neither head SHA nor comment count), so the GUI checks it separately.
+    pub merged: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

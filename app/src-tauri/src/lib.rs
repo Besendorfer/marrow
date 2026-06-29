@@ -33,11 +33,14 @@ async fn poll_activity_once(
         .collect_activity(&watches, cap, notif_since.as_deref())
         .await;
     let store = marrow_core::activity::load_activity_store();
+    let viewer = collected.viewer.unwrap_or_default();
     let payload = marrow_core::activity::compute_activity(
         collected.observations,
         &store,
         collected.truncated,
         marrow_core::activity::now_rfc3339(),
+        &viewer,
+        settings.show_approved_prs,
     );
     let _ = handle.emit("pr-activity", payload);
     Some((collected.notif_poll_interval, collected.notif_last_modified))

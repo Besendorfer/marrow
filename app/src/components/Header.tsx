@@ -140,6 +140,19 @@ export function Header({
                 <span className="stale-badge">{staleCount} changed</span>
               )}
             </span>
+            {myReviewState?.is_merged && (
+              <span className="pr-badge pr-badge--merged" title="This PR has been merged">
+                Merged
+              </span>
+            )}
+            {myReviewState?.status === "approved" && (
+              <span
+                className="pr-badge pr-badge--approved"
+                title="You have approved this PR"
+              >
+                {REVIEW_STATUS_SYMBOL.approved} Approved
+              </span>
+            )}
             <div className="progress-bar">
               <div className="progress-fill" style={{ width: `${progress}%` }} />
             </div>
