@@ -132,6 +132,7 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("all"); // a raw reason string, or "all"
   const [watchLabels, setWatchLabels] = useState<string[]>([]);
+  const [showControls, setShowControls] = useState(false);
 
   // Load configured watches so the source dropdown lists every watch — even one
   // that currently has no activity in the feed.
@@ -226,6 +227,13 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
         >
           {unreadOnly ? "Unread" : "All"}
         </button>
+        <button
+          className={`aw-iconbtn ${showControls || query.trim() || source !== "all" ? "aw-iconbtn--on" : ""}`}
+          onClick={() => setShowControls((v) => !v)}
+          title="Search & filter"
+        >
+          ⌕
+        </button>
         {variant === "dock" && (
           <>
             <button
@@ -251,7 +259,9 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
         )}
       </header>
 
-      {/* Search + source filter (hidden by CSS in the short "bar" layout). */}
+      {/* Search + source filter — collapsed by default, toggled from the header
+          (and hidden by CSS in the short "bar" layout). */}
+      {showControls && (
       <div className="aw-controls">
         <input
           className="aw-search"
@@ -283,6 +293,7 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
           </select>
         )}
       </div>
+      )}
 
       {/* Tier 1 — "now playing". Hidden by CSS in the tall list layout. */}
       {focus && (
