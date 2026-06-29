@@ -48,7 +48,8 @@ pub fn run() {
     let args: Vec<String> = env::args().collect();
     let manifest_path = args.get(1).cloned();
 
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -59,7 +60,14 @@ pub fn run() {
             tauri_plugin_window_state::Builder::default()
                 .with_denylist(&["main"])
                 .build(),
-        )
+        );
+    // Lets the activity window become a non-activating NSPanel (macOS only).
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_nspanel::init());
+    }
+
+    builder
         .on_menu_event(|app, event| {
             // Cmd+W / Cmd+T are routed to the frontend, which owns the tab model.
             // The frontend skips closing when a text field is focused. Cmd+Q has no

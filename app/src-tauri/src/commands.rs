@@ -167,6 +167,28 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
 
     // Restore the last-saved size & position before revealing it.
     let _ = win.restore_state(StateFlags::POSITION | StateFlags::SIZE);
+
+    // Make it a non-activating NSPanel so clicking/dragging/resizing the widget
+    // doesn't activate Marrow (which the app-active poll treats as "you're back"
+    // and hides). Cmd+Tab / opening a PR still activate the app → still hide.
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::WebviewWindowExt;
+        // NSWindowStyleMask bits: Resizable (1<<3) keeps edge-resize; Borderless
+        // (0) = frameless; NonactivatingPanel (1<<7) is the key bit.
+        const NONACTIVATING_RESIZABLE: i32 = (1 << 3) | (1 << 7); // 8 | 128 = 136
+        match win.to_panel() {
+            Ok(panel) => {
+                panel.set_style_mask(NONACTIVATING_RESIZABLE);
+                panel.show();
+                return Ok(());
+            }
+            Err(_) => {
+                // Fall through to a normal window show if conversion fails.
+            }
+        }
+    }
+
     win.show().map_err(|e| e.to_string())?;
     Ok(())
 }
