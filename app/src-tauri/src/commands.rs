@@ -23,11 +23,6 @@ pub struct AppState {
     // replay; after that point, hot-open emits suffice and we skip buffering
     // to avoid replaying stale URLs on the next cold-start.
     pub frontend_ready: Mutex<bool>,
-    // Last time the user actually touched the floating mini-player (pointer
-    // move/down, or a window move/resize). Lets the visibility poll tell
-    // "you're interacting with the panel" from "macOS just re-focused it on a
-    // Cmd+Tab back to the app", so the panel hides on return either way.
-    pub widget_interacted_at: Mutex<Option<std::time::Instant>>,
 }
 
 fn github_client() -> GithubClient {
@@ -173,23 +168,6 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
     // Restore the last-saved size & position before revealing it.
     let _ = win.restore_state(StateFlags::POSITION | StateFlags::SIZE);
 
-    // Treat a window move/resize as a fresh interaction (edge-resize produces no
-    // webview pointer events, so the frontend can't report it).
-    {
-        use tauri::Manager;
-        let ev_app = app.clone();
-        win.on_window_event(move |event| {
-            if matches!(
-                event,
-                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
-            ) {
-                if let Ok(mut t) = ev_app.state::<AppState>().widget_interacted_at.lock() {
-                    *t = Some(std::time::Instant::now());
-                }
-            }
-        });
-    }
-
     // Make it a non-activating NSPanel so clicking/dragging/resizing the widget
     // doesn't activate Marrow (which the app-active poll treats as "you're back"
     // and hides). Cmd+Tab / opening a PR still activate the app → still hide.
@@ -262,17 +240,6 @@ pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Resu
             None => {}
         }
         Ok(())
-    }
-}
-
-/// Record that the user just touched the floating mini-player (the floating
-/// widget calls this on pointer move/down). The visibility poll uses recency of
-/// this to keep the panel up while you're using it, but hide it when you
-/// Cmd+Tab back to the app without touching it.
-#[command]
-pub fn mark_widget_interaction(state: State<AppState>) {
-    if let Ok(mut t) = state.widget_interacted_at.lock() {
-        *t = Some(std::time::Instant::now());
     }
 }
 

@@ -84,7 +84,6 @@ pub fn run() {
             pending_deep_link: Mutex::new(None),
             pr_node_ids: Mutex::new(HashMap::new()),
             frontend_ready: Mutex::new(false),
-            widget_interacted_at: Mutex::new(None),
         })
         .setup(|app| {
             // Custom menu intercepts Ctrl+W / Ctrl+Q at the native layer (see menu.rs).
@@ -174,39 +173,48 @@ pub fn run() {
             {
                 use std::sync::atomic::{AtomicU8, Ordering};
                 let poll_handle = app.handle().clone();
-                let last_state = std::sync::Arc::new(AtomicU8::new(0)); // 0 unknown, 1 show, 2 hide
+                let last_visible = std::sync::Arc::new(AtomicU8::new(0)); // 1 show, 2 hide
+                let last_active = std::sync::Arc::new(AtomicU8::new(0)); // 1 active, 2 inactive
                 tauri::async_runtime::spawn(async move {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         let h = poll_handle.clone();
-                        let last = last_state.clone();
+                        let lv = last_visible.clone();
+                        let la = last_active.clone();
                         let _ = poll_handle.run_on_main_thread(move || {
                             use objc2::MainThreadMarker;
                             use objc2_app_kit::NSApplication;
                             use tauri::Manager;
+                            use tauri_nspanel::ManagerExt;
 
                             let Some(mtm) = MainThreadMarker::new() else {
                                 return;
                             };
                             let active = NSApplication::sharedApplication(mtm).isActive();
-                            // Keep the panel up only while you're actually using it:
-                            // it's the focused window AND you touched it recently.
-                            // That distinguishes real interaction (drag/resize/✕ —
-                            // which activate the app) from macOS merely re-focusing the
-                            // panel when you Cmd+Tab back; in the latter case there's no
-                            // recent touch, so the panel hides on return.
+
+                            // On the active→inactive edge (you left Marrow), drop the
+                            // panel's key status so macOS restores the MAIN window — not
+                            // the panel — as key when you return. Otherwise, once you've
+                            // clicked the panel it stays the app's key window and a
+                            // Cmd+Tab back re-focuses it, leaving it stuck on screen.
+                            let acode = if active { 1 } else { 2 };
+                            if la.swap(acode, Ordering::Relaxed) == 1 && acode == 2 {
+                                if let Ok(panel) = h.get_webview_panel("activity-widget") {
+                                    panel.resign_key_window();
+                                }
+                            }
+
+                            // Keep the panel up while it's the focused window (you're
+                            // dragging/resizing/clicking it — which activates the app);
+                            // hide it when Marrow is active and the panel isn't focused
+                            // (you've returned to the main window).
                             let panel_focused = h
                                 .get_webview_window("activity-widget")
                                 .map(|w| w.is_focused().unwrap_or(false))
                                 .unwrap_or(false);
-                            let touched_recently = h
-                                .try_state::<commands::AppState>()
-                                .and_then(|s| s.widget_interacted_at.lock().ok().and_then(|t| *t))
-                                .map(|t| t.elapsed() < std::time::Duration::from_millis(1500))
-                                .unwrap_or(false);
-                            let want_visible = !active || (panel_focused && touched_recently);
-                            let code = if want_visible { 1 } else { 2 };
-                            if last.swap(code, Ordering::Relaxed) != code {
+                            let want_visible = !active || panel_focused;
+                            let vcode = if want_visible { 1 } else { 2 };
+                            if lv.swap(vcode, Ordering::Relaxed) != vcode {
                                 let _ = commands::set_activity_window_visible(h, want_visible);
                             }
                         });
@@ -253,7 +261,6 @@ pub fn run() {
             commands::mark_pr_seen,
             commands::set_activity_window_visible,
             commands::set_mini_player_enabled,
-            commands::mark_widget_interaction,
             commands::dismiss_mini_player,
             commands::open_pr_in_main,
         ])
