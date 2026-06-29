@@ -174,45 +174,52 @@ pub fn run() {
                 use std::sync::atomic::{AtomicU8, Ordering};
                 let poll_handle = app.handle().clone();
                 let last_visible = std::sync::Arc::new(AtomicU8::new(0)); // 1 show, 2 hide
-                let last_active = std::sync::Arc::new(AtomicU8::new(0)); // 1 active, 2 inactive
                 tauri::async_runtime::spawn(async move {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         let h = poll_handle.clone();
                         let lv = last_visible.clone();
-                        let la = last_active.clone();
                         let _ = poll_handle.run_on_main_thread(move || {
                             use objc2::MainThreadMarker;
-                            use objc2_app_kit::NSApplication;
+                            use objc2_app_kit::{NSApplication, NSEvent, NSWindow};
                             use tauri::Manager;
-                            use tauri_nspanel::ManagerExt;
 
                             let Some(mtm) = MainThreadMarker::new() else {
                                 return;
                             };
                             let active = NSApplication::sharedApplication(mtm).isActive();
 
-                            // On the active→inactive edge (you left Marrow), drop the
-                            // panel's key status so macOS restores the MAIN window — not
-                            // the panel — as key when you return. Otherwise, once you've
-                            // clicked the panel it stays the app's key window and a
-                            // Cmd+Tab back re-focuses it, leaving it stuck on screen.
-                            let acode = if active { 1 } else { 2 };
-                            if la.swap(acode, Ordering::Relaxed) == 1 && acode == 2 {
-                                if let Ok(panel) = h.get_webview_panel("activity-widget") {
-                                    panel.resign_key_window();
-                                }
-                            }
-
-                            // Keep the panel up while it's the focused window (you're
-                            // dragging/resizing/clicking it — which activates the app);
-                            // hide it when Marrow is active and the panel isn't focused
-                            // (you've returned to the main window).
-                            let panel_focused = h
+                            // Is the cursor over the floating panel? A NATIVE check
+                            // (global mouse location vs the panel's frame) — it works
+                            // even while the app/panel is inactive, where the webview
+                            // gets no pointer events, and reading it in the poll is
+                            // race-free. This is what tells "you're using the panel"
+                            // (drag/resize/click — cursor on it) from "you've moved back
+                            // to the main window" (cursor off it).
+                            let mouse_over_panel = h
                                 .get_webview_window("activity-widget")
-                                .map(|w| w.is_focused().unwrap_or(false))
+                                .and_then(|win| {
+                                    let ns_ptr = win.ns_window().ok()?;
+                                    let ns_window: &NSWindow =
+                                        unsafe { &*(ns_ptr as *const NSWindow) };
+                                    let frame = ns_window.frame();
+                                    let mouse = NSEvent::mouseLocation();
+                                    let m = 6.0; // small margin so edge-resize counts
+                                    Some(
+                                        mouse.x >= frame.origin.x - m
+                                            && mouse.x
+                                                <= frame.origin.x + frame.size.width + m
+                                            && mouse.y >= frame.origin.y - m
+                                            && mouse.y
+                                                <= frame.origin.y + frame.size.height + m,
+                                    )
+                                })
                                 .unwrap_or(false);
-                            let want_visible = !active || panel_focused;
+
+                            // Show while away from Marrow, or while the cursor is on the
+                            // panel (you're using it). Hide once Marrow is active and the
+                            // cursor has left the panel (you've gone back to the app).
+                            let want_visible = !active || mouse_over_panel;
                             let vcode = if want_visible { 1 } else { 2 };
                             if lv.swap(vcode, Ordering::Relaxed) != vcode {
                                 let _ = commands::set_activity_window_visible(h, want_visible);

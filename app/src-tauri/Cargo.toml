@@ -47,7 +47,7 @@ marrow-core = { path = "crates/core" }
 # state is the only reliable signal.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSEvent", "NSWindow"] }
 # Convert the floating mini-player into a non-activating NSPanel so dragging /
 # resizing it doesn't activate Marrow (which the app-active poll would treat as
 # "you're back" and hide it). Cmd+Tab / opening a PR still activate the app.
