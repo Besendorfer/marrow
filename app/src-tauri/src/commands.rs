@@ -136,9 +136,6 @@ pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
     activity::save_activity_store(&store)
 }
 
-/// Build the floating mini-player window: a frameless, transparent,
-/// always-on-top, resizable webview rendering `widget.html`.
-///
 /// Create the floating mini-player window, left HIDDEN. Built eagerly at
 /// startup (and on enable) so that the first show is never a window-creation —
 /// creating a webview window activates the app, which would yank you back to
@@ -191,10 +188,10 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
-/// Show or hide the floating mini-player. The main window drives this from its
-/// own visibility (Page Visibility API): the floating window is shown only when
-/// the main window is hidden/minimized, and hidden when it's visible — so the
-/// two are never on screen at once. Creates the window on first show.
+/// Show or hide the floating mini-player. This is the single actuator; callers
+/// decide *when*: the macOS app-active poll shows it when you leave Marrow, and
+/// the main window hides it when it regains focus (see App.tsx). The panel is
+/// pre-created at startup, so the lazy build here is only a fallback.
 #[command]
 pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
     // Respect the user's opt-out: never auto-show when the feature is disabled.
@@ -259,9 +256,8 @@ pub fn set_mini_player_enabled(enabled: bool) -> Result<(), String> {
 /// keeps it from reappearing; the hidden panel is reused if re-enabled.
 #[command]
 pub fn dismiss_mini_player(app: tauri::AppHandle) -> Result<(), String> {
-    let mut settings = load_settings();
-    settings.activity_mini_player = false;
-    let _ = save_settings_to_disk(&settings);
+    // Same persistent opt-out as the dock toggle, plus hide the window.
+    let _ = set_mini_player_enabled(false);
 
     #[cfg(target_os = "macos")]
     {

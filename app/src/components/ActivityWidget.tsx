@@ -9,8 +9,8 @@ interface ActivityWidgetProps {
   /** Open a PR in the main window (an `owner/repo#number` ref). */
   onOpenPr: (prRef: string) => void;
   /**
-   * `dock` = an in-app, resizable, fixed-corner panel.
-   * `window` = fills a dedicated floating window (Phase 3).
+   * `dock` = the in-app, resizable, fixed-corner panel (shown while you're in
+   * Marrow). `window` = the floating NSPanel (shown while you're away).
    */
   variant?: "dock" | "window";
 }

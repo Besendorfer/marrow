@@ -176,7 +176,7 @@ pub fn run() {
                 let was_active = std::sync::Arc::new(AtomicU8::new(0)); // 1 active, 2 inactive
                 tauri::async_runtime::spawn(async move {
                     loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         let h = poll_handle.clone();
                         let wa = was_active.clone();
                         let _ = poll_handle.run_on_main_thread(move || {
