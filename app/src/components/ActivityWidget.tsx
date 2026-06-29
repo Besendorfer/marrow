@@ -47,6 +47,17 @@ function ciGlyph(state?: string | null): { glyph: string; cls: string } | null {
   }
 }
 
+/** Animated equalizer bars — the Spotify nod, shown on the pill and header. */
+function Equalizer() {
+  return (
+    <span className="aw-eq" aria-hidden>
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
+
 function ActivityRow({
   item,
   onActivate,
@@ -209,11 +220,7 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
         onClick={() => setCollapsedPersist(false)}
         title="PR activity"
       >
-        <span className="aw-eq" aria-hidden>
-          <i />
-          <i />
-          <i />
-        </span>
+        <Equalizer />
         <span className="aw-pill__count">{unreadCount}</span>
       </button>
     );
@@ -222,11 +229,7 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   return (
     <div className={`activity-widget activity-widget--${variant}`}>
       <header className="aw-head" data-tauri-drag-region>
-        <span className="aw-eq" aria-hidden>
-          <i />
-          <i />
-          <i />
-        </span>
+        <Equalizer />
         <span className="aw-head__title">
           {variant === "window" ? "Marrow Activity" : "Activity"}
         </span>

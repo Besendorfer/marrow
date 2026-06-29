@@ -3,6 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { PrActivityItem, PrActivityPayload } from "../types";
 
+// Stable empties so the no-data render doesn't hand fresh references to
+// downstream memos (which would defeat their memoization until the first event).
+const EMPTY_ITEMS: PrActivityItem[] = [];
+const EMPTY_TRUNCATED: Record<string, number> = {};
+
 /**
  * Subscribe to the Rust-owned `pr-activity` event and expose the de-duplicated,
  * pre-sorted feed plus the actions both the dock and floating widget need. The
@@ -21,8 +26,8 @@ export function useActivityFeed() {
     };
   }, []);
 
-  const items = payload?.items ?? [];
-  const truncated = payload?.truncated ?? {};
+  const items = payload?.items ?? EMPTY_ITEMS;
+  const truncated = payload?.truncated ?? EMPTY_TRUNCATED;
 
   const unreadCount = useMemo(() => items.filter((i) => i.unread).length, [items]);
   const truncatedTotal = useMemo(
@@ -57,7 +62,7 @@ export function useActivityFeed() {
     );
   }, []);
 
-  return { items, truncated, truncatedTotal, unreadCount, markSeen };
+  return { items, truncatedTotal, unreadCount, markSeen };
 }
 
 /** `owner/repo#number` ref used by the deep-link / fetch entry points. */
