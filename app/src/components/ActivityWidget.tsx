@@ -128,6 +128,17 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   const [focusIdx, setFocusIdx] = useState(0);
   // Session snooze: hide a PR until its `updatedAt` moves (i.e. until it changes).
   const [snoozed, setSnoozed] = useState<Record<string, string>>({});
+  // Temporary feed filters (not persisted).
+  const [query, setQuery] = useState("");
+  const [source, setSource] = useState("all"); // a raw reason string, or "all"
+
+  // The distinct sources present in the feed (watch labels, review-requested,
+  // notifications, …), for the source dropdown.
+  const sources = useMemo(() => {
+    const set = new Set<string>();
+    for (const i of items) for (const r of i.reasons) set.add(r);
+    return Array.from(set).sort();
+  }, [items]);
 
   function setCollapsedPersist(v: boolean) {
     setCollapsed(v);
@@ -139,9 +150,18 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   }
 
   const visible = useMemo(() => {
-    const base = unreadOnly ? items.filter((i) => i.unread) : items;
-    return base.filter((i) => snoozed[i.prUrl] !== i.updatedAt);
-  }, [items, unreadOnly, snoozed]);
+    const q = query.trim().toLowerCase();
+    return items.filter((i) => {
+      if (unreadOnly && !i.unread) return false;
+      if (snoozed[i.prUrl] === i.updatedAt) return false;
+      if (source !== "all" && !i.reasons.includes(source)) return false;
+      if (q) {
+        const hay = `${i.title} ${i.repo}#${i.number} ${i.author}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [items, unreadOnly, snoozed, source, query]);
 
   // The "now playing" item: clamp the cursor into range as the feed changes.
   const safeIdx = visible.length ? Math.min(focusIdx, visible.length - 1) : 0;
@@ -221,6 +241,39 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
         )}
       </header>
 
+      {/* Search + source filter (hidden by CSS in the short "bar" layout). */}
+      <div className="aw-controls">
+        <input
+          className="aw-search"
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setFocusIdx(0);
+          }}
+          placeholder="Search PRs…"
+          spellCheck={false}
+        />
+        {sources.length > 1 && (
+          <select
+            className="aw-source"
+            value={source}
+            onChange={(e) => {
+              setSource(e.target.value);
+              setFocusIdx(0);
+            }}
+            title="Filter by source"
+          >
+            <option value="all">All sources</option>
+            {sources.map((s) => (
+              <option key={s} value={s}>
+                {reasonLabel(s)}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
       {/* Tier 1 — "now playing". Hidden by CSS in the tall list layout. */}
       {focus && (
         <div className="aw-focus">
@@ -260,7 +313,13 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
       {/* Tier 2 — the feed. */}
       <div className="aw-feed">
         {visible.length === 0 ? (
-          <div className="aw-empty">{unreadOnly ? "Nothing unread" : "No PR activity yet"}</div>
+          <div className="aw-empty">
+            {query.trim() || source !== "all"
+              ? "No matches"
+              : unreadOnly
+                ? "Nothing unread"
+                : "No PR activity yet"}
+          </div>
         ) : (
           visible.map((item) => (
             <ActivityRow key={item.prUrl} item={item} onActivate={activate} />

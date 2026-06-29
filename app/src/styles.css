@@ -4085,6 +4085,37 @@ mark.search-highlight-current {
 .aw-iconbtn:disabled { opacity: 0.35; cursor: default; }
 .aw-iconbtn--on { color: var(--accent); border-color: var(--accent); }
 
+/* ---- Search + source filter ---- */
+.aw-controls {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.aw-search {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.aw-search:focus { outline: none; border-color: var(--accent); }
+.aw-source {
+  flex: none;
+  max-width: 42%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
 /* ---- Equalizer (the Spotify nod) ---- */
 .aw-eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
 .aw-eq i {
@@ -4187,7 +4218,7 @@ mark.search-highlight-current {
 /* Bar (short): a single horizontal strip — focus + transport, no scroll feed. */
 @container aw (max-height: 150px) {
   .activity-widget { flex-direction: column; }
-  .aw-feed { display: none; }
+  .aw-feed, .aw-controls { display: none; }
   .aw-focus { flex: 1; border-bottom: none; display: flex; align-items: center; gap: 10px; }
   .aw-focus__transport { margin-bottom: 0; }
 }
