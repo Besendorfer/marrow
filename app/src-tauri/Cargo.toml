@@ -31,12 +31,24 @@ authors = ["Teancum Besendorfer"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-deep-link = "2"
+tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 marrow-core = { path = "crates/core" }
+
+# Read NSApplication.isActive to drive the floating mini-player: macOS delivers
+# no webview focus event on app (re)activation (Cmd+Tab / dock), so app-active
+# state is the only reliable signal.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder"] }
+# Convert the floating mini-player into a non-activating NSPanel so dragging /
+# resizing it doesn't activate Marrow (which the app-active poll would treat as
+# "you're back" and hide it). Cmd+Tab / opening a PR still activate the app.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "18ffb9a201fbf6fedfaa382fd4b92315ea30ab1a" }

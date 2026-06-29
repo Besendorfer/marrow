@@ -36,17 +36,37 @@ export function extractPrRef(input: string): string | null {
   return match ? match[1] : null;
 }
 
-export function timeAgo(dateStr: string): string {
-  const now = Date.now();
+/**
+ * Normalize a GitHub PR URL or an `owner/repo#number` ref to a single
+ * comparable key (`owner/repo#number`, lowercased), or null if neither shape
+ * matches. Used to tell whether two references point at the same PR.
+ */
+export function canonicalPrKey(input: string): string | null {
+  let owner: string | undefined, repo: string | undefined, number: string | undefined;
+  const urlMatch = input.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (urlMatch) {
+    [, owner, repo, number] = urlMatch;
+  } else {
+    const refMatch = input.match(/^([^/]+)\/([^/#]+)#(\d+)$/);
+    if (!refMatch) return null;
+    [, owner, repo, number] = refMatch;
+  }
+  return `${owner}/${repo}#${number}`.toLowerCase();
+}
+
+/** Relative time. `short` drops the " ago" suffix (for compact chips). */
+export function timeAgo(dateStr: string, short = false): string {
   const then = new Date(dateStr).getTime();
-  const seconds = Math.floor((now - then) / 1000);
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.floor((Date.now() - then) / 1000);
   if (seconds < 60) return "just now";
+  const suffix = short ? "" : " ago";
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return `${minutes}m${suffix}`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return `${hours}h${suffix}`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return `${days}d${suffix}`;
   const months = Math.floor(days / 30);
-  return `${months}mo ago`;
+  return `${months}mo${suffix}`;
 }

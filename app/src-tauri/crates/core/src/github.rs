@@ -23,6 +23,8 @@ struct GithubUser {
 
 #[derive(Deserialize)]
 struct SearchResponse {
+    #[serde(default)]
+    total_count: u32,
     items: Vec<SearchItem>,
 }
 
@@ -458,37 +460,31 @@ impl GithubClient {
         Ok(user.login)
     }
 
-    async fn search_prs(
+    /// Run a `/search/issues` query, returning (items, server-reported total).
+    async fn search_issues(
         &self,
         query: &str,
-    ) -> Result<Vec<SearchItem>, String> {
+        sort: &str,
+        order: &str,
+    ) -> Result<(Vec<SearchItem>, u32), String> {
         let url = format!(
-            "https://api.github.com/search/issues?q={}&sort=created&order=asc&per_page=100",
-            urlencoding::encode(query)
+            "https://api.github.com/search/issues?q={}&sort={}&order={}&per_page=100",
+            urlencoding::encode(query),
+            urlencoding::encode(sort),
+            urlencoding::encode(order)
         );
-
         let resp = self
-            .client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "relevant-reviews")
-            .header(ACCEPT, "application/vnd.github.v3+json")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub API error ({}): {}", status, body));
-        }
-
+            .send_checked(&url, "application/vnd.github.v3+json")
+            .await?;
         let search: SearchResponse = resp
             .json()
             .await
             .map_err(|e| format!("Failed to parse search results: {}", e))?;
+        Ok((search.items, search.total_count))
+    }
 
-        Ok(search.items)
+    async fn search_prs(&self, query: &str) -> Result<Vec<SearchItem>, String> {
+        Ok(self.search_issues(query, "created", "asc").await?.0)
     }
 
     pub async fn get_review_requests(
@@ -1431,4 +1427,321 @@ impl GithubClient {
             is_merged,
         })
     }
+}
+
+/// GitHub serves an avatar (with a redirect) at `https://github.com/<login>.png`.
+/// Using it avoids an extra API call just to render a face in the activity feed.
+fn avatar_for(login: &str) -> String {
+    if login.is_empty() {
+        String::new()
+    } else {
+        format!("https://github.com/{}.png?size=40", login)
+    }
+}
+
+/// Convert a notifications `subject.url`
+/// (`https://api.github.com/repos/{owner}/{repo}/pulls/{n}`) into the canonical
+/// HTML PR url so it keys the same as search/review-request results.
+fn pulls_api_to_html(api_url: &str) -> Option<String> {
+    let rest = api_url.strip_prefix("https://api.github.com/repos/")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() == 4 && parts[2] == "pulls" {
+        Some(format!(
+            "https://github.com/{}/{}/pull/{}",
+            parts[0], parts[1], parts[3]
+        ))
+    } else {
+        None
+    }
+}
+
+fn search_item_to_observed(
+    item: SearchItem,
+    reason: String,
+) -> Option<crate::activity::ObservedPr> {
+    if let Some(pr) = &item.pull_request {
+        if pr.merged_at.is_some() {
+            return None;
+        }
+    }
+    let parsed = crate::pr_parser::parse_pr_ref(&item.html_url).ok()?;
+    let avatar_url = avatar_for(&item.user.login);
+    Some(crate::activity::ObservedPr {
+        pr_url: item.html_url,
+        owner: parsed.owner,
+        repo: parsed.repo,
+        number: item.number,
+        title: item.title,
+        author: item.user.login,
+        avatar_url,
+        draft: item.draft.unwrap_or(false),
+        reasons: vec![reason],
+        observed: crate::activity::Observed {
+            updated_at: item.updated_at,
+            ..Default::default()
+        },
+    })
+}
+
+fn review_item_to_observed(
+    item: crate::types::ReviewRequestItem,
+    reason: &str,
+) -> crate::activity::ObservedPr {
+    let avatar_url = avatar_for(&item.author);
+    crate::activity::ObservedPr {
+        pr_url: item.html_url,
+        owner: item.owner,
+        repo: item.repo,
+        number: item.number,
+        title: item.title,
+        author: item.author,
+        avatar_url,
+        draft: item.draft,
+        reasons: vec![reason.to_string()],
+        observed: crate::activity::Observed {
+            updated_at: item.updated_at,
+            review_state: Some(item.my_review_status),
+            unresolved_threads: Some(item.unresolved_thread_count),
+            ..Default::default()
+        },
+    }
+}
+
+/// Merge an observation into the de-duplicated map keyed by PR url: union the
+/// `reasons`, keep the freshest `updated_at`, and fill any observable field the
+/// existing entry is still missing (so a rich review-request entry isn't
+/// clobbered by a bare watch-search hit, or vice-versa).
+fn merge_observation(
+    map: &mut HashMap<String, crate::activity::ObservedPr>,
+    incoming: crate::activity::ObservedPr,
+) {
+    match map.get_mut(&incoming.pr_url) {
+        Some(existing) => {
+            for r in incoming.reasons {
+                if !existing.reasons.contains(&r) {
+                    existing.reasons.push(r);
+                }
+            }
+            let o = &mut existing.observed;
+            let i = incoming.observed;
+            if i.updated_at > o.updated_at {
+                o.updated_at = i.updated_at;
+            }
+            o.review_state = o.review_state.take().or(i.review_state);
+            o.unresolved_threads = o.unresolved_threads.or(i.unresolved_threads);
+            o.head_sha = o.head_sha.take().or(i.head_sha);
+            o.comment_count = o.comment_count.or(i.comment_count);
+            o.ci_state = o.ci_state.take().or(i.ci_state);
+            if existing.author.is_empty() {
+                existing.author = incoming.author;
+                existing.avatar_url = incoming.avatar_url;
+            }
+            if existing.title.is_empty() {
+                existing.title = incoming.title;
+            }
+        }
+        None => {
+            map.insert(incoming.pr_url.clone(), incoming);
+        }
+    }
+}
+
+impl GithubClient {
+    /// Like `search_prs` but ordered by recency and returning the server total
+    /// so callers can report truncation honestly when a watch matches more PRs
+    /// than one page (or the feed cap) shows.
+    async fn search_prs_total(&self, query: &str) -> Result<(Vec<SearchItem>, u32), String> {
+        self.search_issues(query, "updated", "desc").await
+    }
+
+    /// Fetch the viewer's PR notifications (only PR-type, unread). Each maps to
+    /// an observation with reason `notification:<reason>`.
+    ///
+    /// Honors conditional requests: pass the previous response's `Last-Modified`
+    /// as `if_modified_since` and a `304 Not Modified` (no items, free against
+    /// the rate limit) comes back. The returned `poll_interval` is GitHub's
+    /// `X-Poll-Interval` — the minimum seconds to wait before polling again.
+    pub async fn get_notifications(
+        &self,
+        if_modified_since: Option<&str>,
+    ) -> Result<NotificationsResult, String> {
+        let mut req = self.request(
+            "https://api.github.com/notifications?all=false&per_page=50",
+            "application/vnd.github.v3+json",
+        );
+        if let Some(ims) = if_modified_since {
+            req = req.header(reqwest::header::IF_MODIFIED_SINCE, ims);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("Notifications request failed: {}", e))?;
+
+        let poll_interval = resp
+            .headers()
+            .get("x-poll-interval")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        let last_modified = resp
+            .headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(NotificationsResult {
+                items: Vec::new(),
+                poll_interval,
+                last_modified,
+            });
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("GitHub API error ({}): {}", status, body));
+        }
+
+        let arr: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse notifications: {}", e))?;
+
+        let mut out = Vec::new();
+        for n in arr {
+            if n.pointer("/subject/type").and_then(|v| v.as_str()) != Some("PullRequest") {
+                continue;
+            }
+            let api_url = n
+                .pointer("/subject/url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let Some(html_url) = pulls_api_to_html(api_url) else {
+                continue;
+            };
+            let Ok(parsed) = crate::pr_parser::parse_pr_ref(&html_url) else {
+                continue;
+            };
+            let title = n
+                .pointer("/subject/title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let updated_at = n
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let reason = n.get("reason").and_then(|v| v.as_str()).unwrap_or("notification");
+            out.push(crate::activity::ObservedPr {
+                pr_url: html_url,
+                owner: parsed.owner,
+                repo: parsed.repo,
+                number: parsed.number,
+                title,
+                author: String::new(),
+                avatar_url: String::new(),
+                draft: false,
+                reasons: vec![format!("notification:{}", reason)],
+                observed: crate::activity::Observed {
+                    updated_at,
+                    ..Default::default()
+                },
+            });
+        }
+        Ok(NotificationsResult {
+            items: out,
+            poll_interval,
+            last_modified,
+        })
+    }
+
+    /// Gather the full activity set for the mini-player: involved PRs (review
+    /// requests, enriched), notifications, and each saved watch's search. Merges
+    /// and de-duplicates by PR url, and returns per-watch truncation counts plus
+    /// the notification poll-interval / last-modified for adaptive scheduling.
+    ///
+    /// Best-effort: a failure of any one source is swallowed so the others still
+    /// produce a feed. `notif_since` is forwarded as the conditional
+    /// `If-Modified-Since` for the notifications fetch.
+    pub async fn collect_activity(
+        &self,
+        watches: &[crate::watches::Watch],
+        per_watch_cap: usize,
+        notif_since: Option<&str>,
+    ) -> CollectedActivity {
+        let mut merged: HashMap<String, crate::activity::ObservedPr> = HashMap::new();
+        let mut truncated: HashMap<String, u32> = HashMap::new();
+        let mut notif_poll_interval = None;
+        let mut notif_last_modified = None;
+
+        // Involved PRs + notifications require a known viewer. They're
+        // independent, so fetch them concurrently once we have the username.
+        if let Ok(username) = self.get_authenticated_user().await {
+            let cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
+                .format("%Y-%m-%d")
+                .to_string();
+            let (review_requests, notifications) = tokio::join!(
+                self.get_review_requests(&username, &cutoff, true),
+                self.get_notifications(notif_since),
+            );
+            if let Ok(items) = review_requests {
+                for it in items {
+                    let reason = if it.direct_request {
+                        "review-requested"
+                    } else {
+                        "involved"
+                    };
+                    merge_observation(&mut merged, review_item_to_observed(it, reason));
+                }
+            }
+            if let Ok(res) = notifications {
+                notif_poll_interval = res.poll_interval;
+                notif_last_modified = res.last_modified;
+                for pr in res.items {
+                    merge_observation(&mut merged, pr);
+                }
+            }
+        }
+
+        // Saved watches (work even where the viewer isn't a reviewer).
+        for w in watches {
+            if let Ok((items, total)) = self.search_prs_total(&w.query).await {
+                let returned = items.len();
+                let label = format!("watching:{}", w.label);
+                for item in items.into_iter().take(per_watch_cap) {
+                    if let Some(pr) = search_item_to_observed(item, label.clone()) {
+                        merge_observation(&mut merged, pr);
+                    }
+                }
+                let shown = per_watch_cap.min(returned);
+                let dropped = (total as usize).saturating_sub(shown);
+                if dropped > 0 {
+                    truncated.insert(w.label.clone(), dropped as u32);
+                }
+            }
+        }
+
+        CollectedActivity {
+            observations: merged.into_values().collect(),
+            truncated,
+            notif_poll_interval,
+            notif_last_modified,
+        }
+    }
+}
+
+/// Result of a notifications fetch, carrying the conditional-request metadata
+/// callers need to poll politely.
+pub struct NotificationsResult {
+    pub items: Vec<crate::activity::ObservedPr>,
+    pub poll_interval: Option<u64>,
+    pub last_modified: Option<String>,
+}
+
+/// The merged activity set plus notification scheduling metadata.
+pub struct CollectedActivity {
+    pub observations: Vec<crate::activity::ObservedPr>,
+    pub truncated: HashMap<String, u32>,
+    pub notif_poll_interval: Option<u64>,
+    pub notif_last_modified: Option<String>,
 }

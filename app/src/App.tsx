@@ -7,6 +7,7 @@ import { CommentsViewer } from "./components/CommentsViewer";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
 import { ReviewRequestList } from "./components/ReviewRequestList";
+import { ActivityWidget } from "./components/ActivityWidget";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
@@ -21,7 +22,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
-import { parsePrUrl, extractPrRef } from "./utils";
+import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
 function isOpenerTab(tab: Tab): boolean {
@@ -561,6 +562,21 @@ function App() {
   // in place; otherwise a new tab is created so opening never takes over the
   // currently active review.
   async function handleFetchStart(prRef: string, targetTabId?: string) {
+    // If this PR is already open in a tab, just switch to it rather than
+    // fetching it again into a new tab.
+    const key = canonicalPrKey(prRef);
+    if (key) {
+      const alreadyOpen = tabsRef.current.find(
+        (t) => t.manifest && canonicalPrKey(t.manifest.pr_url) === key
+      );
+      if (alreadyOpen) {
+        // handleSelectTab (not bare setActiveTabId) also clears the tab's
+        // unread badge, matching the deep-link open path.
+        handleSelectTab(alreadyOpen.id);
+        return;
+      }
+    }
+
     if (fetchingRef.current) return;
     fetchingRef.current = true;
     const token = ++fetchTokenRef.current;
@@ -1287,6 +1303,34 @@ function App() {
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Floating mini-player visibility:
+  //  - HIDE it whenever the MAIN window gains focus (you've engaged the app).
+  //    Interacting with the floating panel focuses the panel, not the main
+  //    window, so dragging/resizing/clicking it never hides it — only genuinely
+  //    going to the main window does.
+  //  - SHOW it when you leave Marrow. On macOS that's driven by the native
+  //    app-active poll in the Rust backend (webview blur is unreliable for
+  //    app-switches there); on other platforms, on the main window's blur.
+  useEffect(() => {
+    const setVisible = (visible: boolean) =>
+      invoke("set_activity_window_visible", { visible }).catch(() => {});
+    const hide = () => setVisible(false);
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) hide();
+    });
+    window.addEventListener("focus", hide);
+
+    const isMac = navigator.userAgent.includes("Macintosh");
+    const show = () => setVisible(true);
+    if (!isMac) window.addEventListener("blur", show);
+
+    return () => {
+      unlisten.then((fn) => fn());
+      window.removeEventListener("focus", hide);
+      if (!isMac) window.removeEventListener("blur", show);
+    };
+  }, []);
+
   // Re-load dismissed-highlight state from disk when the window regains focus, so
   // dismissals made outside the app (e.g. an external/AI tool writing the
   // ~/.config/marrow/dismissed file) show up without reopening the PR.
@@ -1405,6 +1449,7 @@ function App() {
 
   return (
     <div className="app">
+      <ActivityWidget onOpenPr={(ref) => handleFetchStart(ref, activeTabId ?? undefined)} />
       <Header
         tabs={tabs}
         activeTabId={activeTabId}

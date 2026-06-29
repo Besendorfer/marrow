@@ -7,6 +7,8 @@ use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
 use marrow_core::dismissed_highlights::{self, DismissedHighlights};
 use marrow_core::viewed_state::{self, ViewedFileState};
+use marrow_core::activity::{self, Observed};
+use marrow_core::watches::{self, Watch};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
@@ -109,6 +111,183 @@ pub async fn fetch_review_requests(
     github
         .get_review_requests(&username, &cutoff_date, fetch_recent)
         .await
+}
+
+// ---- Mini-player: PR activity widget ----
+
+#[command]
+pub fn get_watches() -> Vec<Watch> {
+    watches::load_watches()
+}
+
+#[command]
+pub fn save_watches(watches: Vec<Watch>) -> Result<(), String> {
+    marrow_core::watches::save_watches(&watches)
+}
+
+/// Acknowledge a PR in the activity feed: store its current observable state so
+/// future polls diff against it (clearing the unread badge). The frontend sends
+/// the fields it has from the feed item; sha/comment-count it doesn't track stay
+/// `None` and simply don't contribute to future diffs.
+#[command]
+pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
+    let mut store = activity::load_activity_store();
+    activity::mark_seen(&mut store, &pr_url, observed, activity::now_rfc3339());
+    activity::save_activity_store(&store)
+}
+
+/// Create the floating mini-player window, left HIDDEN. Built eagerly at
+/// startup (and on enable) so that the first show is never a window-creation —
+/// creating a webview window activates the app, which would yank you back to
+/// Marrow on your first Cmd+Tab away. The caller reveals it via
+/// `set_activity_window_visible`.
+pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    use tauri_plugin_window_state::{StateFlags, WindowExt};
+    let win = WebviewWindowBuilder::new(
+        app,
+        "activity-widget",
+        WebviewUrl::App("widget.html".into()),
+    )
+    .title("Marrow Activity")
+    .inner_size(340.0, 460.0)
+    .min_inner_size(210.0, 132.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    // macOS draws a rectangular shadow around the full (square) window
+    // bounds, which shows as a square contour behind the rounded panel.
+    // Disable it and let the panel's own CSS box-shadow provide the look.
+    .shadow(false)
+    .always_on_top(true)
+    .visible(false)
+    .build()
+    .map_err(|e| format!("Failed to open activity window: {}", e))?;
+
+    // Restore the last-saved size & position so it reveals at the right geometry.
+    let _ = win.restore_state(StateFlags::POSITION | StateFlags::SIZE);
+
+    // Make it a non-activating NSPanel so clicking/dragging/resizing the widget
+    // doesn't activate Marrow (so interacting with it never pulls focus from the
+    // app you're in). It stays hidden here; the caller orders it front.
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::WebviewWindowExt;
+        // NSWindowStyleMask bits: Resizable (1<<3) keeps edge-resize; Borderless
+        // (0) = frameless; NonactivatingPanel (1<<7) is the key bit.
+        const NONACTIVATING_RESIZABLE: i32 = (1 << 3) | (1 << 7); // 8 | 128 = 136
+        if let Ok(panel) = win.to_panel() {
+            panel.set_style_mask(NONACTIVATING_RESIZABLE);
+            // NSPanels are released-when-closed by default; turn that off so a
+            // stray close() can't deallocate it out from under Tauri (which
+            // aborts with a foreign-exception runtime error).
+            panel.set_released_when_closed(false);
+        }
+    }
+
+    Ok(())
+}
+
+/// Show or hide the floating mini-player. This is the single actuator; callers
+/// decide *when*: the macOS app-active poll shows it when you leave Marrow, and
+/// the main window hides it when it regains focus (see App.tsx). The panel is
+/// pre-created at startup, so the lazy build here is only a fallback.
+#[command]
+pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    // Respect the user's opt-out: never auto-show when the feature is disabled.
+    if visible && !load_settings().activity_mini_player {
+        return Ok(());
+    }
+
+    // macOS: drive the NSPanel directly. order_front_regardless/order_out never
+    // make the panel key, so showing it while you're in another app can't pull
+    // activation back to Marrow (which made the app-active poll flip-flop).
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::ManagerExt;
+        // Normally pre-created at startup; build lazily only as a fallback.
+        if visible && app.get_webview_panel("activity-widget").is_err() {
+            build_activity_window(&app)?;
+        }
+        if let Ok(panel) = app.get_webview_panel("activity-widget") {
+            if visible {
+                panel.order_front_regardless();
+            } else {
+                panel.order_out(None);
+            }
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri::Manager;
+        if visible && app.get_webview_window("activity-widget").is_none() {
+            build_activity_window(&app)?;
+        }
+        if let Some(win) = app.get_webview_window("activity-widget") {
+            if visible {
+                win.show().map_err(|e| e.to_string())?;
+            } else {
+                win.hide().map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Toggle whether the floating mini-player auto-shows when Marrow is in the
+/// background (the in-app dock's toggle writes this).
+#[command]
+pub fn set_mini_player_enabled(enabled: bool) -> Result<(), String> {
+    let mut settings = load_settings();
+    settings.activity_mini_player = enabled;
+    save_settings_to_disk(&settings)
+}
+
+/// Dismiss the floating mini-player from its own ✕: persistently disable
+/// auto-show (so navigating away won't bring it back) and hide the window. On
+/// macOS, hide the app too so focus returns to whatever the user was in rather
+/// than the main Marrow window. Re-enable via the dock toggle.
+///
+/// We HIDE the panel (order_out), not close()/destroy it: an NSPanel is released
+/// when closed by default, and destroying it while Tauri still holds a reference
+/// raises an Objective-C exception that aborts the process. The disabled setting
+/// keeps it from reappearing; the hidden panel is reused if re-enabled.
+#[command]
+pub fn dismiss_mini_player(app: tauri::AppHandle) -> Result<(), String> {
+    // Same persistent opt-out as the dock toggle, plus hide the window.
+    let _ = set_mini_player_enabled(false);
+
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::ManagerExt;
+        if let Ok(panel) = app.get_webview_panel("activity-widget") {
+            panel.order_out(None);
+        }
+        let _ = app.hide();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri::Manager;
+        if let Some(win) = app.get_webview_window("activity-widget") {
+            let _ = win.hide();
+        }
+    }
+    Ok(())
+}
+
+/// Route a PR-open from the floating widget back to the main window: the main
+/// window already listens for `deep-link-open` (the same channel the browser
+/// deep link uses), so we just re-emit and focus it.
+#[command]
+pub fn open_pr_in_main(app: tauri::AppHandle, pr_ref: String) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("deep-link-open", &pr_ref);
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.set_focus();
+    }
+    Ok(())
 }
 
 #[command]

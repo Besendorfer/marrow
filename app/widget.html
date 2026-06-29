@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Marrow Activity</title>
+    <style>
+      /* Frameless, transparent window: the shared styles.css paints an opaque
+         body background, so override it (!important) to keep the window
+         transparent — otherwise the square window shows through the panel's
+         rounded corners. */
+      html, body, #widget-root {
+        margin: 0;
+        height: 100%;
+        background: transparent !important;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="widget-root"></div>
+    <script type="module" src="/src/widget.tsx"></script>
+  </body>
+</html>
