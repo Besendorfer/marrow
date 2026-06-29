@@ -4178,7 +4178,8 @@ mark.search-highlight-current {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.aw-row__meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.aw-row__meta { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+.aw-row__meta > * { flex: none; }
 .aw-row__repo {
   font-family: var(--font-mono);
   font-size: 11px;
