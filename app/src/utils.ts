@@ -36,6 +36,24 @@ export function extractPrRef(input: string): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * Normalize a GitHub PR URL or an `owner/repo#number` ref to a single
+ * comparable key (`owner/repo#number`, lowercased), or null if neither shape
+ * matches. Used to tell whether two references point at the same PR.
+ */
+export function canonicalPrKey(input: string): string | null {
+  let owner: string | undefined, repo: string | undefined, number: string | undefined;
+  const urlMatch = input.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (urlMatch) {
+    [, owner, repo, number] = urlMatch;
+  } else {
+    const refMatch = input.match(/^([^/]+)\/([^/#]+)#(\d+)$/);
+    if (!refMatch) return null;
+    [, owner, repo, number] = refMatch;
+  }
+  return `${owner}/${repo}#${number}`.toLowerCase();
+}
+
 export function timeAgo(dateStr: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();

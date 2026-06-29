@@ -22,7 +22,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
-import { parsePrUrl, extractPrRef } from "./utils";
+import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
 function isOpenerTab(tab: Tab): boolean {
@@ -562,6 +562,19 @@ function App() {
   // in place; otherwise a new tab is created so opening never takes over the
   // currently active review.
   async function handleFetchStart(prRef: string, targetTabId?: string) {
+    // If this PR is already open in a tab, just switch to it rather than
+    // fetching it again into a new tab.
+    const key = canonicalPrKey(prRef);
+    if (key) {
+      const alreadyOpen = tabsRef.current.find(
+        (t) => t.manifest && canonicalPrKey(t.manifest.pr_url) === key
+      );
+      if (alreadyOpen) {
+        setActiveTabId(alreadyOpen.id);
+        return;
+      }
+    }
+
     if (fetchingRef.current) return;
     fetchingRef.current = true;
     const token = ++fetchTokenRef.current;
