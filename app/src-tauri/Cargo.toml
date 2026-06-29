@@ -41,10 +41,3 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 marrow-core = { path = "crates/core" }
-
-# Native AppKit hook to detect Marrow becoming the active app (Cmd+Tab / dock),
-# which delivers no webview focus event — used to hide the floating mini-player.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSNotification", "NSString", "NSOperation", "block2"] }
-block2 = "0.6"

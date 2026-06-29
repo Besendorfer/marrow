@@ -156,42 +156,6 @@ pub fn run() {
                 }
             });
 
-            // Hide the floating mini-player when Marrow becomes the active app
-            // (Cmd+Tab / dock click). That activation delivers no webview focus
-            // event — and Page Visibility doesn't fire for window occlusion —
-            // so the JS focus/visibility listeners can't catch it. We guard on
-            // is_focused() so a click that lands *in* the widget (which also
-            // activates the app) keeps it open.
-            #[cfg(target_os = "macos")]
-            {
-                use block2::RcBlock;
-                use objc2_foundation::{NSNotification, NSNotificationCenter, NSString};
-                use std::ptr::NonNull;
-                use tauri::Manager;
-
-                let activate_handle = app.handle().clone();
-                let block = RcBlock::new(move |_n: NonNull<NSNotification>| {
-                    if let Some(win) = activate_handle.get_webview_window("activity-widget") {
-                        if !win.is_focused().unwrap_or(false) {
-                            let _ = win.hide();
-                        }
-                    }
-                });
-                unsafe {
-                    let center = NSNotificationCenter::defaultCenter();
-                    let name = NSString::from_str("NSApplicationDidBecomeActiveNotification");
-                    let token = center.addObserverForName_object_queue_usingBlock(
-                        Some(&name),
-                        None,
-                        None,
-                        &block,
-                    );
-                    // Keep the observer token and block alive for the app's life.
-                    std::mem::forget(token);
-                }
-                std::mem::forget(block);
-            }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
