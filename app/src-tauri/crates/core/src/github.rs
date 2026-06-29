@@ -460,37 +460,31 @@ impl GithubClient {
         Ok(user.login)
     }
 
-    async fn search_prs(
+    /// Run a `/search/issues` query, returning (items, server-reported total).
+    async fn search_issues(
         &self,
         query: &str,
-    ) -> Result<Vec<SearchItem>, String> {
+        sort: &str,
+        order: &str,
+    ) -> Result<(Vec<SearchItem>, u32), String> {
         let url = format!(
-            "https://api.github.com/search/issues?q={}&sort=created&order=asc&per_page=100",
-            urlencoding::encode(query)
+            "https://api.github.com/search/issues?q={}&sort={}&order={}&per_page=100",
+            urlencoding::encode(query),
+            sort,
+            order
         );
-
         let resp = self
-            .client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "relevant-reviews")
-            .header(ACCEPT, "application/vnd.github.v3+json")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub API error ({}): {}", status, body));
-        }
-
+            .send_checked(&url, "application/vnd.github.v3+json")
+            .await?;
         let search: SearchResponse = resp
             .json()
             .await
             .map_err(|e| format!("Failed to parse search results: {}", e))?;
+        Ok((search.items, search.total_count))
+    }
 
-        Ok(search.items)
+    async fn search_prs(&self, query: &str) -> Result<Vec<SearchItem>, String> {
+        Ok(self.search_issues(query, "created", "asc").await?.0)
     }
 
     pub async fn get_review_requests(
@@ -1553,22 +1547,11 @@ fn merge_observation(
 }
 
 impl GithubClient {
-    /// Like `search_prs` but also returns the server-reported `total_count` so
-    /// callers can report truncation honestly when a watch matches more PRs
+    /// Like `search_prs` but ordered by recency and returning the server total
+    /// so callers can report truncation honestly when a watch matches more PRs
     /// than one page (or the feed cap) shows.
     async fn search_prs_total(&self, query: &str) -> Result<(Vec<SearchItem>, u32), String> {
-        let url = format!(
-            "https://api.github.com/search/issues?q={}&sort=updated&order=desc&per_page=100",
-            urlencoding::encode(query)
-        );
-        let resp = self
-            .send_checked(&url, "application/vnd.github.v3+json")
-            .await?;
-        let search: SearchResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse search results: {}", e))?;
-        Ok((search.items, search.total_count))
+        self.search_issues(query, "updated", "desc").await
     }
 
     /// Fetch the viewer's PR notifications (only PR-type, unread). Each maps to
@@ -1691,12 +1674,17 @@ impl GithubClient {
         let mut notif_poll_interval = None;
         let mut notif_last_modified = None;
 
-        // Involved PRs + notifications require a known viewer.
+        // Involved PRs + notifications require a known viewer. They're
+        // independent, so fetch them concurrently once we have the username.
         if let Ok(username) = self.get_authenticated_user().await {
             let cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
                 .format("%Y-%m-%d")
                 .to_string();
-            if let Ok(items) = self.get_review_requests(&username, &cutoff, true).await {
+            let (review_requests, notifications) = tokio::join!(
+                self.get_review_requests(&username, &cutoff, true),
+                self.get_notifications(notif_since),
+            );
+            if let Ok(items) = review_requests {
                 for it in items {
                     let reason = if it.direct_request {
                         "review-requested"
@@ -1706,7 +1694,7 @@ impl GithubClient {
                     merge_observation(&mut merged, review_item_to_observed(it, reason));
                 }
             }
-            if let Ok(res) = self.get_notifications(notif_since).await {
+            if let Ok(res) = notifications {
                 notif_poll_interval = res.poll_interval;
                 notif_last_modified = res.last_modified;
                 for pr in res.items {

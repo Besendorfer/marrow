@@ -145,9 +145,8 @@ pub fn run() {
                     if let Some((poll_interval, last_modified)) =
                         poll_activity_once(&activity_handle, notif_since.clone()).await
                     {
-                        if last_modified.is_some() {
-                            notif_since = last_modified;
-                        }
+                        // A 304 (None) means "unchanged" — keep the prior value.
+                        notif_since = last_modified.or(notif_since);
                         if let Some(pi) = poll_interval {
                             poll_secs = pi.max(ACTIVITY_POLL_SECS);
                         }
@@ -160,49 +159,32 @@ pub fn run() {
             // App (re)activation (Cmd+Tab / dock) delivers no webview focus event
             // and Page Visibility doesn't fire for occlusion, so focus-based
             // logic can't catch it. Polling NSApplication.isActive on the main
-            // thread is the one reliable signal: show the widget while Marrow is
-            // NOT the active app, hide it once it is (unless the widget itself is
-            // focused, i.e. the user clicked into it to use it).
+            // thread is the one reliable signal: the widget shows while Marrow is
+            // NOT the active app and hides once it is. We act only on a CHANGE in
+            // active-state and delegate the actual show/hide/build (and the
+            // enabled-setting gate) to `set_activity_window_visible`, so the disk
+            // read and window mutation happen on transitions, not every tick.
             #[cfg(target_os = "macos")]
             {
+                use std::sync::atomic::{AtomicU8, Ordering};
                 let poll_handle = app.handle().clone();
+                let last_state = std::sync::Arc::new(AtomicU8::new(0)); // 0 unknown, 1 active, 2 inactive
                 tauri::async_runtime::spawn(async move {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         let h = poll_handle.clone();
+                        let last = last_state.clone();
                         let _ = poll_handle.run_on_main_thread(move || {
                             use objc2::MainThreadMarker;
                             use objc2_app_kit::NSApplication;
-                            use tauri::Manager;
 
                             let Some(mtm) = MainThreadMarker::new() else {
                                 return;
                             };
                             let active = NSApplication::sharedApplication(mtm).isActive();
-                            let enabled =
-                                marrow_core::config::load_settings().activity_mini_player;
-
-                            // Show the widget only while Marrow is NOT the
-                            // active app; hide it the moment Marrow is active.
-                            // (No is_focused guard: on Cmd+Tab the always-on-top
-                            // widget itself becomes key, so guarding on focus
-                            // would never let it hide.)
-                            match h.get_webview_window("activity-widget") {
-                                Some(win) => {
-                                    let visible = win.is_visible().unwrap_or(false);
-                                    if active {
-                                        if visible {
-                                            let _ = win.hide();
-                                        }
-                                    } else if enabled && !visible {
-                                        let _ = win.show();
-                                    }
-                                }
-                                None => {
-                                    if !active && enabled {
-                                        let _ = commands::build_activity_window(&h);
-                                    }
-                                }
+                            let code = if active { 1 } else { 2 };
+                            if last.swap(code, Ordering::Relaxed) != code {
+                                let _ = commands::set_activity_window_visible(h, !active);
                             }
                         });
                     }

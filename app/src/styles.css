@@ -4239,16 +4239,6 @@ mark.search-highlight-current {
   .aw-chip--reason, .aw-row__time { display: none; }
 }
 
-.settings-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 12px 0;
-  font-size: 13px;
-  color: var(--text-primary);
-  cursor: pointer;
-}
-
 /* ---- Watch-list editor (settings) ---- */
 .watch-editor { display: flex; flex-direction: column; gap: 8px; }
 .watch-row { display: flex; gap: 8px; align-items: center; }

@@ -54,17 +54,19 @@ export function canonicalPrKey(input: string): string | null {
   return `${owner}/${repo}#${number}`.toLowerCase();
 }
 
-export function timeAgo(dateStr: string): string {
-  const now = Date.now();
+/** Relative time. `short` drops the " ago" suffix (for compact chips). */
+export function timeAgo(dateStr: string, short = false): string {
   const then = new Date(dateStr).getTime();
-  const seconds = Math.floor((now - then) / 1000);
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.floor((Date.now() - then) / 1000);
   if (seconds < 60) return "just now";
+  const suffix = short ? "" : " ago";
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return `${minutes}m${suffix}`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return `${hours}h${suffix}`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return `${days}d${suffix}`;
   const months = Math.floor(days / 30);
-  return `${months}mo ago`;
+  return `${months}mo${suffix}`;
 }

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PrActivityItem, Settings, Watch } from "../types";
 import { useActivityFeed, prRefOf } from "../hooks/useActivityFeed";
+import { timeAgo } from "../utils";
 
 interface ActivityWidgetProps {
   /** Open a PR in the main window (an `owner/repo#number` ref). */
@@ -12,19 +13,6 @@ interface ActivityWidgetProps {
    * `window` = fills a dedicated floating window (Phase 3).
    */
   variant?: "dock" | "window";
-}
-
-function timeAgo(dateStr: string): string {
-  const then = new Date(dateStr).getTime();
-  if (Number.isNaN(then)) return "";
-  const mins = Math.floor((Date.now() - then) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d`;
-  return `${Math.floor(days / 30)}mo`;
 }
 
 const DELTA_LABELS: Record<string, string> = {
@@ -54,8 +42,6 @@ function ciGlyph(state?: string | null): { glyph: string; cls: string } | null {
     case "failure":
     case "error":
       return { glyph: "✗", cls: "aw-ci--bad" };
-    case "pending":
-      return { glyph: "●", cls: "aw-ci--pending" };
     default:
       return { glyph: "●", cls: "aw-ci--pending" };
   }
@@ -106,7 +92,7 @@ function ActivityRow({
             {item.unresolvedThreads}
           </span>
         )}
-        <span className="aw-row__time">{timeAgo(item.updatedAt)}</span>
+        <span className="aw-row__time">{timeAgo(item.updatedAt, true)}</span>
       </span>
     </button>
   );
