@@ -136,34 +136,45 @@ pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
     activity::save_activity_store(&store)
 }
 
-/// Open (or focus) the floating mini-player window: a frameless, transparent,
+/// Build the floating mini-player window: a frameless, transparent,
 /// always-on-top, resizable webview rendering `widget.html`.
+fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    WebviewWindowBuilder::new(app, "activity-widget", WebviewUrl::App("widget.html".into()))
+        .title("Marrow Activity")
+        .inner_size(340.0, 460.0)
+        .min_inner_size(210.0, 132.0)
+        .resizable(true)
+        .decorations(false)
+        .transparent(true)
+        // macOS draws a rectangular shadow around the full (square) window
+        // bounds, which shows as a square contour behind the rounded panel.
+        // Disable it and let the panel's own CSS box-shadow provide the look.
+        .shadow(false)
+        .always_on_top(true)
+        .build()
+        .map_err(|e| format!("Failed to open activity window: {}", e))?;
+    Ok(())
+}
+
+/// Show or hide the floating mini-player. The main window drives this from its
+/// own visibility (Page Visibility API): the floating window is shown only when
+/// the main window is hidden/minimized, and hidden when it's visible — so the
+/// two are never on screen at once. Creates the window on first show.
 #[command]
-pub fn open_activity_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-    if let Some(win) = app.get_webview_window("activity-widget") {
-        let _ = win.show();
-        let _ = win.set_focus();
-        return Ok(());
+pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    use tauri::Manager;
+    match app.get_webview_window("activity-widget") {
+        Some(win) => {
+            if visible {
+                win.show().map_err(|e| e.to_string())?;
+            } else {
+                win.hide().map_err(|e| e.to_string())?;
+            }
+        }
+        None if visible => build_activity_window(&app)?,
+        None => {}
     }
-    WebviewWindowBuilder::new(
-        &app,
-        "activity-widget",
-        WebviewUrl::App("widget.html".into()),
-    )
-    .title("Marrow Activity")
-    .inner_size(340.0, 460.0)
-    .min_inner_size(210.0, 132.0)
-    .resizable(true)
-    .decorations(false)
-    .transparent(true)
-    // macOS draws a rectangular shadow around the full (square) window bounds,
-    // which shows as a square contour behind the rounded panel. Disable it and
-    // let the panel's own CSS box-shadow provide the floating look.
-    .shadow(false)
-    .always_on_top(true)
-    .build()
-    .map_err(|e| format!("Failed to open activity window: {}", e))?;
     Ok(())
 }
 

@@ -185,7 +185,7 @@ pub fn run() {
             commands::get_watches,
             commands::save_watches,
             commands::mark_pr_seen,
-            commands::open_activity_window,
+            commands::set_activity_window_visible,
             commands::open_pr_in_main,
         ])
         .run(tauri::generate_context!())

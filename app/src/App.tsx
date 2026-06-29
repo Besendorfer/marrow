@@ -1301,6 +1301,19 @@ function App() {
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Show the floating activity mini-player only while the main window is NOT
+  // visible (minimized / hidden / fully occluded). `document.hidden` tracks
+  // visibility rather than focus, so the floating window doesn't pop up merely
+  // because another app took focus while Marrow is still on screen.
+  useEffect(() => {
+    const sync = () => {
+      invoke("set_activity_window_visible", { visible: document.hidden }).catch(() => {});
+    };
+    document.addEventListener("visibilitychange", sync);
+    sync(); // set initial state on mount
+    return () => document.removeEventListener("visibilitychange", sync);
+  }, []);
+
   // Re-load dismissed-highlight state from disk when the window regains focus, so
   // dismissals made outside the app (e.g. an external/AI tool writing the
   // ~/.config/marrow/dismissed file) show up without reopening the PR.

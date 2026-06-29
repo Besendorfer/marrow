@@ -235,18 +235,9 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
           ⌕
         </button>
         {variant === "dock" && (
-          <>
-            <button
-              className="aw-iconbtn"
-              onClick={() => invoke("open_activity_window").catch(() => {})}
-              title="Pop out to floating window"
-            >
-              ⧉
-            </button>
-            <button className="aw-iconbtn" onClick={() => setCollapsedPersist(true)} title="Collapse">
-              –
-            </button>
-          </>
+          <button className="aw-iconbtn" onClick={() => setCollapsedPersist(true)} title="Collapse">
+            –
+          </button>
         )}
         {variant === "window" && (
           <button
