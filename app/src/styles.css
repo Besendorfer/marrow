@@ -3955,3 +3955,283 @@ mark.search-highlight-current {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* ============================================================
+   Mini-player: PR activity widget
+   One component, four layouts driven by CSS container queries:
+   pill (collapsed) · bar (short) · card (default) · list (tall).
+   ============================================================ */
+
+.activity-widget {
+  --aw-radius: 12px;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+/* In-app dock: a resizable, fixed-corner panel. `container-type: size` lets the
+   inner layout respond to the panel's own width AND height. */
+.activity-widget--dock {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 340px;
+  height: 440px;
+  min-width: 210px;
+  min-height: 132px;
+  max-width: 92vw;
+  max-height: 88vh;
+  resize: both;
+  overflow: hidden;
+  z-index: 50;
+  container: aw / size;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--aw-radius);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px);
+  transition: box-shadow 0.2s ease;
+}
+
+/* Floating window variant fills the OS window; the window itself is the
+   resize surface, the container queries do the reflow. */
+.activity-widget--window {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  container: aw / size;
+  display: flex;
+  flex-direction: column;
+  /* The OS window is frameless + transparent; the widget paints its own
+     rounded, translucent surface so it reads as a floating card. */
+  background: color-mix(in srgb, var(--bg-secondary) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+  /* WebKit samples backdrop-filter on the rectangular box and leaks past
+     border-radius at the corners; clip-path hard-clips the backdrop too. */
+  clip-path: inset(0 round 12px);
+}
+.activity-widget--window .aw-head { cursor: grab; }
+.activity-widget--window .aw-head:active { cursor: grabbing; }
+/* Tauri starts a window drag only when the clicked element itself is the drag
+   region. Let clicks on the header's decorative children fall through to the
+   <header> (which carries data-tauri-drag-region); buttons keep their clicks. */
+.activity-widget--window .aw-head > *:not(button) { pointer-events: none; }
+
+/* ---- Collapsed pill (Tier 0) ---- */
+.activity-widget--pill {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: auto;
+  height: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  z-index: 50;
+  cursor: pointer;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.activity-widget--pill:hover { border-color: var(--accent); }
+.activity-widget--alert { animation: aw-pulse 2s ease-in-out infinite; }
+.aw-pill__count {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 16px;
+  text-align: center;
+}
+
+/* ---- Header ---- */
+.aw-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.aw-head__title { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; }
+.aw-head__spacer { flex: 1; }
+.aw-head__badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bg-primary);
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.aw-iconbtn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.aw-iconbtn:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text-primary); }
+.aw-iconbtn:disabled { opacity: 0.35; cursor: default; }
+.aw-iconbtn--on { color: var(--accent); border-color: var(--accent); }
+
+/* ---- Equalizer (the Spotify nod) ---- */
+.aw-eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+.aw-eq i {
+  width: 3px;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: aw-eq-bounce 1s ease-in-out infinite;
+}
+.aw-eq i:nth-child(1) { height: 6px; animation-delay: -0.2s; }
+.aw-eq i:nth-child(2) { height: 12px; animation-delay: -0.4s; }
+.aw-eq i:nth-child(3) { height: 8px; animation-delay: -0.1s; }
+
+/* ---- "Now playing" focus block (Tier 1) ---- */
+.aw-focus {
+  flex: none;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.aw-focus__transport { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+.aw-focus__pos { font-size: 11px; color: var(--text-muted); margin-left: 4px; }
+
+/* ---- Feed (Tier 2) ---- */
+.aw-feed { flex: 1; overflow-y: auto; padding: 4px; }
+.aw-empty, .aw-truncated {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 14px 8px;
+}
+.aw-truncated { padding: 8px; font-style: italic; }
+
+/* ---- Row ---- */
+.aw-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.aw-row:hover { background: var(--bg-tertiary); }
+.aw-row__dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: transparent; flex: none;
+}
+.aw-row--unread .aw-row__dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.aw-row--unread .aw-row__title { font-weight: 600; }
+.aw-row__avatar { width: 22px; height: 22px; border-radius: 50%; flex: none; background: var(--bg-tertiary); }
+.aw-row__avatar--blank { display: inline-block; }
+.aw-row__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.aw-row__title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.aw-row__meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.aw-row__repo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.aw-chip {
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+.aw-chip--delta { color: var(--diff-add-text); background: var(--diff-add-bg); }
+.aw-chip--reason { color: var(--text-secondary); background: var(--bg-tertiary); }
+.aw-row__status { display: flex; align-items: center; gap: 6px; flex: none; }
+.aw-row__time { font-size: 11px; color: var(--text-muted); }
+.aw-ci { font-size: 12px; }
+.aw-ci--ok { color: var(--diff-add-text); }
+.aw-ci--bad { color: var(--risk-critical); }
+.aw-ci--pending { color: var(--risk-medium); }
+.aw-threads {
+  font-size: 10px;
+  color: var(--risk-high);
+  background: var(--risk-high-bg);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+/* ---- Container-query layouts ---- */
+
+/* List (tall): the feed is the star; drop the duplicated focus block. */
+@container aw (min-height: 360px) {
+  .aw-focus { display: none; }
+}
+
+/* Bar (short): a single horizontal strip — focus + transport, no scroll feed. */
+@container aw (max-height: 150px) {
+  .activity-widget { flex-direction: column; }
+  .aw-feed { display: none; }
+  .aw-focus { flex: 1; border-bottom: none; display: flex; align-items: center; gap: 10px; }
+  .aw-focus__transport { margin-bottom: 0; }
+}
+
+/* Narrow: shed chips and time to stay tidy. */
+@container aw (max-width: 248px) {
+  .aw-chip--reason, .aw-row__time { display: none; }
+}
+
+/* ---- Watch-list editor (settings) ---- */
+.watch-editor { display: flex; flex-direction: column; gap: 8px; }
+.watch-row { display: flex; gap: 8px; align-items: center; }
+.watch-row__label { flex: 0 0 120px; }
+.watch-row__query { flex: 1; font-family: var(--font-mono); font-size: 12px; }
+.watch-row__remove {
+  flex: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.watch-row__remove:hover { color: var(--risk-critical); border-color: var(--risk-critical); }
+.watch-add {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.watch-add:hover { color: var(--accent); border-color: var(--accent); }
+
+@keyframes aw-eq-bounce {
+  0%, 100% { transform: scaleY(0.5); }
+  50% { transform: scaleY(1); }
+}
+@keyframes aw-pulse {
+  0%, 100% { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent), 0 8px 24px rgba(0, 0, 0, 0.45); }
+}

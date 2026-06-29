@@ -2,6 +2,7 @@
 //! `marrow` CLI: GitHub client, fetch/diff pipeline, AI classification, config,
 //! and local caching. No Tauri, no UI.
 
+pub mod activity;
 pub mod ai;
 pub mod bedrock;
 pub mod checks_dismiss;
@@ -15,3 +16,4 @@ pub mod prompts;
 pub mod session;
 pub mod types;
 pub mod viewed_state;
+pub mod watches;

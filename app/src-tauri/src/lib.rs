@@ -10,6 +10,38 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
+/// Default/min seconds between activity polls. GitHub's notifications API floor
+/// is 60s; we honor its `X-Poll-Interval` header above this when it asks for more.
+const ACTIVITY_POLL_SECS: u64 = 60;
+/// Max PRs surfaced per watch; the rest are reported via the payload's `truncated`.
+const ACTIVITY_PER_WATCH_CAP: usize = 50;
+
+/// One activity poll: build a GitHub client from the saved token, collect
+/// involved PRs + watch results, diff against the seen-state, and broadcast the
+/// `pr-activity` event. Returns the notifications scheduling metadata
+/// `(poll_interval, last_modified)`, or `None` when no token is configured.
+async fn poll_activity_once(
+    handle: &tauri::AppHandle,
+    notif_since: Option<String>,
+) -> Option<(Option<u64>, Option<String>)> {
+    let settings = marrow_core::config::load_settings();
+    let token = marrow_core::config::resolve_github_token(&settings)?;
+    let client = marrow_core::github::GithubClient::new(Some(token));
+    let watches = marrow_core::watches::load_watches();
+    let collected = client
+        .collect_activity(&watches, ACTIVITY_PER_WATCH_CAP, notif_since.as_deref())
+        .await;
+    let store = marrow_core::activity::load_activity_store();
+    let payload = marrow_core::activity::compute_activity(
+        collected.observations,
+        &store,
+        collected.truncated,
+        marrow_core::activity::now_rfc3339(),
+    );
+    let _ = handle.emit("pr-activity", payload);
+    Some((collected.notif_poll_interval, collected.notif_last_modified))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = env::args().collect();
@@ -87,6 +119,31 @@ pub fn run() {
                     }
                 }
             });
+
+            // Mini-player background watcher: poll the user's involved PRs +
+            // saved watches, diff against the persisted seen-state, and emit a
+            // `pr-activity` event to every window. Runs for the app's lifetime.
+            let activity_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Conditional-request state for notifications: `Last-Modified`
+                // makes the next poll cheap (304), and `X-Poll-Interval` sets
+                // the cadence GitHub asks us to keep.
+                let mut notif_since: Option<String> = None;
+                let mut poll_secs = ACTIVITY_POLL_SECS;
+                loop {
+                    if let Some((poll_interval, last_modified)) =
+                        poll_activity_once(&activity_handle, notif_since.clone()).await
+                    {
+                        if last_modified.is_some() {
+                            notif_since = last_modified;
+                        }
+                        if let Some(pi) = poll_interval {
+                            poll_secs = pi.max(ACTIVITY_POLL_SECS);
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(poll_secs)).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -121,6 +178,11 @@ pub fn run() {
             commands::load_cached_manifest_by_pr,
             commands::save_session,
             commands::load_session,
+            commands::get_watches,
+            commands::save_watches,
+            commands::mark_pr_seen,
+            commands::open_activity_window,
+            commands::open_pr_in_main,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

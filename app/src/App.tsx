@@ -7,6 +7,7 @@ import { CommentsViewer } from "./components/CommentsViewer";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
 import { ReviewRequestList } from "./components/ReviewRequestList";
+import { ActivityWidget } from "./components/ActivityWidget";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
@@ -1405,6 +1406,7 @@ function App() {
 
   return (
     <div className="app">
+      <ActivityWidget onOpenPr={(ref) => handleFetchStart(ref, activeTabId ?? undefined)} />
       <Header
         tabs={tabs}
         activeTabId={activeTabId}

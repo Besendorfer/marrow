@@ -7,6 +7,8 @@ use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
 use marrow_core::dismissed_highlights::{self, DismissedHighlights};
 use marrow_core::viewed_state::{self, ViewedFileState};
+use marrow_core::activity::{self, Observed};
+use marrow_core::watches::{self, Watch};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
@@ -109,6 +111,73 @@ pub async fn fetch_review_requests(
     github
         .get_review_requests(&username, &cutoff_date, fetch_recent)
         .await
+}
+
+// ---- Mini-player: PR activity widget ----
+
+#[command]
+pub fn get_watches() -> Vec<Watch> {
+    watches::load_watches()
+}
+
+#[command]
+pub fn save_watches(watches: Vec<Watch>) -> Result<(), String> {
+    marrow_core::watches::save_watches(&watches)
+}
+
+/// Acknowledge a PR in the activity feed: store its current observable state so
+/// future polls diff against it (clearing the unread badge). The frontend sends
+/// the fields it has from the feed item; sha/comment-count it doesn't track stay
+/// `None` and simply don't contribute to future diffs.
+#[command]
+pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
+    let mut store = activity::load_activity_store();
+    activity::mark_seen(&mut store, &pr_url, observed, activity::now_rfc3339());
+    activity::save_activity_store(&store)
+}
+
+/// Open (or focus) the floating mini-player window: a frameless, transparent,
+/// always-on-top, resizable webview rendering `widget.html`.
+#[command]
+pub fn open_activity_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+    if let Some(win) = app.get_webview_window("activity-widget") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(
+        &app,
+        "activity-widget",
+        WebviewUrl::App("widget.html".into()),
+    )
+    .title("Marrow Activity")
+    .inner_size(340.0, 460.0)
+    .min_inner_size(210.0, 132.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    // macOS draws a rectangular shadow around the full (square) window bounds,
+    // which shows as a square contour behind the rounded panel. Disable it and
+    // let the panel's own CSS box-shadow provide the floating look.
+    .shadow(false)
+    .always_on_top(true)
+    .build()
+    .map_err(|e| format!("Failed to open activity window: {}", e))?;
+    Ok(())
+}
+
+/// Route a PR-open from the floating widget back to the main window: the main
+/// window already listens for `deep-link-open` (the same channel the browser
+/// deep link uses), so we just re-emit and focus it.
+#[command]
+pub fn open_pr_in_main(app: tauri::AppHandle, pr_ref: String) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("deep-link-open", &pr_ref);
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.set_focus();
+    }
+    Ok(())
 }
 
 #[command]

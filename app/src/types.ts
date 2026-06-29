@@ -231,3 +231,48 @@ export interface SessionState {
   open_prs: SessionPrEntry[];
   active_pr: string | null;
 }
+
+// ---- Mini-player: PR activity widget ----
+
+/** A saved GitHub search that surfaces PRs into the activity feed. */
+export interface Watch {
+  id: string;
+  label: string;
+  query: string;
+}
+
+/** Observable PR state used for diffing; camelCase mirrors Rust's `Observed`. */
+export interface Observed {
+  updated_at: string;
+  review_state?: string | null;
+  unresolved_threads?: number | null;
+  head_sha?: string | null;
+  comment_count?: number | null;
+  ci_state?: string | null;
+}
+
+/** A row in the activity feed (matches Rust `PrActivityItem`, camelCase wire). */
+export interface PrActivityItem {
+  prUrl: string;
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  author: string;
+  avatarUrl: string;
+  updatedAt: string;
+  draft: boolean;
+  reasons: string[];
+  deltas: string[];
+  reviewState?: string | null;
+  unresolvedThreads?: number | null;
+  ciState?: string | null;
+  unread: boolean;
+}
+
+/** Payload of the `pr-activity` event (matches Rust `PrActivityPayload`). */
+export interface PrActivityPayload {
+  items: PrActivityItem[];
+  truncated: Record<string, number>;
+  fetchedAt: string;
+}

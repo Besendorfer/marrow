@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Settings } from "../types";
+import type { Settings, Watch } from "../types";
+
+function newWatchId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `w-${Date.now()}-${Math.floor(performance.now())}`;
+}
 
 // Keep in sync with browser-extension/content.js getPrRef()
 const BOOKMARKLET_HREF =
@@ -21,6 +27,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [provider, setProvider] = useState("");
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
   const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
+  const [watches, setWatches] = useState<Watch[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -42,9 +49,23 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setOpenaiBaseUrl(s.openai_base_url || "");
         setCurrentSettings(s);
       });
+      invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
       setSaved(false);
     }
   }, [open]);
+
+  function updateWatch(id: string, field: "label" | "query", value: string) {
+    setWatches((ws) => ws.map((w) => (w.id === id ? { ...w, [field]: value } : w)));
+    setSaved(false);
+  }
+  function addWatch() {
+    setWatches((ws) => [...ws, { id: newWatchId(), label: "", query: "" }]);
+    setSaved(false);
+  }
+  function removeWatch(id: string) {
+    setWatches((ws) => ws.filter((w) => w.id !== id));
+    setSaved(false);
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -67,6 +88,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           show_ai_notes: currentSettings?.show_ai_notes ?? true,
           hunk_filter: currentSettings?.hunk_filter ?? "all",
         },
+      });
+      // Persist watches alongside settings, dropping blank rows.
+      await invoke("save_watches", {
+        watches: watches
+          .map((w) => ({ ...w, label: w.label.trim(), query: w.query.trim() }))
+          .filter((w) => w.query !== ""),
       });
       setSaved(true);
       setTimeout(() => onClose(), 600);
@@ -267,6 +294,47 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             spellCheck={false}
             autoComplete="off"
           />
+
+          <div className="settings-divider" />
+          <h3 className="settings-section-title">PR Activity Watches</h3>
+          <p className="settings-hint">
+            Saved GitHub searches that feed the activity mini-player — including
+            repos/orgs where you aren't a requested reviewer. Use GitHub search
+            syntax, e.g. <code>is:pr is:open repo:acme/web -is:draft</code>.
+          </p>
+          <div className="watch-editor">
+            {watches.map((w) => (
+              <div className="watch-row" key={w.id}>
+                <input
+                  className="settings-input watch-row__label"
+                  type="text"
+                  value={w.label}
+                  onChange={(e) => updateWatch(w.id, "label", e.target.value)}
+                  placeholder="Label"
+                  spellCheck={false}
+                />
+                <input
+                  className="settings-input watch-row__query"
+                  type="text"
+                  value={w.query}
+                  onChange={(e) => updateWatch(w.id, "query", e.target.value)}
+                  placeholder="is:pr is:open repo:owner/name"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  className="watch-row__remove"
+                  onClick={() => removeWatch(w.id)}
+                  aria-label="Remove watch"
+                >
+                  &times;
+                </button>
+              </div>
+            ))}
+            <button type="button" className="watch-add" onClick={addWatch}>
+              + Add watch
+            </button>
+          </div>
 
           <div className="settings-divider" />
           <h3 className="settings-section-title">Browser Integration</h3>
