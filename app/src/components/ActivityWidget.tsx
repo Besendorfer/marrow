@@ -123,8 +123,6 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   });
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [focusIdx, setFocusIdx] = useState(0);
-  // Session snooze: hide a PR until its `updatedAt` moves (i.e. until it changes).
-  const [snoozed, setSnoozed] = useState<Record<string, string>>({});
   // Temporary feed filters (not persisted).
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("all"); // a raw reason string, or "all"
@@ -187,7 +185,6 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
     const q = query.trim().toLowerCase();
     return items.filter((i) => {
       if (unreadOnly && !i.unread) return false;
-      if (snoozed[i.prUrl] === i.updatedAt) return false;
       if (source !== "all" && !i.reasons.includes(source)) return false;
       if (q) {
         const hay = `${i.title} ${i.repo}#${i.number} ${i.author}`.toLowerCase();
@@ -195,7 +192,7 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
       }
       return true;
     });
-  }, [items, unreadOnly, snoozed, source, query]);
+  }, [items, unreadOnly, source, query]);
 
   // The "now playing" item: clamp the cursor into range as the feed changes.
   const safeIdx = visible.length ? Math.min(focusIdx, visible.length - 1) : 0;
@@ -204,11 +201,6 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   function activate(item: PrActivityItem) {
     markSeen(item);
     onOpenPr(prRefOf(item));
-  }
-
-  function snooze(item: PrActivityItem) {
-    setSnoozed((s) => ({ ...s, [item.prUrl]: item.updatedAt }));
-    setFocusIdx(0);
   }
 
   // Collapsed → glanceable pill (Tier 0). Only the in-app dock collapses; the
@@ -340,14 +332,6 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
             <span className="aw-focus__pos">
               {safeIdx + 1}/{visible.length}
             </span>
-            <span className="aw-head__spacer" />
-            <button
-              className="aw-iconbtn"
-              onClick={() => snooze(focus)}
-              title="Snooze until this PR changes"
-            >
-              Snooze
-            </button>
           </div>
           <ActivityRow item={focus} onActivate={activate} />
         </div>
