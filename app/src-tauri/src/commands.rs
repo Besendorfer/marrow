@@ -180,7 +180,10 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
         match win.to_panel() {
             Ok(panel) => {
                 panel.set_style_mask(NONACTIVATING_RESIZABLE);
-                panel.show();
+                // order_front_regardless (NOT show()/makeKeyAndOrderFront): showing
+                // it must not make it key, or activation gets pulled back to Marrow
+                // and the app-active poll flip-flops (flashing) while you're away.
+                panel.order_front_regardless();
                 return Ok(());
             }
             Err(_) => {
@@ -199,23 +202,45 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
 /// two are never on screen at once. Creates the window on first show.
 #[command]
 pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
-    use tauri::Manager;
     // Respect the user's opt-out: never auto-show when the feature is disabled.
     if visible && !load_settings().activity_mini_player {
         return Ok(());
     }
-    match app.get_webview_window("activity-widget") {
-        Some(win) => {
+
+    // macOS: drive the NSPanel directly. order_front_regardless/order_out never
+    // make the panel key, so showing it while you're in another app can't pull
+    // activation back to Marrow (which made the app-active poll flip-flop).
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::ManagerExt;
+        if let Ok(panel) = app.get_webview_panel("activity-widget") {
             if visible {
-                win.show().map_err(|e| e.to_string())?;
+                panel.order_front_regardless();
             } else {
-                win.hide().map_err(|e| e.to_string())?;
+                panel.order_out(None);
             }
+        } else if visible {
+            build_activity_window(&app)?;
         }
-        None if visible => build_activity_window(&app)?,
-        None => {}
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri::Manager;
+        match app.get_webview_window("activity-widget") {
+            Some(win) => {
+                if visible {
+                    win.show().map_err(|e| e.to_string())?;
+                } else {
+                    win.hide().map_err(|e| e.to_string())?;
+                }
+            }
+            None if visible => build_activity_window(&app)?,
+            None => {}
+        }
+        Ok(())
+    }
 }
 
 /// Toggle whether the floating mini-player auto-shows when Marrow is in the
