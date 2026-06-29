@@ -101,6 +101,7 @@ fn default_settings() -> Settings {
         show_hunk_significance: true,
         show_ai_notes: true,
         hunk_filter: "all".to_string(),
+        activity_per_watch_cap: 50,
     }
 }
 
@@ -129,6 +130,7 @@ pub fn load_settings() -> Settings {
     let mut show_hunk_significance = true;
     let mut show_ai_notes = true;
     let mut hunk_filter = "all".to_string();
+    let mut activity_per_watch_cap = 50u64;
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -159,6 +161,10 @@ pub fn load_settings() -> Settings {
             show_ai_notes = val == "true";
         } else if let Some(val) = line.strip_prefix("hunk_filter=") {
             hunk_filter = val.to_string();
+        } else if let Some(val) = line.strip_prefix("activity_per_watch_cap=") {
+            if let Ok(n) = val.parse::<u64>() {
+                activity_per_watch_cap = n;
+            }
         }
     }
 
@@ -177,6 +183,7 @@ pub fn load_settings() -> Settings {
         show_hunk_significance,
         show_ai_notes,
         hunk_filter,
+        activity_per_watch_cap,
     }
 }
 
@@ -215,6 +222,10 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     content.push_str(&format!("show_hunk_significance={}\n", settings.show_hunk_significance));
     content.push_str(&format!("show_ai_notes={}\n", settings.show_ai_notes));
     content.push_str(&format!("hunk_filter={}\n", settings.hunk_filter));
+    content.push_str(&format!(
+        "activity_per_watch_cap={}\n",
+        settings.activity_per_watch_cap
+    ));
 
     fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;
 

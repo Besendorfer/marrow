@@ -118,10 +118,18 @@ pub struct Settings {
     pub show_ai_notes: bool,
     #[serde(default = "default_all")]
     pub hunk_filter: String,
+    /// Max PRs the activity mini-player surfaces per watch; the rest are
+    /// reported as "+N more". Useful to raise for org-wide watches.
+    #[serde(default = "default_per_watch_cap")]
+    pub activity_per_watch_cap: u64,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_per_watch_cap() -> u64 {
+    50
 }
 
 fn default_split() -> String {

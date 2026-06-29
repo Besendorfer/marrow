@@ -160,6 +160,7 @@ export interface Settings {
   show_hunk_significance: boolean;
   show_ai_notes: boolean;
   hunk_filter: HunkSignificanceFilter;
+  activity_per_watch_cap: number;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";

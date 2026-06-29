@@ -28,6 +28,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
   const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [watches, setWatches] = useState<Watch[]>([]);
+  const [perWatchCap, setPerWatchCap] = useState(50);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -48,6 +49,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setProvider(s.provider || "");
         setOpenaiBaseUrl(s.openai_base_url || "");
         setCurrentSettings(s);
+        setPerWatchCap(s.activity_per_watch_cap || 50);
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
       setSaved(false);
@@ -87,6 +89,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           show_hunk_significance: currentSettings?.show_hunk_significance ?? true,
           show_ai_notes: currentSettings?.show_ai_notes ?? true,
           hunk_filter: currentSettings?.hunk_filter ?? "all",
+          activity_per_watch_cap: perWatchCap,
         },
       });
       // Persist watches alongside settings, dropping blank rows.
@@ -335,6 +338,26 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               + Add watch
             </button>
           </div>
+
+          <label className="settings-label" htmlFor="per-watch-cap">
+            Max PRs per watch
+          </label>
+          <p className="settings-hint">
+            How many PRs each watch surfaces in the mini-player; the rest show as
+            "+N more". Raise this for org-wide watches that match many PRs.
+          </p>
+          <input
+            id="per-watch-cap"
+            className="settings-input"
+            type="number"
+            min={1}
+            max={200}
+            value={perWatchCap}
+            onChange={(e) => {
+              setPerWatchCap(Math.max(1, Number(e.target.value) || 1));
+              setSaved(false);
+            }}
+          />
 
           <div className="settings-divider" />
           <h3 className="settings-section-title">Browser Integration</h3>

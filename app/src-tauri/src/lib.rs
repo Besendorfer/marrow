@@ -13,8 +13,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 /// Default/min seconds between activity polls. GitHub's notifications API floor
 /// is 60s; we honor its `X-Poll-Interval` header above this when it asks for more.
 const ACTIVITY_POLL_SECS: u64 = 60;
-/// Max PRs surfaced per watch; the rest are reported via the payload's `truncated`.
-const ACTIVITY_PER_WATCH_CAP: usize = 50;
+/// Fallback per-watch cap when the configured value is 0/unset.
+const DEFAULT_PER_WATCH_CAP: usize = 50;
 
 /// One activity poll: build a GitHub client from the saved token, collect
 /// involved PRs + watch results, diff against the seen-state, and broadcast the
@@ -28,8 +28,12 @@ async fn poll_activity_once(
     let token = marrow_core::config::resolve_github_token(&settings)?;
     let client = marrow_core::github::GithubClient::new(Some(token));
     let watches = marrow_core::watches::load_watches();
+    let cap = match settings.activity_per_watch_cap {
+        0 => DEFAULT_PER_WATCH_CAP,
+        n => n as usize,
+    };
     let collected = client
-        .collect_activity(&watches, ACTIVITY_PER_WATCH_CAP, notif_since.as_deref())
+        .collect_activity(&watches, cap, notif_since.as_deref())
         .await;
     let store = marrow_core::activity::load_activity_store();
     let payload = marrow_core::activity::compute_activity(
