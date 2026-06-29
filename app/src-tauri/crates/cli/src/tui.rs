@@ -662,14 +662,8 @@ impl<'a> App<'a> {
                 KeyCode::Char('V') => self.toggle_viewed(),
                 KeyCode::Char('T') => self.open_threads(),
                 // Manual refresh: pull comments/replies from others in place.
-                KeyCode::F(5) => {
-                    self.refresh_threads();
-                    self.refresh_my_review_state();
-                }
-                KeyCode::Char('r') if ctrl => {
-                    self.refresh_threads();
-                    self.refresh_my_review_state();
-                }
+                KeyCode::F(5) => self.refresh_remote(),
+                KeyCode::Char('r') if ctrl => self.refresh_remote(),
                 KeyCode::Char('r') => self.begin_reply(),
                 KeyCode::Char('x') => self.toggle_resolve(),
                 KeyCode::Char('/') => {
@@ -937,6 +931,13 @@ impl<'a> App<'a> {
             }
             Err(e) => self.status = Some(format!("error: {e}")),
         }
+    }
+
+    /// Manual refresh (F5 / Ctrl-R): re-fetch review threads and the viewer's
+    /// review/merge state together, so a merge or new approval shows on demand.
+    fn refresh_remote(&mut self) {
+        self.refresh_threads();
+        self.refresh_my_review_state();
     }
 
     /// Fetch the viewer's review/merge state for the header badges. Best-effort:

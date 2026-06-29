@@ -34,19 +34,14 @@ async fn poll_activity_once(
         .await;
     let store = marrow_core::activity::load_activity_store();
     let viewer = collected.viewer.unwrap_or_default();
-    let mut payload = marrow_core::activity::compute_activity(
+    let payload = marrow_core::activity::compute_activity(
         collected.observations,
         &store,
         collected.truncated,
         marrow_core::activity::now_rfc3339(),
         &viewer,
+        settings.show_approved_prs,
     );
-    // Once you've approved a PR, drop it from the feed unless you opt to keep it.
-    if !settings.show_approved_prs {
-        payload
-            .items
-            .retain(|it| it.review_state.as_deref() != Some("approved"));
-    }
     let _ = handle.emit("pr-activity", payload);
     Some((collected.notif_poll_interval, collected.notif_last_modified))
 }
