@@ -197,6 +197,15 @@ pub fn run() {
             commands::dismiss_mini_player,
             commands::open_pr_in_main,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // macOS dock-icon reopen brings Marrow to the front without a
+            // webview focus event, so hide the floating mini-player here too.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(win) = app_handle.get_webview_window("activity-widget") {
+                    let _ = win.hide();
+                }
+            }
+        });
 }

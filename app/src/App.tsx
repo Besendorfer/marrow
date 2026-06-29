@@ -1313,15 +1313,25 @@ function App() {
       invoke("set_activity_window_visible", { visible }).catch(() => {});
     const onFocus = () => setVisible(false);
     const onBlur = () => setVisible(true);
+    // Activating Marrow (Cmd+Tab / dock click) brings the main window forward
+    // before it gets webview focus, so focus alone leaves the mini-player up
+    // until you click in. Becoming visible (unoccluded) fires on activation —
+    // hide on that too. We only HIDE on visibility (never show), since a window
+    // that's merely on-screen-but-unfocused stays "visible".
+    const onVisibility = () => {
+      if (!document.hidden) setVisible(false);
+    };
     const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) =>
       setVisible(!focused)
     );
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       unlisten.then((fn) => fn());
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
