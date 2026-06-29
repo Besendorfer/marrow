@@ -56,6 +56,13 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
+        // Persist/restore the floating mini-player's size & position. Scoped to
+        // the activity window only (the main window keeps its config default).
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["main"])
+                .build(),
+        )
         .on_menu_event(|app, event| {
             // Cmd+W / Cmd+T are routed to the frontend, which owns the tab model.
             // The frontend skips closing when a text field is focused. Cmd+Q has no

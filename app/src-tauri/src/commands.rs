@@ -138,22 +138,36 @@ pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
 
 /// Build the floating mini-player window: a frameless, transparent,
 /// always-on-top, resizable webview rendering `widget.html`.
+///
+/// Built hidden so we can restore the user's last size/position (via
+/// tauri-plugin-window-state) before showing — otherwise it would flash at the
+/// default geometry first. The caller shows it.
 fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-    WebviewWindowBuilder::new(app, "activity-widget", WebviewUrl::App("widget.html".into()))
-        .title("Marrow Activity")
-        .inner_size(340.0, 460.0)
-        .min_inner_size(210.0, 132.0)
-        .resizable(true)
-        .decorations(false)
-        .transparent(true)
-        // macOS draws a rectangular shadow around the full (square) window
-        // bounds, which shows as a square contour behind the rounded panel.
-        // Disable it and let the panel's own CSS box-shadow provide the look.
-        .shadow(false)
-        .always_on_top(true)
-        .build()
-        .map_err(|e| format!("Failed to open activity window: {}", e))?;
+    use tauri_plugin_window_state::{StateFlags, WindowExt};
+    let win = WebviewWindowBuilder::new(
+        app,
+        "activity-widget",
+        WebviewUrl::App("widget.html".into()),
+    )
+    .title("Marrow Activity")
+    .inner_size(340.0, 460.0)
+    .min_inner_size(210.0, 132.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    // macOS draws a rectangular shadow around the full (square) window
+    // bounds, which shows as a square contour behind the rounded panel.
+    // Disable it and let the panel's own CSS box-shadow provide the look.
+    .shadow(false)
+    .always_on_top(true)
+    .visible(false)
+    .build()
+    .map_err(|e| format!("Failed to open activity window: {}", e))?;
+
+    // Restore the last-saved size & position before revealing it.
+    let _ = win.restore_state(StateFlags::POSITION | StateFlags::SIZE);
+    win.show().map_err(|e| e.to_string())?;
     Ok(())
 }
 
