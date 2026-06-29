@@ -202,6 +202,14 @@ pub fn run() {
                 });
             }
 
+            // Pre-create the mini-player panel (hidden) at startup if enabled, so
+            // the first show isn't a window creation — creating a webview window
+            // activates the app and would yank you back to Marrow on your first
+            // Cmd+Tab away. Runs on the main thread (setup), where it's safe.
+            if marrow_core::config::load_settings().activity_mini_player {
+                let _ = commands::build_activity_window(app.handle());
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

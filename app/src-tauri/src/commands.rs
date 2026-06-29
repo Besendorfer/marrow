@@ -139,9 +139,11 @@ pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
 /// Build the floating mini-player window: a frameless, transparent,
 /// always-on-top, resizable webview rendering `widget.html`.
 ///
-/// Built hidden so we can restore the user's last size/position (via
-/// tauri-plugin-window-state) before showing — otherwise it would flash at the
-/// default geometry first. The caller shows it.
+/// Create the floating mini-player window, left HIDDEN. Built eagerly at
+/// startup (and on enable) so that the first show is never a window-creation —
+/// creating a webview window activates the app, which would yank you back to
+/// Marrow on your first Cmd+Tab away. The caller reveals it via
+/// `set_activity_window_visible`.
 pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     use tauri_plugin_window_state::{StateFlags, WindowExt};
@@ -165,38 +167,27 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
     .build()
     .map_err(|e| format!("Failed to open activity window: {}", e))?;
 
-    // Restore the last-saved size & position before revealing it.
+    // Restore the last-saved size & position so it reveals at the right geometry.
     let _ = win.restore_state(StateFlags::POSITION | StateFlags::SIZE);
 
     // Make it a non-activating NSPanel so clicking/dragging/resizing the widget
-    // doesn't activate Marrow (which the app-active poll treats as "you're back"
-    // and hides). Cmd+Tab / opening a PR still activate the app → still hide.
+    // doesn't activate Marrow (so interacting with it never pulls focus from the
+    // app you're in). It stays hidden here; the caller orders it front.
     #[cfg(target_os = "macos")]
     {
         use tauri_nspanel::WebviewWindowExt;
         // NSWindowStyleMask bits: Resizable (1<<3) keeps edge-resize; Borderless
         // (0) = frameless; NonactivatingPanel (1<<7) is the key bit.
         const NONACTIVATING_RESIZABLE: i32 = (1 << 3) | (1 << 7); // 8 | 128 = 136
-        match win.to_panel() {
-            Ok(panel) => {
-                panel.set_style_mask(NONACTIVATING_RESIZABLE);
-                // NSPanels are released-when-closed by default; turn that off so a
-                // stray close() can't deallocate it out from under Tauri (which
-                // aborts with a foreign-exception runtime error).
-                panel.set_released_when_closed(false);
-                // order_front_regardless (NOT show()/makeKeyAndOrderFront): showing
-                // it must not make it key, or activation gets pulled back to Marrow
-                // and the app-active poll flip-flops (flashing) while you're away.
-                panel.order_front_regardless();
-                return Ok(());
-            }
-            Err(_) => {
-                // Fall through to a normal window show if conversion fails.
-            }
+        if let Ok(panel) = win.to_panel() {
+            panel.set_style_mask(NONACTIVATING_RESIZABLE);
+            // NSPanels are released-when-closed by default; turn that off so a
+            // stray close() can't deallocate it out from under Tauri (which
+            // aborts with a foreign-exception runtime error).
+            panel.set_released_when_closed(false);
         }
     }
 
-    win.show().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -217,14 +208,16 @@ pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Resu
     #[cfg(target_os = "macos")]
     {
         use tauri_nspanel::ManagerExt;
+        // Normally pre-created at startup; build lazily only as a fallback.
+        if visible && app.get_webview_panel("activity-widget").is_err() {
+            build_activity_window(&app)?;
+        }
         if let Ok(panel) = app.get_webview_panel("activity-widget") {
             if visible {
                 panel.order_front_regardless();
             } else {
                 panel.order_out(None);
             }
-        } else if visible {
-            build_activity_window(&app)?;
         }
         return Ok(());
     }
@@ -232,16 +225,15 @@ pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Resu
     #[cfg(not(target_os = "macos"))]
     {
         use tauri::Manager;
-        match app.get_webview_window("activity-widget") {
-            Some(win) => {
-                if visible {
-                    win.show().map_err(|e| e.to_string())?;
-                } else {
-                    win.hide().map_err(|e| e.to_string())?;
-                }
+        if visible && app.get_webview_window("activity-widget").is_none() {
+            build_activity_window(&app)?;
+        }
+        if let Some(win) = app.get_webview_window("activity-widget") {
+            if visible {
+                win.show().map_err(|e| e.to_string())?;
+            } else {
+                win.hide().map_err(|e| e.to_string())?;
             }
-            None if visible => build_activity_window(&app)?,
-            None => {}
         }
         Ok(())
     }
