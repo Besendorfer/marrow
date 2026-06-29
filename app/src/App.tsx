@@ -1303,41 +1303,31 @@ function App() {
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Show the floating activity mini-player whenever the main window is NOT the
-  // focused window — i.e. you've navigated to another app/window (this also
-  // covers minimize and hide). Hidden again when the main window regains focus,
-  // so the two are never on screen together. We listen on BOTH the Tauri window
-  // focus event and the DOM window focus/blur: the Tauri "focus" can miss the
-  // return trip (e.g. Cmd+Tab where the always-on-top widget was last key), and
-  // the DOM events fire reliably when the main webview itself (de)focuses.
+  // Floating mini-player visibility:
+  //  - HIDE it whenever the MAIN window gains focus (you've engaged the app).
+  //    Interacting with the floating panel focuses the panel, not the main
+  //    window, so dragging/resizing/clicking it never hides it — only genuinely
+  //    going to the main window does.
+  //  - SHOW it when you leave Marrow. On macOS that's driven by the native
+  //    app-active poll in the Rust backend (webview blur is unreliable for
+  //    app-switches there); on other platforms, on the main window's blur.
   useEffect(() => {
-    // macOS drives the floating window from the native app-active poll in the
-    // Rust backend (focus/visibility events don't fire on Cmd+Tab activation),
-    // so only wire the webview focus path on other platforms.
-    if (navigator.userAgent.includes("Macintosh")) return;
     const setVisible = (visible: boolean) =>
       invoke("set_activity_window_visible", { visible }).catch(() => {});
-    const onFocus = () => setVisible(false);
-    const onBlur = () => setVisible(true);
-    // Activating Marrow (Cmd+Tab / dock click) brings the main window forward
-    // before it gets webview focus, so focus alone leaves the mini-player up
-    // until you click in. Becoming visible (unoccluded) fires on activation —
-    // hide on that too. We only HIDE on visibility (never show), since a window
-    // that's merely on-screen-but-unfocused stays "visible".
-    const onVisibility = () => {
-      if (!document.hidden) setVisible(false);
-    };
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) =>
-      setVisible(!focused)
-    );
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("blur", onBlur);
-    document.addEventListener("visibilitychange", onVisibility);
+    const hide = () => setVisible(false);
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) hide();
+    });
+    window.addEventListener("focus", hide);
+
+    const isMac = navigator.userAgent.includes("Macintosh");
+    const show = () => setVisible(true);
+    if (!isMac) window.addEventListener("blur", show);
+
     return () => {
       unlisten.then((fn) => fn());
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("blur", onBlur);
-      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", hide);
+      if (!isMac) window.removeEventListener("blur", show);
     };
   }, []);
 

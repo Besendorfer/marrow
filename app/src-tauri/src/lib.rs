@@ -84,7 +84,6 @@ pub fn run() {
             pending_deep_link: Mutex::new(None),
             pr_node_ids: Mutex::new(HashMap::new()),
             frontend_ready: Mutex::new(false),
-            widget_moved_at: Mutex::new(None),
         })
         .setup(|app| {
             // Custom menu intercepts Ctrl+W / Ctrl+Q at the native layer (see menu.rs).
@@ -173,59 +172,30 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 use std::sync::atomic::{AtomicU8, Ordering};
-                use std::sync::Mutex as StdMutex;
-                use std::time::{Duration, Instant};
-                // How long after Marrow activates to wait before auto-hiding (gives
-                // you time to start a drag/resize), and how long a move/resize keeps
-                // the panel up after you stop.
-                const GRACE: Duration = Duration::from_millis(500);
                 let poll_handle = app.handle().clone();
-                let last_visible = std::sync::Arc::new(AtomicU8::new(0)); // 1 show, 2 hide
                 let was_active = std::sync::Arc::new(AtomicU8::new(0)); // 1 active, 2 inactive
-                let active_since = std::sync::Arc::new(StdMutex::new(None::<Instant>));
                 tauri::async_runtime::spawn(async move {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         let h = poll_handle.clone();
-                        let lv = last_visible.clone();
                         let wa = was_active.clone();
-                        let asince = active_since.clone();
                         let _ = poll_handle.run_on_main_thread(move || {
                             use objc2::MainThreadMarker;
                             use objc2_app_kit::NSApplication;
-                            use tauri::Manager;
 
                             let Some(mtm) = MainThreadMarker::new() else {
                                 return;
                             };
                             let active = NSApplication::sharedApplication(mtm).isActive();
 
-                            // Stamp when Marrow (re)activated — starts the grace window.
+                            // SHOW the panel when you leave Marrow (active→inactive).
+                            // HIDING is driven by the main window gaining focus
+                            // (see App.tsx) — NOT by app-active — so clicking/dragging
+                            // the panel (which activates the app but does not focus the
+                            // main window) never hides it.
                             let acode = if active { 1 } else { 2 };
-                            if wa.swap(acode, Ordering::Relaxed) != 1 && acode == 1 {
-                                if let Ok(mut t) = asince.lock() {
-                                    *t = Some(Instant::now());
-                                }
-                            }
-
-                            let within = |i: Option<Instant>| {
-                                i.map(|i| i.elapsed() < GRACE).unwrap_or(false)
-                            };
-                            let in_grace = within(asince.lock().ok().and_then(|g| *g));
-                            let moved_recently = within(
-                                h.try_state::<commands::AppState>()
-                                    .and_then(|s| s.widget_moved_at.lock().ok().and_then(|g| *g)),
-                            );
-
-                            // Visible while away from Marrow, OR briefly after it
-                            // activates (room to grab the panel), OR while you're
-                            // moving/resizing it. Otherwise it hides shortly after you
-                            // return — regardless of cursor position or which window
-                            // macOS focused, so Cmd+Tab back always tucks it away.
-                            let want_visible = !active || in_grace || moved_recently;
-                            let vcode = if want_visible { 1 } else { 2 };
-                            if lv.swap(vcode, Ordering::Relaxed) != vcode {
-                                let _ = commands::set_activity_window_visible(h, want_visible);
+                            if wa.swap(acode, Ordering::Relaxed) == 1 && acode == 2 {
+                                let _ = commands::set_activity_window_visible(h, true);
                             }
                         });
                     }

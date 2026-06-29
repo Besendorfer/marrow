@@ -23,10 +23,6 @@ pub struct AppState {
     // replay; after that point, hot-open emits suffice and we skip buffering
     // to avoid replaying stale URLs on the next cold-start.
     pub frontend_ready: Mutex<bool>,
-    // Last time the floating mini-player was moved or resized. The visibility
-    // poll keeps the panel up briefly after a move/resize so a click-to-drag
-    // isn't yanked away by the auto-hide.
-    pub widget_moved_at: Mutex<Option<std::time::Instant>>,
 }
 
 fn github_client() -> GithubClient {
@@ -171,23 +167,6 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
 
     // Restore the last-saved size & position before revealing it.
     let _ = win.restore_state(StateFlags::POSITION | StateFlags::SIZE);
-
-    // Note window moves/resizes so the visibility poll can keep the panel up
-    // while you're dragging/resizing it (these fire reliably, Rust-side).
-    {
-        use tauri::Manager;
-        let ev_app = app.clone();
-        win.on_window_event(move |event| {
-            if matches!(
-                event,
-                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
-            ) {
-                if let Ok(mut t) = ev_app.state::<AppState>().widget_moved_at.lock() {
-                    *t = Some(std::time::Instant::now());
-                }
-            }
-        });
-    }
 
     // Make it a non-activating NSPanel so clicking/dragging/resizing the widget
     // doesn't activate Marrow (which the app-active poll treats as "you're back"
