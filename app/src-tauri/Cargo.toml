@@ -41,3 +41,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 marrow-core = { path = "crates/core" }
+
+# Read NSApplication.isActive to drive the floating mini-player: macOS delivers
+# no webview focus event on app (re)activation (Cmd+Tab / dock), so app-active
+# state is the only reliable signal.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder"] }

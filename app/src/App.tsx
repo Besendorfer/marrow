@@ -1309,6 +1309,10 @@ function App() {
   // return trip (e.g. Cmd+Tab where the always-on-top widget was last key), and
   // the DOM events fire reliably when the main webview itself (de)focuses.
   useEffect(() => {
+    // macOS drives the floating window from the native app-active poll in the
+    // Rust backend (focus/visibility events don't fire on Cmd+Tab activation),
+    // so only wire the webview focus path on other platforms.
+    if (navigator.userAgent.includes("Macintosh")) return;
     const setVisible = (visible: boolean) =>
       invoke("set_activity_window_visible", { visible }).catch(() => {});
     const onFocus = () => setVisible(false);

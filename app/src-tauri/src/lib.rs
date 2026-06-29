@@ -156,6 +156,55 @@ pub fn run() {
                 }
             });
 
+            // macOS: drive the floating mini-player from the app-active state.
+            // App (re)activation (Cmd+Tab / dock) delivers no webview focus event
+            // and Page Visibility doesn't fire for occlusion, so focus-based
+            // logic can't catch it. Polling NSApplication.isActive on the main
+            // thread is the one reliable signal: show the widget while Marrow is
+            // NOT the active app, hide it once it is (unless the widget itself is
+            // focused, i.e. the user clicked into it to use it).
+            #[cfg(target_os = "macos")]
+            {
+                let poll_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        let h = poll_handle.clone();
+                        let _ = poll_handle.run_on_main_thread(move || {
+                            use objc2::MainThreadMarker;
+                            use objc2_app_kit::NSApplication;
+                            use tauri::Manager;
+
+                            let Some(mtm) = MainThreadMarker::new() else {
+                                return;
+                            };
+                            let active = NSApplication::sharedApplication(mtm).isActive();
+                            let enabled =
+                                marrow_core::config::load_settings().activity_mini_player;
+
+                            match h.get_webview_window("activity-widget") {
+                                Some(win) => {
+                                    let visible = win.is_visible().unwrap_or(false);
+                                    let focused = win.is_focused().unwrap_or(false);
+                                    if active {
+                                        if visible && !focused {
+                                            let _ = win.hide();
+                                        }
+                                    } else if enabled && !visible {
+                                        let _ = win.show();
+                                    }
+                                }
+                                None => {
+                                    if !active && enabled {
+                                        let _ = commands::build_activity_window(&h);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -198,15 +247,6 @@ pub fn run() {
             commands::dismiss_mini_player,
             commands::open_pr_in_main,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            // macOS dock-icon reopen brings Marrow to the front without a
-            // webview focus event, so hide the floating mini-player here too.
-            if let tauri::RunEvent::Reopen { .. } = event {
-                if let Some(win) = app_handle.get_webview_window("activity-widget") {
-                    let _ = win.hide();
-                }
-            }
-        });
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }

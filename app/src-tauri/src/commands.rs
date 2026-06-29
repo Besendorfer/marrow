@@ -142,7 +142,7 @@ pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
 /// Built hidden so we can restore the user's last size/position (via
 /// tauri-plugin-window-state) before showing — otherwise it would flash at the
 /// default geometry first. The caller shows it.
-fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     use tauri_plugin_window_state::{StateFlags, WindowExt};
     let win = WebviewWindowBuilder::new(

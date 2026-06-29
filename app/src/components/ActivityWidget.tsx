@@ -160,36 +160,6 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
     invoke("set_mini_player_enabled", { enabled: next }).catch(() => {});
   }
 
-  // Floating window: hide itself when Marrow is reactivated (Cmd+Tab / dock).
-  // The widget can't be the key window while the app is inactive, so it only
-  // gains focus when the app becomes active. If that focus did NOT come from a
-  // pointer interaction in the widget, the user returned to Marrow (rather than
-  // clicking the widget to use it) → hide. A recent pointerdown keeps it open
-  // so clicking its controls/dragging it doesn't dismiss it.
-  useEffect(() => {
-    if (variant !== "window") return;
-    let interacting = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const markInteract = () => {
-      interacting = true;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        interacting = false;
-      }, 600);
-    };
-    window.addEventListener("pointerdown", markInteract, true);
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (focused && !interacting) {
-        getCurrentWindow().hide().catch(() => {});
-      }
-    });
-    return () => {
-      window.removeEventListener("pointerdown", markInteract, true);
-      unlisten.then((fn) => fn());
-      if (timer) clearTimeout(timer);
-    };
-  }, [variant]);
-
   // Load configured watches so the source dropdown lists every watch — even one
   // that currently has no activity in the feed.
   useEffect(() => {
