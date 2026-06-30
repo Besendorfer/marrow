@@ -56,27 +56,45 @@ marrow review <pr> # fetch + classify, then open the TUI
 2. **Classify** -- sends the file list and diff to Claude, which labels each file as RELEVANT or NOT_RELEVANT based on what it contains
 3. **Highlight** -- a second AI pass identifies specific lines in relevant files that deserve human attention (security changes, behavior changes, removed safety checks, etc.)
 4. **Summarize** -- generates a high-level summary of the PR's changes
-5. **Review** -- displays the relevant diffs in a split or unified viewer with syntax highlighting, AI-annotated risk indicators, and inline comments
+5. **Review** -- displays the relevant diffs in a split, unified, or full-file viewer with syntax highlighting and AI-annotated risk indicators; dismiss highlights you've handled, post AI notes as editable comment drafts, and reply to or resolve threads -- and keep an eye on every PR you care about from the activity mini-player
 
 ## Features
 
-- **PR opener** -- paste a PR URL or short ref (`owner/repo#123`) directly in the app
+### Stay on top of PR activity
+
+- **Activity mini-player** -- a compact, always-current view of new comments, status changes, new commits, and review requests across the PRs you care about. It runs as an in-app dock *and* an optional floating, always-on-top window that appears when you switch away from Marrow and tucks itself away when you return (resizable; remembers its size and position).
+- **Watches** -- follow any org or repo via saved GitHub searches, including PRs that don't request you as a reviewer. A configurable per-watch cap keeps busy queries tidy, with search + source filtering to narrow the feed.
+- **Focused on what needs you** -- PRs you've approved drop out of the feed (optional setting), and your own comments don't get flagged as new activity.
+- **Review request list** -- incoming review requests from GitHub, in one place.
+
+### Find what matters in a diff
+
 - **AI classification** -- files automatically categorized and scored by risk level (critical / high / medium / low)
-- **AI highlights** -- specific lines annotated with severity (critical / warning / info) and explanatory comments
+- **AI highlights** -- specific lines annotated with severity (critical / warning / info) and explanatory comments -- **dismiss the ones you've handled** (and restore them later), remembered per PR
 - **AI summaries** -- high-level overview of what the PR changes and why it matters
 - **Change groups** -- AI-generated logical grouping of related file changes
-- **Split and unified diff views** -- toggle between side-by-side and unified diff display
-- **File sidebar** -- files grouped by category with risk indicators; track which files you've reviewed
-- **Review request list** -- see incoming review requests from GitHub
-- **PR comments and threads** -- read, reply to, and resolve review threads; react with emoji
-- **PR checks** -- monitor CI/CD check status with blocking-check alerts
+- **Split, unified, and full-file diff views** -- toggle side-by-side or unified, with syntax highlighting; expand any file to its full contents when you need surrounding context
+- **File sidebar** -- files grouped by category with risk indicators and viewed-progress tracking; **show or hide the "not relevant" files** on demand
 - **Search** -- full-text search across all diffs with result navigation
-- **Viewed file tracking** -- persistent progress tracking across sessions with stale-file detection
-- **PR update detection** -- detects new commits and highlights files changed since your last review
+- **Keyboard-driven** -- jump between hunks and findings, fold sections, and navigate without leaving the keyboard
+
+### Review and collaborate
+
+- **PR comments and threads** -- read, reply to, and resolve review threads; react with emoji
+- **AI notes → comment drafts** -- turn an AI highlight into a comment, pre-filled and editable, before it ever reaches GitHub
+- **PR checks** -- monitor CI/CD check status with blocking-check alerts
+- **Merged & approved at a glance** -- a "Merged" badge when a PR lands (even while you're viewing it) and an "Approved by you" badge once you've signed off
+- **Viewed file tracking** -- persistent progress across sessions, with stale-file detection
+- **PR update detection** -- detects new commits and flags files changed since your last review
+
+### Workflow
+
+- **PR opener** -- paste a PR URL or short ref (`owner/repo#123`) directly in the app
 - **Multi-tab** -- open multiple PRs simultaneously in separate tabs
+- **Bring your own AI** -- Anthropic, OpenAI, Gemini, AWS Bedrock, the Claude CLI, or any OpenAI-compatible endpoint (OpenRouter, a local server)
 - **Auto-update** -- background update checks with one-click download and relaunch
 - **Drag-and-drop** -- drop a manifest JSON file onto the app to load a review
-- **Settings** -- configure model ARN, GitHub token, and AWS profile from within the app
+- **Settings** -- configure your model/provider, API keys, and GitHub token from within the app
 
 ## Prerequisites
 
