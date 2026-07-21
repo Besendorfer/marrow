@@ -51,6 +51,7 @@ function App() {
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [queueFilter, setQueueFilter] = useState("");
+  const [viewerLogin, setViewerLogin] = useState<string | null>(null);
   const searchRef = useRef<SearchBarHandle>(null);
   const diffViewerRef = useRef<DiffViewerHandle>(null);
   // Visible file order from the sidebar, used by the [ / ] navigation shortcuts.
@@ -193,11 +194,15 @@ function App() {
 
   // ── Guided review path ──────────────────────────────────────────────────
   // The review order is the sidebar's visible order (falls back to relevant
-  // files in manifest order before the sidebar reports in).
+  // files in manifest order before the sidebar reports in). The sidebar is
+  // unmounted while the overview shows, so the ref can hold another tab's
+  // paths — anything not in this manifest is dropped before use.
   function guidedOrder(): string[] {
     if (!activeTab?.manifest) return [];
-    return visibleOrderRef.current.length
-      ? visibleOrderRef.current
+    const inManifest = new Set(activeTab.manifest.files.map((f) => f.path));
+    const visible = visibleOrderRef.current.filter((p) => inManifest.has(p));
+    return visible.length
+      ? visible
       : activeTab.manifest.files
           .filter((f) => f.classification !== "NOT_RELEVANT")
           .map((f) => f.path);
@@ -462,6 +467,9 @@ function App() {
       // two-step welcome instead of a blank queue + hidden settings.
       invoke<boolean>("needs_setup")
         .then((needed) => { if (needed) setWelcomeOpen(true); })
+        .catch(() => {});
+      invoke<string>("get_viewer_login")
+        .then(setViewerLogin)
         .catch(() => {});
     }
 
@@ -1597,8 +1605,6 @@ function App() {
         onSelectTab={handleSelectTab}
         onCloseTab={closeTab}
         onNewReview={handleNewReview}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
         viewedCount={activeTab?.viewedFiles.size ?? 0}
         staleCount={activeTab?.staleViewedFiles.size ?? 0}
         onSettingsClick={() => setSettingsOpen(true)}
@@ -1643,6 +1649,7 @@ function App() {
                 onFilterChange={setQueueFilter}
                 onSettingsClick={() => setSettingsOpen(true)}
                 onCheckForUpdates={() => checkForUpdates(false)}
+                viewerLogin={viewerLogin}
               />
               {activeTab.error && (
                 <div className="opener-error" role="alert">
@@ -1713,6 +1720,19 @@ function App() {
           onOpenChange={setSearchOpen}
         />
         <div className="main-content">
+          {activeTab.sidebarView !== "comments" && !activeTab.selectedFile ? (
+            <PrOverview
+              manifest={activeTab.manifest}
+              checksStatus={activeChecks ?? null}
+              viewedCount={activeTab.viewedFiles.size}
+              unresolvedThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
+              hasSubmittedReview={activeTab.myReviewState != null && activeTab.myReviewState.status !== "pending" && activeTab.myReviewState.status !== "dismissed" && !activeTab.myReviewState.is_re_requested}
+              startTarget={nextUnviewed(guidedOrder(), -1)}
+              onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
+              onSelectFile={setSelectedFile}
+            />
+          ) : (
+          <>
           <FileSidebar
             files={activeTab.manifest.files}
             changeGroups={activeTab.manifest.change_groups ?? []}
@@ -1763,7 +1783,7 @@ function App() {
                 const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
                 return (
                   <>
-                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
                     <NextFileBar
                       index={idx >= 0 ? idx : 0}
                       total={order.length}
@@ -1772,23 +1792,18 @@ function App() {
                       allReviewed={allReviewed}
                       onMarkReviewed={markReviewedAndAdvance}
                       onNext={() => { if (next) setSelectedFile(next); }}
+                      onComment={() => diffViewerRef.current?.commentAtCursor()}
                       onFinishReview={() => setReviewPickerOpen(true)}
                     />
                   </>
                 );
               })()
             ) : (
-              <PrOverview
-                manifest={activeTab.manifest}
-                viewedCount={activeTab.viewedFiles.size}
-                unresolvedThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
-                hasSubmittedReview={activeTab.myReviewState != null && activeTab.myReviewState.status !== "pending" && activeTab.myReviewState.status !== "dismissed" && !activeTab.myReviewState.is_re_requested}
-                startTarget={nextUnviewed(guidedOrder(), -1)}
-                onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
-                onSelectFile={setSelectedFile}
-              />
+              <div className="no-file-selected">Select a file to review</div>
             )}
           </div>
+          </>
+          )}
         </div>
         </div>
       )}

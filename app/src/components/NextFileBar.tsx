@@ -6,6 +6,7 @@ interface NextFileBarProps {
   allReviewed: boolean;
   onMarkReviewed: () => void;
   onNext: () => void;
+  onComment?: () => void;
   onFinishReview: () => void;
 }
 
@@ -17,6 +18,7 @@ export function NextFileBar({
   allReviewed,
   onMarkReviewed,
   onNext,
+  onComment,
   onFinishReview,
 }: NextFileBarProps) {
   return (
@@ -48,6 +50,15 @@ export function NextFileBar({
           </>
         )}
       </span>
+      {onComment && (
+        <button
+          className="next-bar-ghost"
+          onClick={onComment}
+          title="Comment on the line at the cursor (C)"
+        >
+          Comment <kbd className="next-bar-key">C</kbd>
+        </button>
+      )}
       <button
         className={`next-bar-finish${allReviewed ? " next-bar-finish--ready" : ""}`}
         onClick={onFinishReview}

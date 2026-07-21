@@ -41,6 +41,12 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
     save_settings_to_disk(&settings)
 }
 
+/// The authenticated GitHub login for the configured token (queue header chip).
+#[command]
+pub async fn get_viewer_login() -> Result<String, String> {
+    github_client().get_authenticated_user().await
+}
+
 /// True when the first-run welcome should show: setup never completed/skipped
 /// and no GitHub token resolves from config or env.
 #[command]

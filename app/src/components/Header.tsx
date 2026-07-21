@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { SummaryParagraphs } from "./SummaryParagraphs";
-import type { ReviewManifest, DiffViewMode, Tab, CommentThreadsState, MyReviewState } from "../types";
+import type { ReviewManifest, Tab, CommentThreadsState, MyReviewState } from "../types";
 
 function useClickOutside(
   ref: React.RefObject<HTMLElement | null>,
@@ -38,8 +38,6 @@ interface HeaderProps {
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onNewReview: () => void;
-  viewMode: DiffViewMode;
-  onViewModeChange: (mode: DiffViewMode) => void;
   viewedCount: number;
   staleCount: number;
   onSettingsClick: () => void;
@@ -64,8 +62,6 @@ export function Header({
   onSelectTab,
   onCloseTab,
   onNewReview,
-  viewMode,
-  onViewModeChange,
   viewedCount,
   staleCount,
   onSettingsClick,
@@ -180,22 +176,6 @@ export function Header({
             )}
           </div>
           <div className="header-right">
-            <div className="view-toggle">
-              <button
-                className={viewMode === "split" ? "active" : ""}
-                onClick={() => onViewModeChange("split")}
-                title="Side-by-side diff"
-              >
-                Split
-              </button>
-              <button
-                className={viewMode === "unified" ? "active" : ""}
-                onClick={() => onViewModeChange("unified")}
-                title="Single-column diff"
-              >
-                Unified
-              </button>
-            </div>
             {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} myReviewState={myReviewState} checksBlocking={checksBlocking} />}
             <ToolbarMenu
               onOpenPalette={onOpenPalette}

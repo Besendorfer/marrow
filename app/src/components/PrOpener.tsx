@@ -6,11 +6,13 @@ interface PrOpenerProps {
   onFilterChange?: (filter: string) => void;
   onSettingsClick?: () => void;
   onCheckForUpdates?: () => void;
+  /** Authenticated GitHub login, once known — shown as a quiet status chip. */
+  viewerLogin?: string | null;
 }
 
 // One box does both jobs: paste anything that parses as a PR ref and Enter
 // opens it; any other text filters the queue below as you type.
-export function PrOpener({ onFetchStart, onFilterChange, onSettingsClick, onCheckForUpdates }: PrOpenerProps) {
+export function PrOpener({ onFetchStart, onFilterChange, onSettingsClick, onCheckForUpdates, viewerLogin }: PrOpenerProps) {
   const [value, setValue] = useState("");
   const openable = isOpenablePrRef(value.trim());
 
@@ -37,12 +39,19 @@ export function PrOpener({ onFetchStart, onFilterChange, onSettingsClick, onChec
           onChange={(e) => handleChange(e.target.value)}
           placeholder="Paste a PR URL or owner/repo#123, or filter your queue…"
         />
-        {openable && (
+        {openable ? (
           <button type="submit" className="queue-omnibox-open">
             Open PR ↵
           </button>
+        ) : (
+          <kbd className="next-bar-key queue-omnibox-hint" title="Command palette">⌘K</kbd>
         )}
       </div>
+      {viewerLogin && (
+        <span className="queue-account" title="GitHub connection is working">
+          <span className="queue-account-dot" /> @{viewerLogin}
+        </span>
+      )}
       {onCheckForUpdates && (
         <button
           type="button"
