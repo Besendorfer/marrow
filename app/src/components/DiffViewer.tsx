@@ -1675,9 +1675,6 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         : null,
     [onToggleHighlightDismissed, file.path]
   );
-  const isCritical =
-    file.risk_level === "critical" || file.risk_level === "high";
-
   // Track original collapsed state so we can restore it when search ends
   const preSearchCollapsed = useRef<Set<number> | null>(null);
   const collapsedHunksRef = useRef(collapsedHunks);
@@ -2149,7 +2146,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 
   return (
     <HighlightDismissContext.Provider value={dismissHighlight}>
-    <div className={`diff-viewer ${isCritical ? "diff-viewer-critical" : ""}`}>
+    <div className="diff-viewer">
       {replyTarget && (
         <KeyboardReplyOverlay
           onClose={() => setReplyTarget(null)}
