@@ -11,7 +11,8 @@ import { ActivityWidget } from "./components/ActivityWidget";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
-import { SummaryParagraphs } from "./components/SummaryParagraphs";
+import { PrOverview } from "./components/PrOverview";
+import { NextFileBar } from "./components/NextFileBar";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
 import { ReviewPicker } from "./components/ReviewPicker";
@@ -163,6 +164,42 @@ function App() {
     [searchMatches, searchCurrentIndex, selectedFilePath]
   );
 
+  // ── Guided review path ──────────────────────────────────────────────────
+  // The review order is the sidebar's visible order (falls back to relevant
+  // files in manifest order before the sidebar reports in).
+  function guidedOrder(): string[] {
+    if (!activeTab?.manifest) return [];
+    return visibleOrderRef.current.length
+      ? visibleOrderRef.current
+      : activeTab.manifest.files
+          .filter((f) => f.classification !== "NOT_RELEVANT")
+          .map((f) => f.path);
+  }
+
+  // First unviewed file after `fromIdx` in review order (wrapping), treating
+  // `alsoViewed` as already reviewed — used when the current file was just
+  // marked but state hasn't committed yet.
+  function nextUnviewed(order: string[], fromIdx: number, alsoViewed?: string): FileDiff | null {
+    if (!activeTab?.manifest || order.length === 0) return null;
+    const viewed = activeTab.viewedFiles;
+    for (let step = 1; step <= order.length; step++) {
+      const p = order[(fromIdx + step + order.length) % order.length];
+      if (!viewed.has(p) && p !== alsoViewed) {
+        return activeTab.manifest.files.find((f) => f.path === p) ?? null;
+      }
+    }
+    return null;
+  }
+
+  function markReviewedAndAdvance() {
+    if (!activeTab?.selectedFile) return;
+    const path = activeTab.selectedFile.path;
+    const order = guidedOrder();
+    if (!activeTab.viewedFiles.has(path)) toggleViewed(path);
+    const next = nextUnviewed(order, order.indexOf(path), path);
+    if (next) setSelectedFile(next);
+  }
+
   // ── Keyboard shortcuts (ported from the CLI/TUI; see useKeyboardShortcuts) ──
   function selectAdjacentFile(delta: 1 | -1) {
     if (!activeTab?.manifest || !activeTab.selectedFile) return;
@@ -248,7 +285,9 @@ function App() {
       id,
       manifest,
       loading: null,
-      selectedFile: manifest.files.length > 0 ? manifest.files[0] : null,
+      // Land on the overview (summary + change groups), not a file — the
+      // "Start review" CTA and sidebar are the ways in.
+      selectedFile: null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
@@ -733,10 +772,14 @@ function App() {
         isRefreshing: false,
         viewedFiles: preservedViewed,
         staleViewedFiles: newStale,
+        // No selection (the overview) stays on the overview after a refresh;
+        // a selected file follows to the refreshed manifest if it still exists.
         selectedFile:
-          tab.selectedFile && newPaths.has(tab.selectedFile.path)
-            ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? newManifest.files[0] ?? null
-            : newManifest.files[0] ?? null,
+          tab.selectedFile == null
+            ? null
+            : newPaths.has(tab.selectedFile.path)
+              ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? null
+              : newManifest.files[0] ?? null,
         commentThreads: { status: "idle" },
       };
 
@@ -1574,6 +1617,7 @@ function App() {
             selectedCommentFile={activeTab.selectedCommentFile}
             onSelectCommentFile={handleSelectCommentFile}
             onVisibleFilesChange={handleVisibleFilesChange}
+            onShowOverview={() => { if (activeTabId) updateTab(activeTabId, (t) => ({ ...t, selectedFile: null })); }}
           />
           <div className="diff-pane">
             {activeTab.sidebarView === "comments" ? (
@@ -1597,14 +1641,39 @@ function App() {
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
-            ) : activeTab.manifest.summary ? (
-              <div className="pr-summary">
-                <h3>PR Summary</h3>
-                <SummaryParagraphs text={activeTab.manifest.summary} />
-              </div>
+              (() => {
+                const order = guidedOrder();
+                const idx = order.indexOf(activeTab.selectedFile.path);
+                const allReviewed = order.length > 0 && order.every((p) => activeTab.viewedFiles.has(p));
+                // Exclude the open file so "Next" never points at itself when
+                // it's the last unviewed one.
+                const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
+                return (
+                  <>
+                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+                    <NextFileBar
+                      index={idx >= 0 ? idx : 0}
+                      total={order.length}
+                      isViewed={activeTab.viewedFiles.has(activeTab.selectedFile.path)}
+                      nextName={next ? next.path.split("/").pop() ?? next.path : null}
+                      allReviewed={allReviewed}
+                      onMarkReviewed={markReviewedAndAdvance}
+                      onNext={() => { if (next) setSelectedFile(next); }}
+                      onFinishReview={() => setReviewPickerOpen(true)}
+                    />
+                  </>
+                );
+              })()
             ) : (
-              <div className="no-file-selected">Select a file to review</div>
+              <PrOverview
+                manifest={activeTab.manifest}
+                viewedCount={activeTab.viewedFiles.size}
+                unresolvedThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
+                hasSubmittedReview={activeTab.myReviewState != null && activeTab.myReviewState.status !== "pending" && activeTab.myReviewState.status !== "dismissed" && !activeTab.myReviewState.is_re_requested}
+                startTarget={nextUnviewed(guidedOrder(), -1)}
+                onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
+                onSelectFile={setSelectedFile}
+              />
             )}
           </div>
         </div>
