@@ -37,20 +37,6 @@ export function extractPrRef(input: string): string | null {
 }
 
 /**
- * True when the input is something `fetch_pr` can open: a PR URL, an
- * `owner/repo#123` or `owner/repo/pull/123` ref, or a bare `#123` (resolved
- * against the configured default repo by the backend). Mirrors the accepted
- * shapes in pr_parser.rs — the omnibox uses this to decide "open" vs "filter".
- */
-export function isOpenablePrRef(input: string): boolean {
-  if (extractPrRef(input) !== null) return true;
-  return (
-    /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}(#\d+|\/pull\/\d+)$/.test(input) ||
-    /^#\d+$/.test(input)
-  );
-}
-
-/**
  * Normalize a GitHub PR URL or an `owner/repo#number` ref to a single
  * comparable key (`owner/repo#number`, lowercased), or null if neither shape
  * matches. Used to tell whether two references point at the same PR.

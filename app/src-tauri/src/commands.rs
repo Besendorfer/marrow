@@ -41,6 +41,14 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
     save_settings_to_disk(&settings)
 }
 
+/// Whether `fetch_pr` could open this input. The omnibox uses this to decide
+/// "open" vs "filter" — asking the real parser instead of mirroring its regex
+/// (the AI review caught that as a fifth copy of the quadruplicated pattern).
+#[command]
+pub fn check_pr_ref(input: String) -> bool {
+    marrow_core::pr_parser::parse_pr_ref(&input).is_ok()
+}
+
 /// The authenticated GitHub login for the configured token (queue header chip).
 #[command]
 pub async fn get_viewer_login() -> Result<String, String> {

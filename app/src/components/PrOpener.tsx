@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { isOpenablePrRef } from "../utils";
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 interface PrOpenerProps {
   onFetchStart: (prRef: string) => void;
@@ -10,23 +10,42 @@ interface PrOpenerProps {
   viewerLogin?: string | null;
 }
 
-// One box does both jobs: paste anything that parses as a PR ref and Enter
-// opens it; any other text filters the queue below as you type.
+// One box does both jobs: paste anything the backend parser accepts and Enter
+// opens it; any other text filters the queue below as you type. "Openable" is
+// decided by the real parser (check_pr_ref → pr_parser.rs), not a mirrored
+// regex — the frontend copy was a fifth instance of the quadruplicated
+// PR-ref pattern, flagged by Marrow's own AI review.
 export function PrOpener({ onFetchStart, onFilterChange, onSettingsClick, onCheckForUpdates, viewerLogin }: PrOpenerProps) {
   const [value, setValue] = useState("");
-  const openable = isOpenablePrRef(value.trim());
+  const [openable, setOpenable] = useState(false);
+  // Guards against out-of-order IPC responses while typing.
+  const checkSeq = useRef(0);
 
-  function handleChange(v: string) {
-    setValue(v);
-    onFilterChange?.(isOpenablePrRef(v.trim()) ? "" : v.trim());
-  }
+  useEffect(() => {
+    const trimmed = value.trim();
+    const seq = ++checkSeq.current;
+    if (!trimmed) {
+      setOpenable(false);
+      return;
+    }
+    invoke<boolean>("check_pr_ref", { input: trimmed })
+      .then((ok) => { if (checkSeq.current === seq) setOpenable(ok); })
+      .catch(() => { if (checkSeq.current === seq) setOpenable(false); });
+  }, [value]);
+
+  // The queue filters on whatever is typed; once the parser says it's an
+  // openable ref, the filter clears so the queue stays visible behind it.
+  useEffect(() => {
+    onFilterChange?.(openable ? "" : value.trim());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, openable]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = value.trim();
     if (!trimmed || !openable) return;
     onFetchStart(trimmed);
-    handleChange("");
+    setValue("");
   }
 
   return (
@@ -36,7 +55,7 @@ export function PrOpener({ onFetchStart, onFilterChange, onSettingsClick, onChec
         <input
           type="text"
           value={value}
-          onChange={(e) => handleChange(e.target.value)}
+          onChange={(e) => setValue(e.target.value)}
           placeholder="Paste a PR URL or owner/repo#123, or filter your queue…"
         />
         {openable ? (
