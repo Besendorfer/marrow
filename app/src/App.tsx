@@ -18,13 +18,14 @@ import { KeyboardHelp } from "./components/KeyboardHelp";
 import { ReviewPicker } from "./components/ReviewPicker";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
+import { WelcomeSetup } from "./components/WelcomeSetup";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
@@ -44,6 +45,9 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  // Cached PR whose head moved — re-analyzing costs an AI pass, so confirm.
+  const [staleConfirm, setStaleConfirm] = useState<{ prRef: string; title: string } | null>(null);
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [queueFilter, setQueueFilter] = useState("");
@@ -168,6 +172,25 @@ function App() {
     [searchMatches, searchCurrentIndex, selectedFilePath]
   );
 
+  // Opening from the "Recently analyzed" cache: if the PR's head moved, the
+  // backend would silently run a full AI re-analysis — surface that first.
+  async function handleOpenCachedPr(prRef: string, info: CachedPrInfo) {
+    try {
+      const status = await invoke<PrUpdateStatus>("check_pr_updates", {
+        prUrl: info.pr_url,
+        currentHeadSha: info.head_sha,
+        currentCommentCount: 0,
+      });
+      if (status.head_sha_changed) {
+        setStaleConfirm({ prRef, title: info.pr_title });
+        return;
+      }
+    } catch {
+      // Status check failing (offline, rate limit) shouldn't block opening.
+    }
+    handleFetchStart(prRef);
+  }
+
   // ── Guided review path ──────────────────────────────────────────────────
   // The review order is the sidebar's visible order (falls back to relevant
   // files in manifest order before the sidebar reports in).
@@ -252,7 +275,9 @@ function App() {
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
       onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); setPaletteOpen(false); },
-      onTogglePalette: () => setPaletteOpen((v) => !v),
+      // Not during first-run setup — the palette would open invisibly under
+      // the welcome card and pop up when setup closes.
+      onTogglePalette: () => { if (!welcomeOpen) setPaletteOpen((v) => !v); },
       onNextTab: () => selectAdjacentTab(1),
       onPrevTab: () => selectAdjacentTab(-1),
       onCloseTab: () => { if (activeTabId) closeTab(activeTabId); },
@@ -432,6 +457,12 @@ function App() {
       // Tell the backend it's safe to skip cold-start buffering — from now on
       // hot-open emits go straight to the listener above.
       invoke("signal_frontend_ready").catch(() => {});
+
+      // First run (no token anywhere, never completed/skipped setup) shows the
+      // two-step welcome instead of a blank queue + hidden settings.
+      invoke<boolean>("needs_setup")
+        .then((needed) => { if (needed) setWelcomeOpen(true); })
+        .catch(() => {});
     }
 
     initSession();
@@ -1500,6 +1531,12 @@ function App() {
 
   const overlays = (
     <>
+      {welcomeOpen && (
+        <WelcomeSetup
+          onDone={() => setWelcomeOpen(false)}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      )}
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
@@ -1625,9 +1662,33 @@ function App() {
               )}
               <ReviewRequestList
                 onSelectPr={(ref) => handleFetchStart(ref, activeTab.id)}
+                onSelectCachedPr={handleOpenCachedPr}
                 openPrUrls={openPrUrls}
                 filter={queueFilter}
               />
+              {staleConfirm && (
+                <div className="settings-overlay" onMouseDown={() => setStaleConfirm(null)}>
+                  <div className="welcome-card" onMouseDown={(e) => e.stopPropagation()}>
+                    <h3>This PR has new commits</h3>
+                    <p>
+                      "{staleConfirm.title}" changed since it was analyzed.
+                      Opening it now will run the AI analysis again on the
+                      latest version.
+                    </p>
+                    <div className="welcome-actions">
+                      <button
+                        className="welcome-primary"
+                        onClick={() => { const ref = staleConfirm.prRef; setStaleConfirm(null); handleFetchStart(ref, activeTab.id); }}
+                      >
+                        Analyze updated PR
+                      </button>
+                      <button className="welcome-skip" onClick={() => setStaleConfirm(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="queue-drop-hint">
                 Tip: drop a manifest JSON file anywhere here to load a review.
               </div>

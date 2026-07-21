@@ -166,6 +166,7 @@ export interface Settings {
   activity_per_watch_cap: number;
   activity_mini_player: boolean;
   show_approved_prs: boolean;
+  setup_done: boolean;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";

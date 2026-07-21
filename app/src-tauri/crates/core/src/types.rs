@@ -130,6 +130,10 @@ pub struct Settings {
     /// once you approve a PR, it drops out of the feed.
     #[serde(default)]
     pub show_approved_prs: bool,
+    /// True once the first-run welcome has been completed or skipped, so it
+    /// never auto-shows again (config via env vars alone also suppresses it).
+    #[serde(default)]
+    pub setup_done: bool,
 }
 
 fn default_true() -> bool {
