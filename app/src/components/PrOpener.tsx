@@ -40,10 +40,17 @@ export function PrOpener({ onFetchStart, onFilterChange, onSettingsClick, onChec
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, openable]);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = value.trim();
-    if (!trimmed || !openable) return;
+    if (!trimmed) return;
+    // Enter is authoritative: `openable` lags one IPC roundtrip behind the
+    // input, so paste + instant Enter could no-op on stale state — re-ask
+    // the parser directly rather than trusting the async echo.
+    const ok =
+      openable ||
+      (await invoke<boolean>("check_pr_ref", { input: trimmed }).catch(() => false));
+    if (!ok) return;
     onFetchStart(trimmed);
     setValue("");
   }
