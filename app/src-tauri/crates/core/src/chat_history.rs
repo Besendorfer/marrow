@@ -8,6 +8,7 @@ use std::path::PathBuf;
 /// (None for whole-PR scope), purely for display/context — it does not affect
 /// loading.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct StoredMessage {
     pub role: String,
     pub content: String,

@@ -47,6 +47,8 @@ export interface ShortcutHandlers {
   onResolve: () => void;
   /** Toggle the command palette (Cmd/Ctrl+K) — works everywhere, even in fields. */
   onTogglePalette: () => void;
+  /** Toggle the conversational diff Q&A panel (Cmd/Ctrl+J). */
+  onToggleChat: () => void;
 }
 
 export interface ShortcutOptions {
@@ -111,6 +113,14 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
         h.onTogglePalette();
+        return;
+      }
+
+      // Cmd/Ctrl+J toggles the chat panel — same pattern as the palette chord:
+      // works from anywhere, including from inside inputs.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        h.onToggleChat();
         return;
       }
 

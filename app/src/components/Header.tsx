@@ -54,6 +54,8 @@ interface HeaderProps {
   checksBlocking?: boolean;
   onCheckForUpdates: () => void;
   onOpenPalette: () => void;
+  chatOpen?: boolean;
+  onToggleChat?: () => void;
 }
 
 export function Header({
@@ -78,6 +80,8 @@ export function Header({
   checksBlocking,
   onCheckForUpdates,
   onOpenPalette,
+  chatOpen,
+  onToggleChat,
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
@@ -179,6 +183,15 @@ export function Header({
             )}
           </div>
           <div className="header-right">
+            {onToggleChat && (
+              <button
+                className={`chat-toggle${chatOpen ? " active" : ""}`}
+                onClick={onToggleChat}
+                title="Ask the AI about this change (⌘/Ctrl+J)"
+              >
+                Ask AI
+              </button>
+            )}
             {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} myReviewState={myReviewState} checksBlocking={checksBlocking} />}
             <ToolbarMenu
               onOpenPalette={onOpenPalette}
