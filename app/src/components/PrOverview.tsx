@@ -1,9 +1,11 @@
 import { SummaryParagraphs } from "./SummaryParagraphs";
-import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus } from "../types";
+import { initials } from "./ReviewRequestList";
+import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState } from "../types";
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
   checksStatus?: PrChecksStatus | null;
+  reviewState: MyReviewState | null;
   viewedCount: number;
   unresolvedThreads: number | null;
   hasSubmittedReview: boolean;
@@ -78,6 +80,7 @@ function GroupRow({
 export function PrOverview({
   manifest,
   checksStatus,
+  reviewState,
   viewedCount,
   unresolvedThreads,
   hasSubmittedReview,
@@ -89,6 +92,9 @@ export function PrOverview({
   const setAside = manifest.files.length - relevant.length;
   const byPath = new Map(manifest.files.map((f) => [f.path, f]));
   const groups = manifest.change_groups ?? [];
+  const author = reviewState?.author || manifest.author;
+  const draft = reviewState ? reviewState.draft : manifest.draft;
+  const approvedBy = reviewState?.approved_by ?? [];
   const criticalNotes = relevant.reduce(
     (n, f) => n + (f.highlights?.filter((h) => h.severity === "critical").length ?? 0),
     0
@@ -105,6 +111,12 @@ export function PrOverview({
             <span className="overview-title-num">#{manifest.pr_number}</span>
             {manifest.pr_title}
           </span>
+          {author && (
+            <span className="overview-chip overview-chip--author">
+              <span className="queue-avatar queue-avatar--sm" aria-hidden="true">{initials(author)}</span> {author}
+            </span>
+          )}
+          {draft && <span className="overview-chip overview-chip--draft">Draft</span>}
           {checksStatus && <CiChip checks={checksStatus} />}
           <span className="overview-chip">
             {relevant.length} relevant of {manifest.files.length}{" "}
@@ -173,7 +185,14 @@ export function PrOverview({
           </div>
         </div>
         <div className="overview-card">
-          <h4>Your state</h4>
+          <h4>Review state</h4>
+          {approvedBy.length > 0 ? (
+            <div className="overview-state-line overview-approvals">
+              <span className="risk-dot risk-dot--ok" /> Approved by {approvedBy.join(", ")}
+            </div>
+          ) : (
+            reviewState && <div className="overview-state-line">No approvals yet</div>
+          )}
           <div className="overview-state-line">
             {viewedCount} of {relevant.length} files reviewed
           </div>

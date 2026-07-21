@@ -138,6 +138,9 @@ export function Header({
                 <span className="stale-badge">{staleCount} changed</span>
               )}
             </span>
+            {(myReviewState ? myReviewState.draft : manifest.draft) && !myReviewState?.is_merged && (
+              <span className="pr-badge pr-badge--draft" title="This PR is a draft">Draft</span>
+            )}
             {myReviewState?.is_merged && (
               <span className="pr-badge pr-badge--merged" title="This PR has been merged">
                 Merged

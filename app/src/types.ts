@@ -40,6 +40,8 @@ export interface ReviewManifest {
   head_ref: string;
   base_sha: string;
   head_sha: string;
+  author: string;
+  draft: boolean;
   summary: string;
   change_groups: ChangeGroup[];
   files: FileDiff[];
@@ -175,6 +177,9 @@ export interface MyReviewState {
   status: ReviewStatus;
   is_re_requested: boolean;
   is_merged: boolean;
+  author: string;
+  draft: boolean;
+  approved_by: string[];
 }
 
 export interface CheckRunInfo {

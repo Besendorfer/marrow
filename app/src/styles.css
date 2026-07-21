@@ -780,6 +780,11 @@ body {
   color: var(--diff-add-text);
   background: var(--diff-add-bg);
 }
+.pr-badge--draft {
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--chip-border);
+}
 
 /* The AI's one-line file description renders only for the selected file —
    on every row it turns the sidebar into a wall of text. */
@@ -4485,6 +4490,17 @@ mark.search-highlight-current {
   white-space: nowrap;
 }
 
+.overview-chip--author {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.overview-chip--draft {
+  background: transparent;
+  color: var(--text-muted);
+}
+
 .overview-noise {
   font-size: 12.5px;
   color: var(--text-secondary);
@@ -4764,6 +4780,14 @@ mark.search-highlight-current {
   opacity: 1;
 }
 
+.queue-row--draft {
+  opacity: 0.65;
+}
+
+.queue-row--draft:hover {
+  opacity: 1;
+}
+
 .queue-avatar {
   flex-shrink: 0;
   width: 30px;
@@ -4776,6 +4800,23 @@ mark.search-highlight-current {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.queue-avatar--sm {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  display: inline-flex;
+}
+
+.queue-draft-chip {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  padding: 0px 7px;
+  white-space: nowrap;
 }
 
 .queue-main {

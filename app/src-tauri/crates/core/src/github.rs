@@ -167,6 +167,44 @@ fn resolve_user_review_status(reviews: &[serde_json::Value], username: &str) -> 
     status
 }
 
+/// Compute the set of reviewers whose latest opinionated review is APPROVED,
+/// mirroring GitHub's "latest review per reviewer" semantics used by
+/// `resolve_user_review_status`: per-author (case-insensitive identity, but
+/// original casing preserved for display), track the latest state among
+/// APPROVED / CHANGES_REQUESTED / DISMISSED (COMMENTED never clears a prior
+/// approval; DISMISSED does). Returns authors with a final APPROVED state, in
+/// first-review order.
+fn resolve_approvers(reviews: &[serde_json::Value]) -> Vec<String> {
+    let mut order: Vec<String> = Vec::new();
+    let mut latest: HashMap<String, (String, String)> = HashMap::new(); // key(lower) -> (display, state)
+
+    for review in reviews {
+        let author = match review.pointer("/author/login").and_then(|l| l.as_str()) {
+            Some(a) => a,
+            None => continue,
+        };
+        let state = match review.get("state").and_then(|s| s.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !matches!(state, "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED") {
+            continue;
+        }
+        let key = author.to_lowercase();
+        if !latest.contains_key(&key) {
+            order.push(key.clone());
+        }
+        latest.insert(key, (author.to_string(), state.to_string()));
+    }
+
+    order
+        .into_iter()
+        .filter_map(|key| latest.get(&key))
+        .filter(|(_, state)| state == "APPROVED")
+        .map(|(display, _)| display.clone())
+        .collect()
+}
+
 /// Parse the viewer's `(review_status, is_re_requested)` from a `pullRequest`
 /// GraphQL node carrying `reviews { nodes { author{login} state } }` and
 /// `reviewRequests { nodes { requestedReviewer { ... on User { login } } } }`.
@@ -528,15 +566,15 @@ impl GithubClient {
         // Search for PRs where user is a requested reviewer, has reviewed, or has commented
         // This covers: pending requests, submitted reviews, and pending reviews with comments
         let requested_query = format!(
-            "is:pr is:open review-requested:{} -is:draft {}",
+            "is:pr is:open review-requested:{} {}",
             username, date_filter
         );
         let reviewed_query = format!(
-            "is:pr is:open reviewed-by:{} -author:{} -is:draft {}",
+            "is:pr is:open reviewed-by:{} -author:{} {}",
             username, username, date_filter
         );
         let commented_query = format!(
-            "is:pr is:open commenter:{} -author:{} -is:draft {}",
+            "is:pr is:open commenter:{} -author:{} {}",
             username, username, date_filter
         );
 
@@ -1398,6 +1436,8 @@ impl GithubClient {
                 repository(owner: "{}", name: "{}") {{
                     pullRequest(number: {}) {{
                         merged
+                        isDraft
+                        author {{ login }}
                         reviewRequests(first: 20) {{
                             nodes {{
                                 requestedReviewer {{
@@ -1435,12 +1475,32 @@ impl GithubClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let author = pr
+            .pointer("/author/login")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let draft = pr
+            .get("isDraft")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let (status, is_re_requested) = resolve_review_state(pr, viewer_login);
+
+        let approved_by = pr
+            .pointer("/reviews/nodes")
+            .and_then(|v| v.as_array())
+            .map(|reviews| resolve_approvers(reviews))
+            .unwrap_or_default();
 
         Ok(MyReviewState {
             status,
             is_re_requested,
             is_merged,
+            author,
+            draft,
+            approved_by,
         })
     }
 }
