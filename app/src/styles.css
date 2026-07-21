@@ -1259,7 +1259,6 @@ tr.cursor-selected td {
 .review-requests {
   margin-top: 24px;
   width: 100%;
-  max-width: 480px;
 }
 
 .review-requests-header {
@@ -1403,8 +1402,6 @@ tr.cursor-selected td {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: 320px;
-  overflow-y: auto;
 }
 
 .review-requests-section {
@@ -2496,20 +2493,19 @@ tr.cursor-selected td {
 .hunk-collapsed td {
   padding: 6px 16px;
   text-align: center;
-  color: var(--text-muted);
+  color: var(--accent);
   font-size: 12px;
   font-family: var(--font-sans);
   cursor: pointer;
-  border-top: 1px dashed var(--border);
-  border-bottom: 1px dashed var(--border);
-  background: var(--bg-secondary);
+  border-top: 1px dashed rgba(88, 166, 255, 0.35);
+  border-bottom: 1px dashed rgba(88, 166, 255, 0.35);
+  background: rgba(88, 166, 255, 0.04);
   user-select: none;
   transition: background 0.15s, color 0.15s;
 }
 
 .hunk-collapsed:hover td {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
+  background: var(--accent-bg);
 }
 
 .hunk-collapsed-chevron {
@@ -4671,9 +4667,11 @@ mark.search-highlight-current {
 /* ─── Review queue home (opener tab) ──────────────────────────────────── */
 .queue-home {
   width: 100%;
-  max-width: 780px;
+  /* The queue is the whole page, not a form — let it breathe like the mockup
+     (rows span the window, with a sane ceiling on very wide displays). */
+  max-width: 1200px;
   margin: 0 auto;
-  padding: var(--space-5) var(--space-4) var(--space-6);
+  padding: var(--space-5) var(--space-5) var(--space-6);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -5097,4 +5095,124 @@ mark.search-highlight-current {
 }
 .diff-content .hljs-strong {
   font-weight: inherit;
+}
+
+/* ─── Mockup-parity polish ────────────────────────────────────────────── */
+.queue-omnibox-hint {
+  flex-shrink: 0;
+}
+
+.queue-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  padding: 3px 11px;
+  white-space: nowrap;
+}
+
+.queue-account-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--diff-add-text);
+}
+
+.queue-time {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  min-width: 26px;
+  text-align: right;
+}
+
+/* Queue section labels become quiet uppercase eyebrows with count pills. */
+.review-requests-section-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.review-requests-group-count {
+  color: var(--text-secondary);
+  background: var(--chip-bg);
+  border-radius: var(--radius-pill);
+  padding: 0 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.risk-dot--ok {
+  background: var(--diff-add-text);
+}
+
+.overview-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 2px 6px;
+  min-width: 0;
+}
+
+.overview-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-right: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overview-title-num {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-right: 8px;
+}
+
+.overview-chip--ci {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+  margin: 6px 0 6px;
+}
+
+.sidebar-progress-fill {
+  height: 100%;
+  background: var(--diff-add-text);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.next-bar-ghost {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.next-bar-ghost:hover {
+  color: var(--text-primary);
 }

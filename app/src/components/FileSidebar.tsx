@@ -622,6 +622,12 @@ export function FileSidebar({
             </button>
           </div>
         </div>
+        <div className="sidebar-progress">
+          <div
+            className="sidebar-progress-fill"
+            style={{ width: totalCount > 0 ? `${(viewedCount / totalCount) * 100}%` : 0 }}
+          />
+        </div>
         <span className="sidebar-file-count">
           {viewedCount}/{totalCount} viewed
           {staleCount > 0 && (

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ReviewRequestItem, ReviewStatus, Settings, CachedPrInfo } from "../types";
+import { timeAgo } from "../utils";
 
 interface ReviewRequestListProps {
   onSelectPr: (prRef: string) => void;
@@ -14,20 +15,6 @@ interface ReviewRequestListProps {
 
 function initials(login: string): string {
   return login.slice(0, 2).toUpperCase();
-}
-
-function formatTimeAgo(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 0) return "today";
-  if (diffDays === 1) return "1 day ago";
-  if (diffDays < 30) return `${diffDays} days ago`;
-  const diffMonths = Math.floor(diffDays / 30);
-  if (diffMonths === 1) return "1 month ago";
-  return `${diffMonths} months ago`;
 }
 
 function cutoffDateStr(): string {
@@ -387,8 +374,7 @@ function ReviewRequestRow({
         </span>
         <span className="queue-meta">
           <span className="queue-why">
-            {item.direct_request ? "Review requested" : "Team review request"} by{" "}
-            {item.author} · {formatTimeAgo(item.created_at)}
+            {item.direct_request ? "Review requested" : "Team review request"} by {item.author}
           </span>
           {statusLabel && (
             <span className={`review-status-badge ${statusClass}`}>{statusLabel}</span>
@@ -400,6 +386,7 @@ function ReviewRequestRow({
           )}
         </span>
       </span>
+      <span className="queue-time">{timeAgo(item.created_at, true)}</span>
       <span className="queue-review-btn">Review</span>
     </button>
   );
@@ -444,10 +431,11 @@ function CachedPrSection({
                   </span>
                   <span className="queue-meta">
                     <span className="queue-why">
-                      Analyzed {formatTimeAgo(pr.cached_at)} · {pr.file_count} file{pr.file_count !== 1 ? "s" : ""} · opens instantly
+                      Analyzed · {pr.file_count} file{pr.file_count !== 1 ? "s" : ""} · opens instantly
                     </span>
                   </span>
                 </span>
+                <span className="queue-time">{timeAgo(pr.cached_at, true)}</span>
                 <span className="queue-review-btn">Open</span>
               </button>
             );

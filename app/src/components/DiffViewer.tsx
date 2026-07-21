@@ -98,6 +98,7 @@ interface CommentingOn {
 interface DiffViewerProps {
   file: FileDiff;
   viewMode: DiffViewMode;
+  onViewModeChange?: (mode: DiffViewMode) => void;
   showHunkSignificance: boolean;
   showAiNotes: boolean;
   /** Keys (highlightKey) of AI highlights dismissed for this PR — hidden from the diff. */
@@ -1486,7 +1487,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -2198,6 +2199,24 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
           <button className="hunk-toggle-all" onClick={collapseAll}>
             Collapse all
           </button>
+        )}
+        {onViewModeChange && (
+          <div className="view-toggle">
+            <button
+              className={viewMode === "split" ? "active" : ""}
+              onClick={() => onViewModeChange("split")}
+              title="Side-by-side diff"
+            >
+              Split
+            </button>
+            <button
+              className={viewMode === "unified" ? "active" : ""}
+              onClick={() => onViewModeChange("unified")}
+              title="Single-column diff"
+            >
+              Unified
+            </button>
+          </div>
         )}
       </div>
       {dismissedNotes.length > 0 && (

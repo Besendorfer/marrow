@@ -1,14 +1,32 @@
 import { SummaryParagraphs } from "./SummaryParagraphs";
-import type { ReviewManifest, FileDiff, ChangeGroup } from "../types";
+import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus } from "../types";
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
+  checksStatus?: PrChecksStatus | null;
   viewedCount: number;
   unresolvedThreads: number | null;
   hasSubmittedReview: boolean;
   startTarget: FileDiff | null;
   onStartReview: () => void;
   onSelectFile: (f: FileDiff) => void;
+}
+
+function CiChip({ checks }: { checks: PrChecksStatus }) {
+  // GitHub conclusions arrive uppercase ("FAILURE"); only overall_state is
+  // normalized to lowercase in core.
+  const failing = checks.check_runs.filter((c) => c.conclusion === "FAILURE").length;
+  const { dot, label } =
+    checks.overall_state === "success"
+      ? { dot: "risk-dot--ok", label: "CI passing" }
+      : failing > 0
+        ? { dot: "risk-dot--critical", label: `${failing} CI ${failing === 1 ? "check" : "checks"} failing` }
+        : { dot: "risk-dot--medium", label: "CI running" };
+  return (
+    <span className="overview-chip overview-chip--ci">
+      <span className={`risk-dot ${dot}`} /> {label}
+    </span>
+  );
 }
 
 function fileName(path: string): string {
@@ -59,6 +77,7 @@ function GroupRow({
 
 export function PrOverview({
   manifest,
+  checksStatus,
   viewedCount,
   unresolvedThreads,
   hasSubmittedReview,
@@ -81,6 +100,17 @@ export function PrOverview({
   return (
     <div className="pr-overview">
       <div className="overview-col">
+        <div className="overview-meta">
+          <span className="overview-title">
+            <span className="overview-title-num">#{manifest.pr_number}</span>
+            {manifest.pr_title}
+          </span>
+          {checksStatus && <CiChip checks={checksStatus} />}
+          <span className="overview-chip">
+            {relevant.length} relevant of {manifest.files.length}{" "}
+            {manifest.files.length === 1 ? "file" : "files"}
+          </span>
+        </div>
         {manifest.summary && (
           <div className="overview-card">
             <h4>AI summary</h4>
