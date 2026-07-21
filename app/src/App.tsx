@@ -11,29 +11,26 @@ import { ActivityWidget } from "./components/ActivityWidget";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
-import { SummaryParagraphs } from "./components/SummaryParagraphs";
+import { PrOverview } from "./components/PrOverview";
+import { NextFileBar } from "./components/NextFileBar";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
 import { ReviewPicker } from "./components/ReviewPicker";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
+import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
+import { WelcomeSetup } from "./components/WelcomeSetup";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, ChatState, ChatMessage, ChatStreamEvent } from "./types";
-import { Channel } from "@tauri-apps/api/core";
-import { ChatPanel } from "./components/ChatPanel";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
 function isOpenerTab(tab: Tab): boolean {
   return !tab.manifest && !tab.loading && !tab.error;
-}
-
-/** A fresh, closed chat panel for a new tab. */
-function emptyChatState(): ChatState {
-  return { messages: [], status: "idle", streamingText: "", streamingStatus: null, includeWholePr: false, open: false };
 }
 
 function App() {
@@ -47,8 +44,14 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  // Cached PR whose head moved — re-analyzing costs an AI pass, so confirm.
+  const [staleConfirm, setStaleConfirm] = useState<{ prRef: string; title: string } | null>(null);
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [queueFilter, setQueueFilter] = useState("");
+  const [viewerLogin, setViewerLogin] = useState<string | null>(null);
   const searchRef = useRef<SearchBarHandle>(null);
   const diffViewerRef = useRef<DiffViewerHandle>(null);
   // Visible file order from the sidebar, used by the [ / ] navigation shortcuts.
@@ -170,6 +173,65 @@ function App() {
     [searchMatches, searchCurrentIndex, selectedFilePath]
   );
 
+  // Opening from the "Recently analyzed" cache: if the PR's head moved, the
+  // backend would silently run a full AI re-analysis — surface that first.
+  async function handleOpenCachedPr(prRef: string, info: CachedPrInfo) {
+    try {
+      const status = await invoke<PrUpdateStatus>("check_pr_updates", {
+        prUrl: info.pr_url,
+        currentHeadSha: info.head_sha,
+        currentCommentCount: 0,
+      });
+      if (status.head_sha_changed) {
+        setStaleConfirm({ prRef, title: info.pr_title });
+        return;
+      }
+    } catch {
+      // Status check failing (offline, rate limit) shouldn't block opening.
+    }
+    handleFetchStart(prRef);
+  }
+
+  // ── Guided review path ──────────────────────────────────────────────────
+  // The review order is the sidebar's visible order (falls back to relevant
+  // files in manifest order before the sidebar reports in). The sidebar is
+  // unmounted while the overview shows, so the ref can hold another tab's
+  // paths — anything not in this manifest is dropped before use.
+  function guidedOrder(): string[] {
+    if (!activeTab?.manifest) return [];
+    const inManifest = new Set(activeTab.manifest.files.map((f) => f.path));
+    const visible = visibleOrderRef.current.filter((p) => inManifest.has(p));
+    return visible.length
+      ? visible
+      : activeTab.manifest.files
+          .filter((f) => f.classification !== "NOT_RELEVANT")
+          .map((f) => f.path);
+  }
+
+  // First unviewed file after `fromIdx` in review order (wrapping), treating
+  // `alsoViewed` as already reviewed — used when the current file was just
+  // marked but state hasn't committed yet.
+  function nextUnviewed(order: string[], fromIdx: number, alsoViewed?: string): FileDiff | null {
+    if (!activeTab?.manifest || order.length === 0) return null;
+    const viewed = activeTab.viewedFiles;
+    for (let step = 1; step <= order.length; step++) {
+      const p = order[(fromIdx + step + order.length) % order.length];
+      if (!viewed.has(p) && p !== alsoViewed) {
+        return activeTab.manifest.files.find((f) => f.path === p) ?? null;
+      }
+    }
+    return null;
+  }
+
+  function markReviewedAndAdvance() {
+    if (!activeTab?.selectedFile) return;
+    const path = activeTab.selectedFile.path;
+    const order = guidedOrder();
+    if (!activeTab.viewedFiles.has(path)) toggleViewed(path);
+    const next = nextUnviewed(order, order.indexOf(path), path);
+    if (next) setSelectedFile(next);
+  }
+
   // ── Keyboard shortcuts (ported from the CLI/TUI; see useKeyboardShortcuts) ──
   function selectAdjacentFile(delta: 1 | -1) {
     if (!activeTab?.manifest || !activeTab.selectedFile) return;
@@ -217,7 +279,10 @@ function App() {
       onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
-      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); },
+      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); setPaletteOpen(false); },
+      // Not during first-run setup — the palette would open invisibly under
+      // the welcome card and pop up when setup closes.
+      onTogglePalette: () => { if (!welcomeOpen) setPaletteOpen((v) => !v); },
       onNextTab: () => selectAdjacentTab(1),
       onPrevTab: () => selectAdjacentTab(-1),
       onCloseTab: () => { if (activeTabId) closeTab(activeTabId); },
@@ -242,11 +307,10 @@ function App() {
       onReply: () => diffViewerRef.current?.replyAtCursor(),
       onResolve: () => diffViewerRef.current?.resolveAtCursor(),
       onReviewPicker: () => { if (activeTab?.manifest) setReviewPickerOpen(true); },
-      onToggleChat: () => { if (activeTab?.manifest) toggleChatOpen(); },
     },
     {
       enabled: !!activeTab?.manifest,
-      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen,
+      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen,
     },
   );
 
@@ -256,11 +320,12 @@ function App() {
       id,
       manifest,
       loading: null,
-      selectedFile: manifest.files.length > 0 ? manifest.files[0] : null,
+      // Land on the overview (summary + change groups), not a file — the
+      // "Start review" CTA and sidebar are the ways in.
+      selectedFile: null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
-      chat: emptyChatState(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
       sidebarView: hasGroups ? "groups" : "category",
@@ -285,7 +350,6 @@ function App() {
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
-      chat: emptyChatState(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
       sidebarView: "category",
@@ -375,7 +439,6 @@ function App() {
             for (const tab of restored) {
               loadPersistedViewedState(tab);
               loadDismissedHighlights(tab);
-              loadChatHistory(tab);
               fetchMyReviewState(tab.id, tab.manifest!.pr_url);
               fetchChecksStatus(tab.id, tab.manifest!.pr_url);
             }
@@ -399,6 +462,15 @@ function App() {
       // Tell the backend it's safe to skip cold-start buffering — from now on
       // hot-open emits go straight to the listener above.
       invoke("signal_frontend_ready").catch(() => {});
+
+      // First run (no token anywhere, never completed/skipped setup) shows the
+      // two-step welcome instead of a blank queue + hidden settings.
+      invoke<boolean>("needs_setup")
+        .then((needed) => { if (needed) setWelcomeOpen(true); })
+        .catch(() => {});
+      invoke<string>("get_viewer_login")
+        .then(setViewerLogin)
+        .catch(() => {});
     }
 
     initSession();
@@ -456,7 +528,6 @@ function App() {
     setError(null);
     loadPersistedViewedState(tab);
     loadDismissedHighlights(tab);
-    loadChatHistory(tab);
     fetchMyReviewState(tabId, data.pr_url);
     fetchChecksStatus(tabId, data.pr_url);
     if (!isActive) {
@@ -476,7 +547,6 @@ function App() {
     setError(null);
     loadPersistedViewedState(tab);
     loadDismissedHighlights(tab);
-    loadChatHistory(tab);
     fetchMyReviewState(tab.id, data.pr_url);
     fetchChecksStatus(tab.id, data.pr_url);
   }
@@ -558,19 +628,6 @@ function App() {
     }
   }
 
-  async function loadChatHistory(tab: Tab) {
-    if (!tab.manifest) return;
-    try {
-      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
-      const saved = await invoke<{ messages: ChatMessage[] } | null>("load_chat_history", { owner, repo, prNumber: number });
-      if (saved && saved.messages.length > 0) {
-        updateTab(tab.id, (t) => ({ ...t, chat: { ...t.chat, messages: saved.messages } }));
-      }
-    } catch {
-      // Non-critical: start with an empty conversation on failure
-    }
-  }
-
   function toggleHighlightDismissed(key: string) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab || !tab.manifest) return;
@@ -580,135 +637,6 @@ function App() {
     const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
     invoke("save_dismissed_highlights", { owner, repo, prNumber: number, state: { keys: [...next] } })
       .catch(() => addToast("error", "Couldn't save — this dismissal may not persist"));
-  }
-
-  // ---- Conversational diff Q&A (chat) ----
-
-  // Per-tab flag: when true, in-flight stream events for that tab are ignored
-  // (the user pressed Stop, cleared the chat, or sent a fresh message).
-  const chatCancelRef = useRef<Record<string, boolean>>({});
-  // Per-tab id of the in-flight chat request, so Stop can abort it server-side.
-  const chatRequestIdRef = useRef<Record<string, string>>({});
-
-  /** The diff/content context for the chat, scoped to the selected file or the
-   * whole PR (relevant files only). Whole-PR omits full contents to save budget.
-   * AI highlights (the inline notes) ride along so questions about "the warning
-   * on L287-318" resolve against them. */
-  function buildChatFiles(tab: Tab): Array<{ path: string; unified_diff: string; head_content?: string; highlights: FileDiff["highlights"] }> {
-    const manifest = tab.manifest!;
-    if (tab.chat.includeWholePr) {
-      const relevant = manifest.files.filter((f) => f.classification === "RELEVANT");
-      const files = relevant.length > 0 ? relevant : manifest.files;
-      return files.map((f) => ({ path: f.path, unified_diff: f.unified_diff, highlights: f.highlights }));
-    }
-    const f = tab.selectedFile;
-    return f ? [{ path: f.path, unified_diff: f.unified_diff, head_content: f.head_content, highlights: f.highlights }] : [];
-  }
-
-  /** Append the assistant's answer, return the chat to idle, and persist. */
-  function finalizeChat(tabId: string, prUrl: string, content: string) {
-    const tab = tabsRef.current.find((t) => t.id === tabId);
-    const messages: ChatMessage[] = [...(tab?.chat.messages ?? []), { role: "assistant", content }];
-    updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, messages, status: "idle", streamingText: "", streamingStatus: null } }));
-    try {
-      const { owner, repo, number } = parsePrUrl(prUrl);
-      invoke("save_chat_history", { owner, repo, prNumber: number, state: { messages } }).catch(() => {});
-    } catch {
-      // Non-critical: an unparseable URL just means this turn isn't persisted.
-    }
-  }
-
-  function handleChatSend(message: string) {
-    const tab = tabsRef.current.find((t) => t.id === activeTabId);
-    if (!tab || !tab.manifest) return;
-    const tabId = tab.id;
-    const manifest = tab.manifest;
-    const files = buildChatFiles(tab);
-    if (files.length === 0) {
-      addToast("error", "Select a file or enable “Include whole PR” to ask a question");
-      return;
-    }
-    const userMsg: ChatMessage = {
-      role: "user",
-      content: message,
-      filePath: tab.chat.includeWholePr ? undefined : tab.selectedFile?.path,
-    };
-    const history = tab.chat.messages.map((m) => ({ role: m.role, content: m.content }));
-    const requestId = crypto.randomUUID();
-
-    chatCancelRef.current[tabId] = false;
-    chatRequestIdRef.current[tabId] = requestId;
-    updateTab(tabId, (t) => ({
-      ...t,
-      chat: { ...t.chat, messages: [...t.chat.messages, userMsg], status: "streaming", streamingText: "", streamingStatus: null, error: undefined },
-    }));
-
-    const channel = new Channel<ChatStreamEvent>();
-    channel.onmessage = (ev) => {
-      if (chatCancelRef.current[tabId]) return;
-      if (ev.type === "delta") {
-        // Any text clears a pending "Working…" status.
-        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, streamingText: t.chat.streamingText + ev.text, streamingStatus: null } }));
-      } else if (ev.type === "status") {
-        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, streamingStatus: ev.label } }));
-      } else if (ev.type === "done") {
-        finalizeChat(tabId, manifest.pr_url, ev.content);
-      } else if (ev.type === "error") {
-        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "", streamingStatus: null, error: ev.message } }));
-      }
-    };
-
-    invoke("chat_send", {
-      channel,
-      request: { request_id: requestId, context: { pr_title: manifest.pr_title, summary: manifest.summary, files }, history, message },
-    }).catch((err) => {
-      if (chatCancelRef.current[tabId]) return;
-      updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "", error: String(err) } }));
-    });
-  }
-
-  /** Abort the in-flight stream (server-side too) and keep whatever streamed so far. */
-  function handleChatStop() {
-    const tab = tabsRef.current.find((t) => t.id === activeTabId);
-    if (!tab || !tab.manifest) return;
-    chatCancelRef.current[tab.id] = true;
-    const requestId = chatRequestIdRef.current[tab.id];
-    if (requestId) invoke("chat_cancel", { requestId }).catch(() => {});
-    const partial = tab.chat.streamingText.trim();
-    if (partial) {
-      finalizeChat(tab.id, tab.manifest.pr_url, partial);
-    } else {
-      updateTab(tab.id, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "" } }));
-    }
-  }
-
-  function handleChatClear() {
-    const tab = tabsRef.current.find((t) => t.id === activeTabId);
-    if (!tab || !tab.manifest) return;
-    chatCancelRef.current[tab.id] = true;
-    if (tab.chat.status === "streaming") {
-      const requestId = chatRequestIdRef.current[tab.id];
-      if (requestId) invoke("chat_cancel", { requestId }).catch(() => {});
-    }
-    updateTab(tab.id, (t) => ({ ...t, chat: { ...t.chat, messages: [], status: "idle", streamingText: "", error: undefined } }));
-    try {
-      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
-      invoke("save_chat_history", { owner, repo, prNumber: number, state: { messages: [] } }).catch(() => {});
-    } catch {
-      // Non-critical.
-    }
-  }
-
-  function setChatOpen(open: boolean) {
-    updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, open } }));
-  }
-
-  function toggleChatOpen() {
-    updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, open: !t.chat.open } }));
-  }
-
-  function handleChatToggleWholePr(value: boolean) {
-    updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, includeWholePr: value } }));
   }
 
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -751,6 +679,7 @@ function App() {
     updateTab(loadingTabId, (t) => ({
       ...t,
       error: null,
+      lastPrRef: prRef,
       loading: { prRef, prTitle: null, progress: null, fileCounts: {} },
     }));
 
@@ -888,10 +817,14 @@ function App() {
         isRefreshing: false,
         viewedFiles: preservedViewed,
         staleViewedFiles: newStale,
+        // No selection (the overview) stays on the overview after a refresh;
+        // a selected file follows to the refreshed manifest if it still exists.
         selectedFile:
-          tab.selectedFile && newPaths.has(tab.selectedFile.path)
-            ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? newManifest.files[0] ?? null
-            : newManifest.files[0] ?? null,
+          tab.selectedFile == null
+            ? null
+            : newPaths.has(tab.selectedFile.path)
+              ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? null
+              : newManifest.files[0] ?? null,
         commentThreads: { status: "idle" },
       };
 
@@ -1266,6 +1199,9 @@ function App() {
       updateTab(activeTabId, (t) => ({
         ...t,
         myReviewState: {
+          author: t.myReviewState?.author ?? "",
+          draft: t.myReviewState?.draft ?? false,
+          approved_by: t.myReviewState?.approved_by ?? [],
           status: statusMap[event] as MyReviewState["status"],
           is_re_requested: false,
           is_merged: t.myReviewState?.is_merged ?? false,
@@ -1422,6 +1358,9 @@ function App() {
                 : {
                     ...t,
                     myReviewState: {
+                      author: t.myReviewState?.author ?? "",
+                      draft: t.myReviewState?.draft ?? false,
+                      approved_by: t.myReviewState?.approved_by ?? [],
                       status: t.myReviewState?.status ?? "pending",
                       is_re_requested: t.myReviewState?.is_re_requested ?? false,
                       is_merged: true,
@@ -1574,8 +1513,49 @@ function App() {
     }
   }
 
+  // Command palette registry — searchable home for every action, with the
+  // keyboard hint teaching the direct shortcut. Review commands only appear
+  // when a PR is loaded.
+  const paletteCommands: PaletteCommand[] = [];
+  if (activeTab?.manifest) {
+    const m = activeTab.manifest;
+    paletteCommands.push(
+      { id: "overview", section: "Review", title: "Back to overview", run: () => { if (activeTabId) updateTab(activeTabId, (t) => ({ ...t, selectedFile: null })); } },
+      { id: "next-file", section: "Review", title: "Next file", keys: "]", run: () => selectAdjacentFile(1) },
+      { id: "prev-file", section: "Review", title: "Previous file", keys: "[", run: () => selectAdjacentFile(-1) },
+      { id: "mark-viewed", section: "Review", title: "Mark file reviewed", keys: "V", run: () => { const p = activeTab.selectedFile?.path; if (p) toggleViewed(p); } },
+      { id: "mark-next", section: "Review", title: "Mark reviewed and go to next", run: markReviewedAndAdvance },
+      { id: "finish", section: "Review", title: "Finish review…", keys: "R", run: () => setReviewPickerOpen(true) },
+      { id: "search", section: "Review", title: "Search in diffs", keys: "/", run: () => searchRef.current?.open("local") },
+      { id: "threads", section: "Review", title: "Toggle threads view", keys: "T", run: toggleThreadsView },
+      { id: "refresh", section: "Review", title: "Refresh PR", keys: "⌃R", run: handleRefreshPr },
+      { id: "github", section: "Review", title: "Open PR on GitHub", run: () => { openUrl(m.pr_url); } },
+      { id: "view-split", section: "View", title: "Split diff view", run: () => setViewMode("split") },
+      { id: "view-unified", section: "View", title: "Unified diff view", run: () => setViewMode("unified") },
+      { id: "toggle-sig", section: "View", title: showHunkSignificance ? "Hide hunk significance" : "Show hunk significance", run: () => setShowHunkSignificance((v) => !v) },
+      { id: "toggle-notes", section: "View", title: showAiNotes ? "Hide AI notes" : "Show AI notes", run: () => setShowAiNotes((v) => !v) },
+    );
+  }
+  paletteCommands.push(
+    { id: "new-tab", section: "App", title: "New review tab", keys: "⌃T", run: handleNewReview },
+    { id: "settings", section: "App", title: "Settings…", run: () => setSettingsOpen(true) },
+    { id: "updates", section: "App", title: "Check for updates", run: () => checkForUpdates(false) },
+    { id: "help", section: "App", title: "Keyboard shortcuts", keys: "?", run: () => setHelpOpen(true) },
+  );
+
   const overlays = (
     <>
+      {welcomeOpen && (
+        <WelcomeSetup
+          onDone={() => setWelcomeOpen(false)}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      )}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={paletteCommands}
+      />
       <UpdateBanner
         status={updateStatus}
         onDownload={handleDownloadUpdate}
@@ -1631,8 +1611,6 @@ function App() {
         onSelectTab={handleSelectTab}
         onCloseTab={closeTab}
         onNewReview={handleNewReview}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
         viewedCount={activeTab?.viewedFiles.size ?? 0}
         staleCount={activeTab?.staleViewedFiles.size ?? 0}
         onSettingsClick={() => setSettingsOpen(true)}
@@ -1648,8 +1626,7 @@ function App() {
         myReviewState={activeTab?.myReviewState}
         checksBlocking={showChecksModal}
         onCheckForUpdates={() => checkForUpdates(false)}
-        chatOpen={activeTab?.chat.open ?? false}
-        onToggleChat={activeTab?.manifest ? toggleChatOpen : undefined}
+        onOpenPalette={() => setPaletteOpen(true)}
       />
       <SettingsModal
         open={settingsOpen}
@@ -1661,8 +1638,8 @@ function App() {
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleFileDrop}
         >
-          <div className="empty-message">
-            {activeTab.loading ? (
+          {activeTab.loading ? (
+            <div className="empty-message">
               <LoadingView
                 prRef={activeTab.loading.prRef}
                 prTitle={activeTab.loading.prTitle}
@@ -1670,31 +1647,66 @@ function App() {
                 fileCounts={activeTab.loading.fileCounts}
                 onCancel={() => handleFetchCancel(activeTab.id)}
               />
-            ) : (
-              <>
-                {activeTab.error && (
-                  <div className="opener-error" role="alert">
-                    <strong>Failed to load PR</strong>
-                    <pre>{activeTab.error}</pre>
+            </div>
+          ) : (
+            <div className="queue-home">
+              <PrOpener
+                onFetchStart={(ref) => handleFetchStart(ref, activeTab.id)}
+                onFilterChange={setQueueFilter}
+                onSettingsClick={() => setSettingsOpen(true)}
+                onCheckForUpdates={() => checkForUpdates(false)}
+                viewerLogin={viewerLogin}
+              />
+              {activeTab.error && (
+                <div className="opener-error" role="alert">
+                  <strong>
+                    Couldn't load {activeTab.lastPrRef ?? "the PR"}
+                  </strong>
+                  <pre>{activeTab.error}</pre>
+                  {activeTab.lastPrRef && (
+                    <button
+                      className="opener-retry"
+                      onClick={() => handleFetchStart(activeTab.lastPrRef!, activeTab.id)}
+                    >
+                      Try again
+                    </button>
+                  )}
+                </div>
+              )}
+              <ReviewRequestList
+                onSelectPr={(ref) => handleFetchStart(ref, activeTab.id)}
+                onSelectCachedPr={handleOpenCachedPr}
+                openPrUrls={openPrUrls}
+                filter={queueFilter}
+              />
+              {staleConfirm && (
+                <div className="settings-overlay" onMouseDown={() => setStaleConfirm(null)}>
+                  <div className="welcome-card" onMouseDown={(e) => e.stopPropagation()}>
+                    <h3>This PR has new commits</h3>
+                    <p>
+                      "{staleConfirm.title}" changed since it was analyzed.
+                      Opening it now will run the AI analysis again on the
+                      latest version.
+                    </p>
+                    <div className="welcome-actions">
+                      <button
+                        className="welcome-primary"
+                        onClick={() => { const ref = staleConfirm.prRef; setStaleConfirm(null); handleFetchStart(ref, activeTab.id); }}
+                      >
+                        Analyze updated PR
+                      </button>
+                      <button className="welcome-skip" onClick={() => setStaleConfirm(null)}>
+                        Cancel
+                      </button>
+                    </div>
                   </div>
-                )}
-                <h1>Marrow</h1>
-                <p>
-                  Drop a manifest JSON file here, or enter a PR URL below to start
-                  a review.
-                </p>
-                <PrOpener
-                  onFetchStart={(ref) => handleFetchStart(ref, activeTab.id)}
-                  onSettingsClick={() => setSettingsOpen(true)}
-                  onCheckForUpdates={() => checkForUpdates(false)}
-                />
-                <ReviewRequestList
-                  onSelectPr={(ref) => handleFetchStart(ref, activeTab.id)}
-                  openPrUrls={openPrUrls}
-                />
-              </>
-            )}
-          </div>
+                </div>
+              )}
+              <div className="queue-drop-hint">
+                Tip: drop a manifest JSON file anywhere here to load a review.
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="review-content">
@@ -1714,6 +1726,20 @@ function App() {
           onOpenChange={setSearchOpen}
         />
         <div className="main-content">
+          {activeTab.sidebarView !== "comments" && !activeTab.selectedFile ? (
+            <PrOverview
+              manifest={activeTab.manifest}
+              checksStatus={activeChecks ?? null}
+              reviewState={activeTab.myReviewState ?? null}
+              viewedCount={activeTab.viewedFiles.size}
+              unresolvedThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
+              hasSubmittedReview={activeTab.myReviewState != null && activeTab.myReviewState.status !== "pending" && activeTab.myReviewState.status !== "dismissed" && !activeTab.myReviewState.is_re_requested}
+              startTarget={nextUnviewed(guidedOrder(), -1)}
+              onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
+              onSelectFile={setSelectedFile}
+            />
+          ) : (
+          <>
           <FileSidebar
             files={activeTab.manifest.files}
             changeGroups={activeTab.manifest.change_groups ?? []}
@@ -1731,6 +1757,7 @@ function App() {
             selectedCommentFile={activeTab.selectedCommentFile}
             onSelectCommentFile={handleSelectCommentFile}
             onVisibleFilesChange={handleVisibleFilesChange}
+            onShowOverview={() => { if (activeTabId) updateTab(activeTabId, (t) => ({ ...t, selectedFile: null })); }}
           />
           <div className="diff-pane">
             {activeTab.sidebarView === "comments" ? (
@@ -1754,26 +1781,35 @@ function App() {
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
-            ) : activeTab.manifest.summary ? (
-              <div className="pr-summary">
-                <h3>PR Summary</h3>
-                <SummaryParagraphs text={activeTab.manifest.summary} />
-              </div>
+              (() => {
+                const order = guidedOrder();
+                const idx = order.indexOf(activeTab.selectedFile.path);
+                const allReviewed = order.length > 0 && order.every((p) => activeTab.viewedFiles.has(p));
+                // Exclude the open file so "Next" never points at itself when
+                // it's the last unviewed one.
+                const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
+                return (
+                  <>
+                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+                    <NextFileBar
+                      index={idx >= 0 ? idx : 0}
+                      total={order.length}
+                      isViewed={activeTab.viewedFiles.has(activeTab.selectedFile.path)}
+                      nextName={next ? next.path.split("/").pop() ?? next.path : null}
+                      allReviewed={allReviewed}
+                      onMarkReviewed={markReviewedAndAdvance}
+                      onNext={() => { if (next) setSelectedFile(next); }}
+                      onComment={() => diffViewerRef.current?.commentAtCursor()}
+                      onFinishReview={() => setReviewPickerOpen(true)}
+                    />
+                  </>
+                );
+              })()
             ) : (
               <div className="no-file-selected">Select a file to review</div>
             )}
           </div>
-          {activeTab.chat.open && (
-            <ChatPanel
-              chat={activeTab.chat}
-              selectedFilePath={activeTab.selectedFile?.path ?? null}
-              onSend={handleChatSend}
-              onStop={handleChatStop}
-              onClose={() => setChatOpen(false)}
-              onClear={handleChatClear}
-              onToggleWholePr={handleChatToggleWholePr}
-            />
+          </>
           )}
         </div>
         </div>

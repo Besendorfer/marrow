@@ -40,6 +40,8 @@ export interface ReviewManifest {
   head_ref: string;
   base_sha: string;
   head_sha: string;
+  author: string;
+  draft: boolean;
   summary: string;
   change_groups: ChangeGroup[];
   files: FileDiff[];
@@ -149,6 +151,8 @@ export interface Tab {
   unread?: boolean;
   /** error message from a failed fetch in this (still pending) tab; null otherwise */
   error?: string | null;
+  /** last PR ref this tab tried to fetch — lets a failed fetch offer Retry */
+  lastPrRef?: string | null;
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
   staleViewedFiles: Set<string>;
@@ -199,6 +203,7 @@ export interface Settings {
   activity_per_watch_cap: number;
   activity_mini_player: boolean;
   show_approved_prs: boolean;
+  setup_done: boolean;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
@@ -207,6 +212,9 @@ export interface MyReviewState {
   status: ReviewStatus;
   is_re_requested: boolean;
   is_merged: boolean;
+  author: string;
+  draft: boolean;
+  approved_by: string[];
 }
 
 export interface CheckRunInfo {

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { SummaryParagraphs } from "./SummaryParagraphs";
-import type { ReviewManifest, DiffViewMode, Tab, CommentThreadsState, MyReviewState } from "../types";
+import type { ReviewManifest, Tab, CommentThreadsState, MyReviewState } from "../types";
 
 function useClickOutside(
   ref: React.RefObject<HTMLElement | null>,
@@ -38,8 +38,6 @@ interface HeaderProps {
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onNewReview: () => void;
-  viewMode: DiffViewMode;
-  onViewModeChange: (mode: DiffViewMode) => void;
   viewedCount: number;
   staleCount: number;
   onSettingsClick: () => void;
@@ -55,8 +53,7 @@ interface HeaderProps {
   myReviewState?: MyReviewState;
   checksBlocking?: boolean;
   onCheckForUpdates: () => void;
-  chatOpen?: boolean;
-  onToggleChat?: () => void;
+  onOpenPalette: () => void;
 }
 
 export function Header({
@@ -65,8 +62,6 @@ export function Header({
   onSelectTab,
   onCloseTab,
   onNewReview,
-  viewMode,
-  onViewModeChange,
   viewedCount,
   staleCount,
   onSettingsClick,
@@ -82,8 +77,7 @@ export function Header({
   myReviewState,
   checksBlocking,
   onCheckForUpdates,
-  chatOpen,
-  onToggleChat,
+  onOpenPalette,
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
@@ -115,7 +109,7 @@ export function Header({
               ) : tab.loading ? (
                 <span className="tab-title">{tab.loading.prTitle ?? tab.loading.prRef}</span>
               ) : (
-                <span className="tab-title">New Review</span>
+                <span className="tab-title">New review</span>
               )}
             </span>
             <button
@@ -144,6 +138,9 @@ export function Header({
                 <span className="stale-badge">{staleCount} changed</span>
               )}
             </span>
+            {(myReviewState ? myReviewState.draft : manifest.draft) && !myReviewState?.is_merged && (
+              <span className="pr-badge pr-badge--draft" title="This PR is a draft">Draft</span>
+            )}
             {myReviewState?.is_merged && (
               <span className="pr-badge pr-badge--merged" title="This PR has been merged">
                 Merged
@@ -177,24 +174,14 @@ export function Header({
                 onClick={() => setSummaryExpanded((p) => !p)}
                 title={summaryExpanded ? "Hide summary" : "Show summary"}
               >
-                {summaryExpanded ? "Hide Summary" : "Show Summary"}
+                {summaryExpanded ? "Hide summary" : "Show summary"}
               </button>
             )}
           </div>
           <div className="header-right">
-            {onToggleChat && (
-              <button
-                className={`chat-toggle${chatOpen ? " active" : ""}`}
-                onClick={onToggleChat}
-                title="Ask the AI about this change (⌘/Ctrl+J)"
-              >
-                Ask AI
-              </button>
-            )}
             {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} myReviewState={myReviewState} checksBlocking={checksBlocking} />}
             <ToolbarMenu
-              viewMode={viewMode}
-              onViewModeChange={onViewModeChange}
+              onOpenPalette={onOpenPalette}
               showHunkSignificance={showHunkSignificance}
               onToggleHunkSignificance={onToggleHunkSignificance}
               showAiNotes={showAiNotes}
@@ -216,8 +203,7 @@ export function Header({
 }
 
 function ToolbarMenu({
-  viewMode,
-  onViewModeChange,
+  onOpenPalette,
   showHunkSignificance,
   onToggleHunkSignificance,
   showAiNotes,
@@ -226,8 +212,7 @@ function ToolbarMenu({
   onSettingsClick,
   onCheckForUpdates,
 }: {
-  viewMode: DiffViewMode;
-  onViewModeChange: (mode: DiffViewMode) => void;
+  onOpenPalette: () => void;
   showHunkSignificance: boolean;
   onToggleHunkSignificance: () => void;
   showAiNotes: boolean;
@@ -252,24 +237,6 @@ function ToolbarMenu({
       </button>
       {isOpen && (
         <div className="toolbar-menu-dropdown">
-          <div className="toolbar-menu-section">
-            <span className="toolbar-menu-label">View Mode</span>
-            <div className="view-toggle">
-              <button
-                className={viewMode === "split" ? "active" : ""}
-                onClick={() => onViewModeChange("split")}
-              >
-                Split
-              </button>
-              <button
-                className={viewMode === "unified" ? "active" : ""}
-                onClick={() => onViewModeChange("unified")}
-              >
-                Unified
-              </button>
-            </div>
-          </div>
-          <div className="toolbar-menu-divider" />
           <button
             className="toolbar-menu-item"
             onClick={onToggleHunkSignificance}
@@ -299,6 +266,17 @@ function ToolbarMenu({
           <button
             className="toolbar-menu-item"
             onClick={() => {
+              onOpenPalette();
+              setIsOpen(false);
+            }}
+          >
+            <span className="toolbar-menu-check" />
+            Command palette
+            <span className="toolbar-menu-hint">⌘K</span>
+          </button>
+          <button
+            className="toolbar-menu-item"
+            onClick={() => {
               onSettingsClick();
               setIsOpen(false);
             }}
@@ -314,7 +292,7 @@ function ToolbarMenu({
             }}
           >
             <span className="toolbar-menu-check" />
-            Check for Updates
+            Check for updates
           </button>
         </div>
       )}
@@ -420,7 +398,7 @@ function ReviewSubmitButton({
         disabled={isDisabled}
         title={disabledTooltip}
       >
-        Finish Review
+        Finish review
         {unresolvedCount > 0 && !isDisabled && (
           <span className="review-submit-badge">{unresolvedCount}</span>
         )}
@@ -468,7 +446,7 @@ function ReviewSubmitButton({
                   onClick={() => handleSubmit("REQUEST_CHANGES")}
                   title="Request changes on this pull request"
                 >
-                  Request Changes
+                  Request changes
                 </button>
               </>
             )}

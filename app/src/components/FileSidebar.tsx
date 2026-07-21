@@ -20,6 +20,7 @@ interface FileSidebarProps {
   onSelectCommentFile: (path: string) => void;
   /** Emits the visible file paths in manifest order, for keyboard file navigation. */
   onVisibleFilesChange?: (paths: string[]) => void;
+  onShowOverview?: () => void;
 }
 
 function getMaxHunkSignificance(file: FileDiff): string {
@@ -215,10 +216,16 @@ function FileItem({
           <span className="stale-indicator" title="Changed since you last reviewed">&#x26A0;</span>
         )}
         <span
-          className={`diff-type-badge ${getDiffTypeClass(file.diff_type)}`}
-        >
-          {getDiffTypeIcon(file.diff_type)}
-        </span>
+          className={`risk-dot risk-dot--${file.risk_level}`}
+          title={`${file.risk_level} risk`}
+        />
+        {file.diff_type !== "modified" && (
+          <span
+            className={`diff-type-badge ${getDiffTypeClass(file.diff_type)}`}
+          >
+            {getDiffTypeIcon(file.diff_type)}
+          </span>
+        )}
         <span className="file-name">{getFileName(file.path)}</span>
         <span className="line-stats">
           <span className="line-stat-add">+{file.additions}</span>
@@ -406,6 +413,7 @@ export function FileSidebar({
   selectedCommentFile,
   onSelectCommentFile,
   onVisibleFilesChange,
+  onShowOverview,
 }: FileSidebarProps) {
   const hasGroups = changeGroups.length > 0;
   const prevHasGroups = useRef(hasGroups);
@@ -569,6 +577,15 @@ export function FileSidebar({
 
   return (
     <aside className="file-sidebar">
+      {onShowOverview && view !== "comments" && (
+        <button
+          className={`sidebar-overview-link${selectedFile === null ? " active" : ""}`}
+          onClick={onShowOverview}
+          title="Back to the PR summary and change groups"
+        >
+          ← Overview
+        </button>
+      )}
       <div className="sidebar-header">
         <div className="sidebar-header-top">
           <span className="sidebar-title">Files</span>
@@ -605,6 +622,12 @@ export function FileSidebar({
             </button>
           </div>
         </div>
+        <div className="sidebar-progress">
+          <div
+            className="sidebar-progress-fill"
+            style={{ width: totalCount > 0 ? `${(viewedCount / totalCount) * 100}%` : 0 }}
+          />
+        </div>
         <span className="sidebar-file-count">
           {viewedCount}/{totalCount} viewed
           {staleCount > 0 && (
@@ -635,7 +658,7 @@ export function FileSidebar({
       )}
       {showHunkSignificance && (
         <div className="sidebar-filter-bar">
-          <span className="sidebar-filter-label">Significance hunks:</span>
+          <span className="sidebar-filter-label">Show hunks:</span>
           <div className="sidebar-filter-toggle">
             {(["all", "high", "medium"] as HunkSignificanceFilter[]).map((level) => (
               <button

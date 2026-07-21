@@ -50,6 +50,46 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
     save_settings_to_disk(&settings)
 }
 
+/// Whether `fetch_pr` could open this input. The omnibox uses this to decide
+/// "open" vs "filter" — asking the real parser instead of mirroring its regex
+/// (the AI review caught that as a fifth copy of the quadruplicated pattern).
+#[command]
+pub fn check_pr_ref(input: String) -> bool {
+    marrow_core::pr_parser::parse_pr_ref(&input).is_ok()
+}
+
+/// The authenticated GitHub login for the configured token (queue header chip).
+#[command]
+pub async fn get_viewer_login() -> Result<String, String> {
+    github_client().get_authenticated_user().await
+}
+
+/// True when the first-run welcome should show: setup never completed/skipped
+/// and no GitHub token resolves from config or env.
+#[command]
+pub fn needs_setup() -> bool {
+    let settings = load_settings();
+    !settings.setup_done && resolve_github_token(&settings).is_none()
+}
+
+/// Check a GitHub token by fetching the authenticated user. Takes the token
+/// directly (not saved settings) so setup can validate before saving.
+#[command]
+pub async fn validate_github_token(token: String) -> Result<String, String> {
+    let trimmed = token.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("No token provided".into());
+    }
+    GithubClient::new(Some(trimmed)).get_authenticated_user().await
+}
+
+/// Check the AI provider config end-to-end with a one-word prompt. Takes the
+/// candidate settings so setup can validate before saving.
+#[command]
+pub async fn validate_ai_provider(settings: Settings) -> Result<String, String> {
+    marrow_core::ai::validate_provider(&settings).await
+}
+
 #[command]
 pub fn load_manifest(path: String) -> Result<ReviewManifest, String> {
     let content =

@@ -59,6 +59,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let head_ref = metadata.head.ref_name;
     let base_sha = metadata.base.sha;
     let head_sha = metadata.head.sha;
+    let author = metadata.user.as_ref().map(|u| u.login.clone()).unwrap_or_default();
+    let draft = metadata.draft.unwrap_or(false);
 
     if let Some(cached) = manifest_cache::load_cached_manifest(&parsed.owner, &parsed.repo, parsed.number) {
         if cached.head_sha == head_sha {
@@ -314,6 +316,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         head_ref,
         base_sha,
         head_sha,
+        author,
+        draft,
         summary,
         change_groups,
         files: file_diffs,
