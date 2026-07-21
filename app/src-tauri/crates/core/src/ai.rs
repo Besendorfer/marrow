@@ -230,6 +230,19 @@ impl AiBackend {
     }
 }
 
+/// End-to-end provider check for setup/settings: build the backend from the
+/// candidate settings and send a one-word prompt. Returns the provider label
+/// on success so the UI can say what actually answered.
+pub async fn validate_provider(s: &Settings) -> Result<String, String> {
+    let label = provider_for_settings(s).label().to_string();
+    let backend = AiBackend::from_settings(s).await?;
+    backend
+        .invoke("Reply with the single word: ok")
+        .await
+        .map_err(|e| format!("{label}: {e}"))?;
+    Ok(label)
+}
+
 /// Upper bound on generated tokens for the Anthropic API (required by the API;
 /// generous so classification of large PRs isn't truncated).
 const ANTHROPIC_MAX_TOKENS: u32 = 8192;
@@ -362,8 +375,15 @@ fn resolve_claude_binary() -> &'static str {
 }
 
 async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> {
+    // No model configured → let the CLI use its own default. `--model ""` is a
+    // 400 from the API.
+    let mut args: Vec<&str> = Vec::new();
+    if !model.is_empty() {
+        args.extend(["--model", model]);
+    }
+    args.push("--print");
     let mut child = Command::new(resolve_claude_binary())
-        .args(["--model", model, "--print"])
+        .args(&args)
         .env("CLAUDECODE", "") // prevent recursive Claude Code invocation
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -218,6 +218,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_pending_deep_link,
             commands::signal_frontend_ready,
+            commands::needs_setup,
+            commands::validate_github_token,
+            commands::validate_ai_provider,
             commands::load_manifest,
             commands::get_initial_manifest_path,
             commands::fetch_pr,

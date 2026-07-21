@@ -41,6 +41,32 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
     save_settings_to_disk(&settings)
 }
 
+/// True when the first-run welcome should show: setup never completed/skipped
+/// and no GitHub token resolves from config or env.
+#[command]
+pub fn needs_setup() -> bool {
+    let settings = load_settings();
+    !settings.setup_done && resolve_github_token(&settings).is_none()
+}
+
+/// Check a GitHub token by fetching the authenticated user. Takes the token
+/// directly (not saved settings) so setup can validate before saving.
+#[command]
+pub async fn validate_github_token(token: String) -> Result<String, String> {
+    let trimmed = token.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("No token provided".into());
+    }
+    GithubClient::new(Some(trimmed)).get_authenticated_user().await
+}
+
+/// Check the AI provider config end-to-end with a one-word prompt. Takes the
+/// candidate settings so setup can validate before saving.
+#[command]
+pub async fn validate_ai_provider(settings: Settings) -> Result<String, String> {
+    marrow_core::ai::validate_provider(&settings).await
+}
+
 #[command]
 pub fn load_manifest(path: String) -> Result<ReviewManifest, String> {
     let content =

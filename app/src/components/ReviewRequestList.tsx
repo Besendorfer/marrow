@@ -4,6 +4,9 @@ import type { ReviewRequestItem, ReviewStatus, Settings, CachedPrInfo } from "..
 
 interface ReviewRequestListProps {
   onSelectPr: (prRef: string) => void;
+  /** Cached rows pass their cache info so the app can warn before an
+   *  unexpected AI re-analysis when the PR has moved on. */
+  onSelectCachedPr?: (prRef: string, info: CachedPrInfo) => void;
   openPrUrls: Set<string>;
   /** Text filter from the omnibox — matches repo, title, and author. */
   filter?: string;
@@ -49,7 +52,7 @@ const STATUS_CLASSES: Record<ReviewStatus, string> = {
   pending: "",
 };
 
-export function ReviewRequestList({ onSelectPr, openPrUrls, filter }: ReviewRequestListProps) {
+export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, filter }: ReviewRequestListProps) {
   const [cachedPrs, setCachedPrs] = useState<CachedPrInfo[]>([]);
   const [recentItems, setRecentItems] = useState<ReviewRequestItem[]>([]);
   const [olderItems, setOlderItems] = useState<ReviewRequestItem[]>([]);
@@ -272,7 +275,7 @@ export function ReviewRequestList({ onSelectPr, openPrUrls, filter }: ReviewRequ
       </div>
       <div className="review-requests-list">
         {filteredCached.length > 0 && (
-          <CachedPrSection items={filteredCached} onSelectPr={onSelectPr} />
+          <CachedPrSection items={filteredCached} onSelectPr={onSelectPr} onSelectCachedPr={onSelectCachedPr} />
         )}
         {noFilterResults ? (
           <div className="review-requests-empty">Nothing in the queue matches.</div>
@@ -405,9 +408,11 @@ function ReviewRequestRow({
 function CachedPrSection({
   items,
   onSelectPr,
+  onSelectCachedPr,
 }: {
   items: CachedPrInfo[];
   onSelectPr: (prRef: string) => void;
+  onSelectCachedPr?: (prRef: string, info: CachedPrInfo) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -429,7 +434,7 @@ function CachedPrSection({
               <button
                 key={pr.pr_url}
                 className="queue-row queue-row--dim"
-                onClick={() => onSelectPr(prRef)}
+                onClick={() => (onSelectCachedPr ? onSelectCachedPr(prRef, pr) : onSelectPr(prRef))}
               >
                 <span className="queue-avatar" aria-hidden="true">{initials(pr.repo)}</span>
                 <span className="queue-main">

@@ -104,6 +104,7 @@ fn default_settings() -> Settings {
         activity_per_watch_cap: 50,
         activity_mini_player: true,
         show_approved_prs: false,
+        setup_done: false,
     }
 }
 
@@ -135,6 +136,7 @@ pub fn load_settings() -> Settings {
     let mut activity_per_watch_cap = 50u64;
     let mut activity_mini_player = true;
     let mut show_approved_prs = false;
+    let mut setup_done = false;
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -173,6 +175,8 @@ pub fn load_settings() -> Settings {
             activity_mini_player = val == "true";
         } else if let Some(val) = line.strip_prefix("show_approved_prs=") {
             show_approved_prs = val == "true";
+        } else if let Some(val) = line.strip_prefix("setup_done=") {
+            setup_done = val == "true";
         }
     }
 
@@ -194,6 +198,7 @@ pub fn load_settings() -> Settings {
         activity_per_watch_cap,
         activity_mini_player,
         show_approved_prs,
+        setup_done,
     }
 }
 
@@ -241,6 +246,7 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
         settings.activity_mini_player
     ));
     content.push_str(&format!("show_approved_prs={}\n", settings.show_approved_prs));
+    content.push_str(&format!("setup_done={}\n", settings.setup_done));
 
     fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;
 
