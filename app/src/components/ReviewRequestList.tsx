@@ -13,7 +13,7 @@ interface ReviewRequestListProps {
   filter?: string;
 }
 
-function initials(login: string): string {
+export function initials(login: string): string {
   return login.slice(0, 2).toUpperCase();
 }
 
@@ -365,7 +365,7 @@ function ReviewRequestRow({
   const statusClass = STATUS_CLASSES[item.my_review_status];
 
   return (
-    <button className="queue-row" onClick={() => onSelect(prRef)}>
+    <button className={`queue-row${item.draft ? " queue-row--draft" : ""}`} onClick={() => onSelect(prRef)}>
       <span className="queue-avatar" aria-hidden="true">{initials(item.author)}</span>
       <span className="queue-main">
         <span className="queue-title">
@@ -376,6 +376,7 @@ function ReviewRequestRow({
           <span className="queue-why">
             {item.direct_request ? "Review requested" : "Team review request"} by {item.author}
           </span>
+          {item.draft && <span className="queue-draft-chip">Draft</span>}
           {statusLabel && (
             <span className={`review-status-badge ${statusClass}`}>{statusLabel}</span>
           )}

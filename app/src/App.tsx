@@ -1199,6 +1199,9 @@ function App() {
       updateTab(activeTabId, (t) => ({
         ...t,
         myReviewState: {
+          author: t.myReviewState?.author ?? "",
+          draft: t.myReviewState?.draft ?? false,
+          approved_by: t.myReviewState?.approved_by ?? [],
           status: statusMap[event] as MyReviewState["status"],
           is_re_requested: false,
           is_merged: t.myReviewState?.is_merged ?? false,
@@ -1355,6 +1358,9 @@ function App() {
                 : {
                     ...t,
                     myReviewState: {
+                      author: t.myReviewState?.author ?? "",
+                      draft: t.myReviewState?.draft ?? false,
+                      approved_by: t.myReviewState?.approved_by ?? [],
                       status: t.myReviewState?.status ?? "pending",
                       is_re_requested: t.myReviewState?.is_re_requested ?? false,
                       is_merged: true,
@@ -1724,6 +1730,7 @@ function App() {
             <PrOverview
               manifest={activeTab.manifest}
               checksStatus={activeChecks ?? null}
+              reviewState={activeTab.myReviewState ?? null}
               viewedCount={activeTab.viewedFiles.size}
               unresolvedThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
               hasSubmittedReview={activeTab.myReviewState != null && activeTab.myReviewState.status !== "pending" && activeTab.myReviewState.status !== "dismissed" && !activeTab.myReviewState.is_re_requested}
