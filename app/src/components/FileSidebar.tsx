@@ -20,6 +20,7 @@ interface FileSidebarProps {
   onSelectCommentFile: (path: string) => void;
   /** Emits the visible file paths in manifest order, for keyboard file navigation. */
   onVisibleFilesChange?: (paths: string[]) => void;
+  onShowOverview?: () => void;
 }
 
 function getMaxHunkSignificance(file: FileDiff): string {
@@ -412,6 +413,7 @@ export function FileSidebar({
   selectedCommentFile,
   onSelectCommentFile,
   onVisibleFilesChange,
+  onShowOverview,
 }: FileSidebarProps) {
   const hasGroups = changeGroups.length > 0;
   const prevHasGroups = useRef(hasGroups);
@@ -575,6 +577,15 @@ export function FileSidebar({
 
   return (
     <aside className="file-sidebar">
+      {onShowOverview && view !== "comments" && (
+        <button
+          className={`sidebar-overview-link${selectedFile === null ? " active" : ""}`}
+          onClick={onShowOverview}
+          title="Back to the PR summary and change groups"
+        >
+          ← Overview
+        </button>
+      )}
       <div className="sidebar-header">
         <div className="sidebar-header-top">
           <span className="sidebar-title">Files</span>

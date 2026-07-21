@@ -935,7 +935,8 @@ body {
 .diff-viewer {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
 .diff-header {
@@ -4066,7 +4067,8 @@ mark.search-highlight-current {
 .activity-widget--dock {
   position: fixed;
   right: 16px;
-  bottom: 16px;
+  /* Clears the next-file bar at the bottom of the diff pane. */
+  bottom: 64px;
   width: 340px;
   height: 440px;
   min-width: 210px;
@@ -4120,7 +4122,8 @@ mark.search-highlight-current {
 .activity-widget--pill {
   position: fixed;
   right: 16px;
-  bottom: 16px;
+  /* Clears the next-file bar at the bottom of the diff pane. */
+  bottom: 64px;
   width: auto;
   height: auto;
   display: inline-flex;
@@ -4364,4 +4367,297 @@ mark.search-highlight-current {
 @keyframes aw-pulse {
   0%, 100% { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
   50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent), 0 8px 24px rgba(0, 0, 0, 0.45); }
+}
+
+/* ─── PR Overview (summary-first landing) ─────────────────────────────── */
+.pr-overview {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+  padding: var(--space-5);
+}
+
+.overview-col {
+  flex: 1.5;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.overview-rail {
+  flex: 1;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  position: sticky;
+  top: 0;
+}
+
+.overview-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.overview-card h4 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 0 0 10px;
+}
+
+.overview-card p {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+  max-width: 68ch;
+}
+
+.overview-card p:last-child {
+  margin-bottom: 0;
+}
+
+.overview-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 10px 4px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--chip-border);
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview-group:first-of-type {
+  border-top: none;
+}
+
+.overview-group:hover .overview-group-name {
+  color: var(--accent);
+}
+
+.overview-group-main {
+  min-width: 0;
+}
+
+.overview-group-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.overview-group-desc {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.overview-group-side {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.overview-chip {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  padding: 1px 9px;
+  white-space: nowrap;
+}
+
+.overview-noise {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.overview-risk-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+}
+
+.overview-risk-strip .risk-dot {
+  display: inline-block;
+  margin-right: 4px;
+}
+
+.overview-start {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 16px;
+  background: var(--accent-strong);
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--white);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.overview-start:hover {
+  background: var(--accent-strong-hover);
+}
+
+.overview-start-sub {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.overview-state-line {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  padding: 3px 0;
+}
+
+/* ─── Next-file bar (guided review path) ──────────────────────────────── */
+.next-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 8px var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.next-bar-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.next-bar-mark:hover {
+  border-color: var(--text-muted);
+}
+
+.next-bar-mark--done {
+  color: var(--diff-add-text);
+  background: transparent;
+}
+
+.next-bar-pos {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.next-bar-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.next-bar-next:hover .next-bar-file {
+  color: var(--accent);
+}
+
+.next-bar-file {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.next-bar-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border: 1px solid var(--chip-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  padding: 0 5px;
+  line-height: 15px;
+}
+
+.next-bar-finish {
+  margin-left: auto;
+  padding: 4px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.next-bar-finish:hover {
+  border-color: var(--text-muted);
+}
+
+.next-bar-finish--ready {
+  background: var(--accent-strong);
+  border-color: transparent;
+  color: var(--white);
+}
+
+.next-bar-finish--ready:hover {
+  background: var(--accent-strong-hover);
+  border-color: transparent;
+}
+
+.sidebar-overview-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.sidebar-overview-link:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.sidebar-overview-link.active {
+  color: var(--accent);
 }
