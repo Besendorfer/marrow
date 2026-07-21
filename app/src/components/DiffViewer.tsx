@@ -1,4 +1,4 @@
-import { Fragment, forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, forwardRef, memo, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch } from "../types";
@@ -836,17 +836,23 @@ function formatLineRange(start: number, end: number): string {
   return `L${start}${end !== start ? `\u2013${end}` : ""}`;
 }
 
-const severityIcon: Record<string, string> = {
-  critical: "!!",
-  warning: "!",
-  info: "i",
+const severityLabel: Record<string, string> = {
+  critical: "Critical",
+  warning: "Warning",
+  info: "Info",
 };
 
+// Dismissal used to live on the top-of-file banner list; now that notes render
+// only inline, the action reaches HighlightMarker via context rather than
+// threading a prop through every hunk-rendering layer.
+const HighlightDismissContext = createContext<((h: Highlight) => void) | null>(null);
+
 function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight; onPostAsComment?: (h: Highlight) => void }) {
+  const onDismiss = useContext(HighlightDismissContext);
   return (
     <div className={`highlight-marker highlight-${highlight.severity}`}>
       <span className="highlight-icon">
-        {severityIcon[highlight.severity] || "i"}
+        {severityLabel[highlight.severity] || "Info"}
       </span>
       <span className="highlight-lines">{formatLineRange(highlight.start_line, highlight.end_line)}</span>
       <span className="highlight-comment">{highlight.comment}</span>
@@ -857,6 +863,16 @@ function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight;
           title="Draft a review comment from this AI note (you can edit before posting)"
         >
           Comment…
+        </button>
+      )}
+      {onDismiss && (
+        <button
+          className="highlight-dismiss"
+          onClick={(e) => { e.stopPropagation(); onDismiss(highlight); }}
+          title="Dismiss this AI note"
+          aria-label="Dismiss AI note"
+        >
+          ×
         </button>
       )}
     </div>
@@ -1142,7 +1158,7 @@ function UnifiedView({
                   <td className="line-prefix">@@</td>
                   <td className="line-content">
                     <pre dangerouslySetInnerHTML={{ __html: escapeHtml(hunk.headerLine.content) }} />
-                    {isHigh && <span className="hunk-significance-badge hunk-badge-high">HIGH</span>}
+                    {isHigh && <span className="hunk-significance-badge hunk-badge-high">High</span>}
                     {isCollapsed && <span className="hunk-collapsed-indicator">{hunk.lineCount} lines</span>}
                   </td>
                 </tr>
@@ -1421,7 +1437,7 @@ function SplitView({
                   <td className="line-num right-num"></td>
                   <td className="line-content right-content diff-line-header">
                     <pre dangerouslySetInnerHTML={{ __html: escapeHtml(hunk.headerLine.content) }} />
-                    {isHigh && <span className="hunk-significance-badge hunk-badge-high">HIGH</span>}
+                    {isHigh && <span className="hunk-significance-badge hunk-badge-high">High</span>}
                     {isCollapsed && <span className="hunk-collapsed-indicator">{hunk.lineCount} lines</span>}
                   </td>
                 </tr>
@@ -1652,6 +1668,13 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const highlights = allNotes.filter((h) => !dismissed.has(keyFor(h)));
   const dismissedNotes = allNotes.filter((h) => dismissed.has(keyFor(h)));
   const [showDismissed, setShowDismissed] = useState(false);
+  const dismissHighlight = useMemo(
+    () =>
+      onToggleHighlightDismissed
+        ? (h: Highlight) => onToggleHighlightDismissed(highlightKey(file.path, h))
+        : null,
+    [onToggleHighlightDismissed, file.path]
+  );
   const isCritical =
     file.risk_level === "critical" || file.risk_level === "high";
 
@@ -2125,6 +2148,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   }));
 
   return (
+    <HighlightDismissContext.Provider value={dismissHighlight}>
     <div className={`diff-viewer ${isCritical ? "diff-viewer-critical" : ""}`}>
       {replyTarget && (
         <KeyboardReplyOverlay
@@ -2133,14 +2157,17 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         />
       )}
       <div className="diff-header">
-        <span className={`diff-badge diff-badge-${file.diff_type}`}>
-          {file.diff_type.toUpperCase()}
-        </span>
-        <span className={`risk-badge risk-${file.risk_level}`}>
-          {file.risk_level.toUpperCase()}
-        </span>
-        <span className="diff-file-path">{file.path}</span>
-        <span className="diff-reason">{file.reason}</span>
+        {file.diff_type !== "modified" && (
+          <span className={`diff-badge diff-badge-${file.diff_type}`}>
+            {file.diff_type.charAt(0).toUpperCase() + file.diff_type.slice(1)}
+          </span>
+        )}
+        {(file.risk_level === "critical" || file.risk_level === "high") && (
+          <span className={`risk-badge risk-${file.risk_level}`}>
+            {file.risk_level.charAt(0).toUpperCase() + file.risk_level.slice(1)}
+          </span>
+        )}
+        <span className="diff-file-path" title={file.reason}>{file.path}</span>
         {highlights.length > 0 && (
           <span className="highlight-count">
             {highlights.length} AI {highlights.length === 1 ? "note" : "notes"}
@@ -2157,7 +2184,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         )}
         {showHunkSignificance && highHunkCount > 0 && (
           <span className="hunk-high-summary">
-            {highHunkCount} high-significance {highHunkCount === 1 ? "hunk" : "hunks"}
+            {highHunkCount} key {highHunkCount === 1 ? "hunk" : "hunks"}
           </span>
         )}
         {!fullFile && collapsedCount > 0 && (
@@ -2166,58 +2193,21 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
               {collapsedCount} {collapsedCount === 1 ? "hunk" : "hunks"} collapsed
             </span>
             <button className="hunk-toggle-all" onClick={expandAll}>
-              Expand All
+              Expand all
             </button>
           </>
         )}
         {!fullFile && showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && (
           <button className="hunk-toggle-all" onClick={collapseAll}>
-            Collapse All
+            Collapse all
           </button>
         )}
       </div>
-      {(highlights.length > 0 || dismissedNotes.length > 0) && (
+      {dismissedNotes.length > 0 && (
         <div className="highlights-summary">
-          {highlights.map((h, i) => (
-            <div
-              key={i}
-              className={`highlights-summary-item highlight-${h.severity}`}
-              style={{ cursor: "pointer" }}
-              onClick={() => {
-                const el = document.getElementById(`diff-line-${h.start_line}`);
-                el?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-              title="Jump to code"
-            >
-              <span className="highlight-severity-badge">{h.severity.toUpperCase()}</span>
-              <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
-              <span className="highlight-summary-text">{h.comment}</span>
-              {onCreateComment && (
-                <button
-                  className="highlight-post-comment"
-                  onClick={(e) => { e.stopPropagation(); handlePostHighlightAsComment(h); }}
-                  title="Draft a review comment from this AI note (you can edit before posting)"
-                >
-                  Comment…
-                </button>
-              )}
-              {onToggleHighlightDismissed && (
-                <button
-                  className="highlight-dismiss"
-                  onClick={(e) => { e.stopPropagation(); onToggleHighlightDismissed(keyFor(h)); }}
-                  title="Dismiss this AI note"
-                  aria-label="Dismiss AI note"
-                >
-                  ×
-                </button>
-              )}
-            </div>
-          ))}
-          {dismissedNotes.length > 0 && (
-            <button className="highlights-show-dismissed" onClick={() => setShowDismissed((v) => !v)}>
-              {showDismissed ? "Hide" : "Show"} {dismissedNotes.length} dismissed
-            </button>
-          )}
+          <button className="highlights-show-dismissed" onClick={() => setShowDismissed((v) => !v)}>
+            {showDismissed ? "Hide" : "Show"} {dismissedNotes.length} dismissed {dismissedNotes.length === 1 ? "note" : "notes"}
+          </button>
           {showDismissed && dismissedNotes.map((h, i) => (
             <div
               key={`dismissed-${i}`}
@@ -2229,7 +2219,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
               }}
               title="Jump to code"
             >
-              <span className="highlight-severity-badge">{h.severity.toUpperCase()}</span>
+              <span className="highlight-severity-badge">{severityLabel[h.severity] || "Info"}</span>
               <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
               <span className="highlight-summary-text">{h.comment}</span>
               {onToggleHighlightDismissed && (
@@ -2307,5 +2297,6 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         )}
       </div>
     </div>
+    </HighlightDismissContext.Provider>
   );
 });

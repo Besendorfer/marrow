@@ -215,10 +215,16 @@ function FileItem({
           <span className="stale-indicator" title="Changed since you last reviewed">&#x26A0;</span>
         )}
         <span
-          className={`diff-type-badge ${getDiffTypeClass(file.diff_type)}`}
-        >
-          {getDiffTypeIcon(file.diff_type)}
-        </span>
+          className={`risk-dot risk-dot--${file.risk_level}`}
+          title={`${file.risk_level} risk`}
+        />
+        {file.diff_type !== "modified" && (
+          <span
+            className={`diff-type-badge ${getDiffTypeClass(file.diff_type)}`}
+          >
+            {getDiffTypeIcon(file.diff_type)}
+          </span>
+        )}
         <span className="file-name">{getFileName(file.path)}</span>
         <span className="line-stats">
           <span className="line-stat-add">+{file.additions}</span>
@@ -635,7 +641,7 @@ export function FileSidebar({
       )}
       {showHunkSignificance && (
         <div className="sidebar-filter-bar">
-          <span className="sidebar-filter-label">Significance hunks:</span>
+          <span className="sidebar-filter-label">Show hunks:</span>
           <div className="sidebar-filter-toggle">
             {(["all", "high", "medium"] as HunkSignificanceFilter[]).map((level) => (
               <button

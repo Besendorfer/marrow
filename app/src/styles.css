@@ -33,6 +33,33 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   --sidebar-width: 320px;
   --header-height: 56px;
+
+  /* ── Design tokens (calm system) ──
+     Radii: 4 (small controls) / 8 (buttons, cards) / 12 (modals, windows) / pill.
+     Spacing scale: 4 / 8 / 12 / 16 / 24 / 32.
+     Filled red is reserved for critical severity only; high is outlined amber. */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-3: 0 16px 44px rgba(0, 0, 0, 0.5);
+  --white: #ffffff;
+  --accent-strong: #2765c0;        /* filled action background (buttons, active segments) */
+  --accent-strong-hover: #3573d2;
+  --accent-bg: rgba(88, 166, 255, 0.12);
+  --sev-critical-fill: #b62324;    /* the only filled red in the UI */
+  --merged: #8957e5;               /* GitHub merged-purple */
+  --chip-bg: #1c232d;
+  --chip-border: #29313d;
+  --search-hl: #e3b341;              /* search match yellow */
 }
 
 html, body, #root {
@@ -417,8 +444,8 @@ body {
 }
 
 .view-toggle button.active {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-strong);
+  color: var(--white);
 }
 
 .view-toggle button:hover:not(.active) {
@@ -560,12 +587,10 @@ body {
 }
 
 .group-header {
-  padding: 8px 16px 4px;
+  padding: 10px 16px 4px;
   font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-muted);
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 .group-toggle {
@@ -671,7 +696,7 @@ body {
 }
 
 .file-item.selected {
-  background: rgba(88, 166, 255, 0.15);
+  background: var(--accent-bg);
 }
 
 .file-item.viewed {
@@ -681,6 +706,32 @@ body {
 .file-item.viewed .file-name {
   text-decoration: line-through;
   text-decoration-color: var(--text-muted);
+}
+
+/* Per-file risk shown as a quiet dot; the name carries the row. */
+.risk-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.risk-dot--critical { background: var(--risk-critical); }
+.risk-dot--high { background: var(--risk-high); }
+.risk-dot--medium { background: var(--risk-medium); }
+.risk-dot--low { background: var(--text-muted); }
+
+/* Progressive disclosure: stats and note counts surface on hover/selection.
+   Opacity (not display) so row layout never shifts. */
+.file-item .line-stats,
+.file-item .file-highlight-count {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.file-item:hover .line-stats,
+.file-item.selected .line-stats,
+.file-item:hover .file-highlight-count,
+.file-item.selected .file-highlight-count {
+  opacity: 1;
 }
 
 /* ─── Stale (changed since reviewed) ──────────────────────────────────── */
@@ -716,19 +767,26 @@ body {
   white-space: nowrap;
 }
 .pr-badge--merged {
-  color: #fff;
-  background: #8957e5; /* GitHub merged-purple */
+  color: var(--white);
+  background: var(--merged);
 }
 .pr-badge--approved {
   color: var(--diff-add-text);
   background: var(--diff-add-bg);
 }
 
+/* The AI's one-line file description renders only for the selected file —
+   on every row it turns the sidebar into a wall of text. */
 .file-summary {
-  padding: 0 16px 6px 46px;
+  display: none;
+  padding: 0 16px 6px 43px;
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   line-height: 1.4;
+}
+
+.file-item-wrapper:has(.file-item.selected) .file-summary {
+  display: block;
 }
 
 /* ─── Viewed Checkbox ──────────────────────────────────────────────────── */
@@ -744,8 +802,8 @@ body {
   width: 14px;
   height: 14px;
   border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--bg-primary);
+  border-radius: 50%;
+  background: transparent;
   cursor: pointer;
   position: relative;
 }
@@ -762,29 +820,30 @@ body {
   top: 1px;
   width: 4px;
   height: 8px;
-  border: solid #fff;
+  border: solid var(--white);
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
 
 /* ─── Risk Badges ──────────────────────────────────────────────────────── */
+/* Severity de-escalation: filled red for critical only, outlined amber for
+   high; medium/low are quiet tints (rarely rendered as badges at all). */
 .risk-badge {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  padding: 1px 4px;
-  border-radius: 3px;
-  letter-spacing: 0.3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
   flex-shrink: 0;
 }
 
 .risk-critical {
-  background: var(--risk-critical-bg);
-  color: var(--risk-critical);
+  background: var(--sev-critical-fill);
+  color: var(--white);
 }
 
 .risk-high {
-  background: var(--risk-high-bg);
+  border-color: rgba(219, 109, 40, 0.55);
   color: var(--risk-high);
 }
 
@@ -879,27 +938,24 @@ body {
   height: 100%;
 }
 
-.diff-viewer-critical .diff-header {
-  border-top: 2px solid var(--risk-critical);
-}
-
 .diff-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
+  gap: var(--space-2);
+  padding: 10px var(--space-4);
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
+/* Only exceptional diff types (added/removed/renamed) render a badge —
+   "modified" is the default and needs no announcement. */
 .diff-badge {
   font-size: 11px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+  font-weight: 500;
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--chip-border);
 }
 
 .diff-badge-added {
@@ -921,12 +977,10 @@ body {
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--text-primary);
-}
-
-.diff-reason {
-  color: var(--text-muted);
-  font-size: 12px;
-  margin-left: auto;
+  margin-right: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .diff-content {
@@ -1163,10 +1217,10 @@ tr.cursor-selected td {
 
 .pr-opener-button {
   padding: 8px 16px;
-  background: var(--accent);
+  background: var(--accent-strong);
   border: none;
   border-radius: 6px;
-  color: #fff;
+  color: var(--white);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -1175,7 +1229,7 @@ tr.cursor-selected td {
 }
 
 .pr-opener-button:hover:not(:disabled) {
-  background: #79c0ff;
+  background: var(--accent-strong-hover);
 }
 
 .pr-opener-button:disabled {
@@ -1282,7 +1336,7 @@ tr.cursor-selected td {
   top: 0px;
   width: 4px;
   height: 7px;
-  border: solid #fff;
+  border: solid var(--white);
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(45deg);
 }
@@ -1719,59 +1773,59 @@ tr.cursor-selected td {
   padding: 0;
 }
 
+/* AI notes render once, inline at their line, as a left-accent card.
+   (The duplicate top-of-file banner list is gone; only dismissed notes
+   still use .highlights-summary as a restore surface.) */
 .highlight-marker {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 16px;
+  gap: var(--space-2);
+  margin: 6px var(--space-4) 6px 56px;
+  padding: 8px var(--space-3);
   font-size: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid;
   border-left: 3px solid;
+  background: var(--bg-secondary);
 }
 
 .highlight-marker.highlight-critical {
-  background: var(--risk-critical-bg);
-  border-left-color: var(--risk-critical);
-  color: var(--risk-critical);
+  border-color: rgba(182, 35, 36, 0.4);
+  border-left-color: var(--sev-critical-fill);
 }
 
 .highlight-marker.highlight-warning {
-  background: var(--risk-high-bg);
+  border-color: rgba(219, 109, 40, 0.35);
   border-left-color: var(--risk-high);
-  color: var(--risk-high);
 }
 
 .highlight-marker.highlight-info {
-  background: rgba(88, 166, 255, 0.1);
+  border-color: var(--chip-border);
   border-left-color: var(--accent);
-  color: var(--accent);
 }
 
 .highlight-icon {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 11px;
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 
 .highlight-critical .highlight-icon {
-  background: var(--risk-critical);
-  color: #fff;
+  background: var(--sev-critical-fill);
+  color: var(--white);
 }
 
 .highlight-warning .highlight-icon {
-  background: var(--risk-high);
-  color: #fff;
+  border: 1px solid rgba(219, 109, 40, 0.55);
+  color: var(--risk-high);
 }
 
 .highlight-info .highlight-icon {
-  background: var(--accent);
-  color: #fff;
+  border: 1px solid var(--chip-border);
+  color: var(--text-secondary);
 }
 
 .highlight-comment {
@@ -1800,8 +1854,8 @@ tr.cursor-selected td {
 }
 
 .highlight-post-comment:hover {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-strong);
+  color: var(--white);
   border-color: var(--accent);
 }
 
@@ -1824,12 +1878,13 @@ tr.cursor-selected td {
 .highlights-summary-item > .highlight-dismiss:nth-child(4) {
   margin-left: auto;
 }
-.highlights-summary-item:hover .highlight-dismiss {
+.highlights-summary-item:hover .highlight-dismiss,
+.highlight-marker:hover .highlight-dismiss {
   opacity: 1;
 }
 .highlight-dismiss:hover {
   background: var(--diff-remove-text, #f85149);
-  color: #fff;
+  color: var(--white);
   border-color: transparent;
 }
 .highlights-summary-item.highlight-dismissed {
@@ -1900,7 +1955,7 @@ tr.cursor-selected td {
   padding: 12px 22px;
   border-radius: 10px;
   background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  color: var(--white);
   font-size: 14px;
   letter-spacing: 0.01em;
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.32);
@@ -2094,7 +2149,7 @@ tr.cursor-selected td {
   padding: 6px 14px;
   font-size: 12px;
   font-weight: 500;
-  color: #fff;
+  color: var(--white);
   background: var(--accent, #6f42c1);
   border-radius: 6px;
   text-decoration: none;
@@ -2132,10 +2187,10 @@ tr.cursor-selected td {
 
 .settings-save {
   padding: 6px 14px;
-  background: var(--accent);
+  background: var(--accent-strong);
   border: none;
   border-radius: 6px;
-  color: #fff;
+  color: var(--white);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -2143,7 +2198,7 @@ tr.cursor-selected td {
 }
 
 .settings-save:hover:not(:disabled) {
-  background: #79c0ff;
+  background: var(--accent-strong-hover);
 }
 
 .settings-save:disabled {
@@ -2364,16 +2419,20 @@ tr.cursor-selected td {
 
 .summary-toggle {
   background: none;
-  border: none;
-  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
   font-size: 12px;
   cursor: pointer;
   font-family: var(--font-sans);
-  padding: 0;
+  padding: 3px 10px;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s;
 }
 
 .summary-toggle:hover {
-  text-decoration: underline;
+  color: var(--text-primary);
+  border-color: var(--text-muted);
 }
 
 /* ─── PR Summary (diff pane placeholder) ──────────────────────────────── */
@@ -2470,8 +2529,7 @@ tr.cursor-selected td {
 .hunk-collapse-summary {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  margin-left: 8px;
+  white-space: nowrap;
 }
 
 .hunk-toggle-all {
@@ -2489,34 +2547,35 @@ tr.cursor-selected td {
   text-decoration: underline;
 }
 
-/* High-significance hunk header */
+/* High-significance hunk header — amber emphasis, not alarm-red (red is
+   reserved for critical AI findings). */
 .hunk-header-high {
-  background: rgba(248, 81, 73, 0.12) !important;
-  border-left: 3px solid var(--risk-critical);
+  border-left: 3px solid var(--risk-medium);
 }
 
 .hunk-significance-badge {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  padding: 1px 5px;
-  border-radius: 3px;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
   margin-left: 10px;
-  letter-spacing: 0.3px;
   vertical-align: middle;
 }
 
 .hunk-badge-high {
-  background: var(--risk-critical-bg);
-  color: var(--risk-critical);
+  border: 1px solid rgba(210, 153, 34, 0.55);
+  color: var(--risk-medium);
 }
 
 .hunk-high-summary {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--risk-critical);
-  font-family: var(--font-mono);
-  margin-left: 8px;
+  color: var(--text-secondary);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  padding: 1px 9px;
+  white-space: nowrap;
 }
 
 /* ─── Sidebar Filter Bar ──────────────────────────────────────────────── */
@@ -2919,10 +2978,10 @@ tr.cursor-selected td {
 
 .reply-submit {
   padding: 4px 12px;
-  background: var(--accent);
+  background: var(--accent-strong);
   border: none;
   border-radius: 6px;
-  color: #fff;
+  color: var(--white);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -2930,7 +2989,7 @@ tr.cursor-selected td {
 }
 
 .reply-submit:hover:not(:disabled) {
-  background: #79c0ff;
+  background: var(--accent-strong-hover);
 }
 
 .reply-submit:disabled {
@@ -3234,7 +3293,7 @@ tr.cursor-selected td {
   height: 18px;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  color: var(--white);
   font-size: 13px;
   font-weight: 700;
   line-height: 18px;
@@ -3337,19 +3396,19 @@ tr.cursor-selected td {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px;
-  background: var(--diff-add-text);
+  padding: 4px 14px;
+  background: var(--accent-strong);
   border: none;
-  border-radius: 6px;
-  color: #fff;
+  border-radius: var(--radius-md);
+  color: var(--white);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
   font-family: var(--font-sans);
 }
 
 .review-submit-toggle:hover {
-  background: #2ea043;
+  background: var(--accent-strong-hover);
 }
 
 .review-submit-badge {
@@ -3363,7 +3422,7 @@ tr.cursor-selected td {
   justify-content: center;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.25);
-  color: #fff;
+  color: var(--white);
 }
 
 .review-submit-dropdown {
@@ -3450,7 +3509,7 @@ tr.cursor-selected td {
 
 .review-action-approve:hover {
   background: var(--diff-add-text);
-  color: #fff;
+  color: var(--white);
 }
 
 .review-action-request-changes {
@@ -3469,7 +3528,7 @@ tr.cursor-selected td {
 
 .review-action-request-changes:hover {
   background: var(--diff-remove-text);
-  color: #fff;
+  color: var(--white);
 }
 
 .review-action-comment:disabled,
@@ -3576,8 +3635,8 @@ tr.cursor-selected td {
 }
 
 .search-mode-toggle button.active {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-strong);
+  color: var(--white);
 }
 
 .search-input {
@@ -3756,7 +3815,7 @@ tr.cursor-selected td {
 
 .search-result-line-text mark {
   background: rgba(227, 179, 65, 0.35);
-  color: #e3b341;
+  color: var(--search-hl);
   border-radius: 2px;
   padding: 0 1px;
 }
@@ -3885,9 +3944,9 @@ mark.search-highlight-current {
 .update-banner-action {
   padding: 4px 12px;
   border-radius: 6px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: #fff;
+  border: 1px solid transparent;
+  background: var(--accent-strong);
+  color: var(--white);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -3950,7 +4009,7 @@ mark.search-highlight-current {
 .refresh-button {
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--text-secondary);
   padding: 3px 10px;
   font-size: 12px;
