@@ -100,18 +100,24 @@ body {
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   overflow: hidden;
 }
 
+/* Loading view still centers itself inside the tab. */
+.opener-tab .empty-message {
+  align-self: center;
+}
+
 .opener-error {
-  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
   padding: 12px 16px;
-  border: 1px solid var(--diff-remove-text);
-  border-radius: 6px;
+  border: 1px solid rgba(248, 81, 73, 0.5);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
   text-align: left;
-  max-width: 600px;
 }
 
 .opener-error strong {
@@ -4660,4 +4666,299 @@ mark.search-highlight-current {
 
 .sidebar-overview-link.active {
   color: var(--accent);
+}
+
+/* ─── Review queue home (opener tab) ──────────────────────────────────── */
+.queue-home {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-4) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+  height: 100%;
+}
+
+.queue-omnibox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.queue-omnibox {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-md);
+  padding: 9px 14px;
+}
+
+.queue-omnibox:focus-within {
+  border-color: var(--accent);
+}
+
+.queue-omnibox-icon {
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.queue-omnibox input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-family: var(--font-sans);
+}
+
+.queue-omnibox input::placeholder {
+  color: var(--text-muted);
+}
+
+.queue-omnibox-open {
+  flex-shrink: 0;
+  padding: 3px 12px;
+  background: var(--accent-strong);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--white);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.queue-omnibox-open:hover {
+  background: var(--accent-strong-hover);
+}
+
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 10px var(--space-3);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.queue-row:hover {
+  background: var(--bg-secondary);
+  border-color: var(--chip-border);
+}
+
+.queue-row--dim {
+  opacity: 0.6;
+}
+
+.queue-row--dim:hover {
+  opacity: 1;
+}
+
+.queue-avatar {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.queue-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.queue-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-repo {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: 8px;
+}
+
+.queue-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.queue-why {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-review-btn {
+  flex-shrink: 0;
+  padding: 3px 12px;
+  border-radius: var(--radius-md);
+  background: var(--accent-strong);
+  color: var(--white);
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.queue-row:hover .queue-review-btn {
+  opacity: 1;
+}
+
+.queue-drop-hint {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  text-align: center;
+  padding-top: var(--space-3);
+}
+
+.opener-retry {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 4px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.opener-retry:hover {
+  border-color: var(--text-muted);
+}
+
+/* ─── Command palette ─────────────────────────────────────────────────── */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 12, 0.55);
+  z-index: 90;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+}
+
+.palette {
+  width: 520px;
+  max-width: 90vw;
+  background: var(--bg-secondary);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.palette-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--chip-border);
+}
+
+.palette-icon {
+  color: var(--accent);
+  font-size: 15px;
+}
+
+.palette-input-row input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-family: var(--font-sans);
+}
+
+.palette-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+}
+
+.palette-section {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 10px 10px 3px;
+}
+
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.palette-row.selected {
+  background: var(--accent-bg);
+}
+
+.palette-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.palette-empty {
+  padding: 16px 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.toolbar-menu-hint {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
 }

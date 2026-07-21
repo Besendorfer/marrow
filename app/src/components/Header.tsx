@@ -55,6 +55,7 @@ interface HeaderProps {
   myReviewState?: MyReviewState;
   checksBlocking?: boolean;
   onCheckForUpdates: () => void;
+  onOpenPalette: () => void;
 }
 
 export function Header({
@@ -80,6 +81,7 @@ export function Header({
   myReviewState,
   checksBlocking,
   onCheckForUpdates,
+  onOpenPalette,
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
@@ -196,6 +198,7 @@ export function Header({
             </div>
             {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} myReviewState={myReviewState} checksBlocking={checksBlocking} />}
             <ToolbarMenu
+              onOpenPalette={onOpenPalette}
               showHunkSignificance={showHunkSignificance}
               onToggleHunkSignificance={onToggleHunkSignificance}
               showAiNotes={showAiNotes}
@@ -217,6 +220,7 @@ export function Header({
 }
 
 function ToolbarMenu({
+  onOpenPalette,
   showHunkSignificance,
   onToggleHunkSignificance,
   showAiNotes,
@@ -225,6 +229,7 @@ function ToolbarMenu({
   onSettingsClick,
   onCheckForUpdates,
 }: {
+  onOpenPalette: () => void;
   showHunkSignificance: boolean;
   onToggleHunkSignificance: () => void;
   showAiNotes: boolean;
@@ -274,6 +279,17 @@ function ToolbarMenu({
           >
             <span className="toolbar-menu-check" />
             View on GitHub
+          </button>
+          <button
+            className="toolbar-menu-item"
+            onClick={() => {
+              onOpenPalette();
+              setIsOpen(false);
+            }}
+          >
+            <span className="toolbar-menu-check" />
+            Command palette
+            <span className="toolbar-menu-hint">⌘K</span>
           </button>
           <button
             className="toolbar-menu-item"

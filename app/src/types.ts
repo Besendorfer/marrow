@@ -116,6 +116,8 @@ export interface Tab {
   unread?: boolean;
   /** error message from a failed fetch in this (still pending) tab; null otherwise */
   error?: string | null;
+  /** last PR ref this tab tried to fetch — lets a failed fetch offer Retry */
+  lastPrRef?: string | null;
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
   staleViewedFiles: Set<string>;

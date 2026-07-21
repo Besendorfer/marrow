@@ -5,6 +5,12 @@ import type { ReviewRequestItem, ReviewStatus, Settings, CachedPrInfo } from "..
 interface ReviewRequestListProps {
   onSelectPr: (prRef: string) => void;
   openPrUrls: Set<string>;
+  /** Text filter from the omnibox — matches repo, title, and author. */
+  filter?: string;
+}
+
+function initials(login: string): string {
+  return login.slice(0, 2).toUpperCase();
 }
 
 function formatTimeAgo(dateStr: string): string {
@@ -43,7 +49,7 @@ const STATUS_CLASSES: Record<ReviewStatus, string> = {
   pending: "",
 };
 
-export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListProps) {
+export function ReviewRequestList({ onSelectPr, openPrUrls, filter }: ReviewRequestListProps) {
   const [cachedPrs, setCachedPrs] = useState<CachedPrInfo[]>([]);
   const [recentItems, setRecentItems] = useState<ReviewRequestItem[]>([]);
   const [olderItems, setOlderItems] = useState<ReviewRequestItem[]>([]);
@@ -154,24 +160,38 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
     });
   }
 
+  const needle = (filter ?? "").trim().toLowerCase();
+  const matchesFilter = useCallback(
+    (repo: string, title: string, author: string) =>
+      needle === "" ||
+      repo.toLowerCase().includes(needle) ||
+      title.toLowerCase().includes(needle) ||
+      author.toLowerCase().includes(needle),
+    [needle]
+  );
+
   const filteredRecent = useMemo(() => {
     return recentItems.filter((item) => {
       if (!item.direct_request && !showTeam) return false;
-      return true;
+      return matchesFilter(`${item.owner}/${item.repo}`, item.title, item.author);
     });
-  }, [recentItems, showTeam]);
+  }, [recentItems, showTeam, matchesFilter]);
 
   const filteredOlder = useMemo(() => {
     if (!showOlder) return [];
     return olderItems.filter((item) => {
       if (!item.direct_request && !showTeam) return false;
-      return true;
+      return matchesFilter(`${item.owner}/${item.repo}`, item.title, item.author);
     });
-  }, [olderItems, showOlder, showTeam]);
+  }, [olderItems, showOlder, showTeam, matchesFilter]);
 
   const filteredCached = useMemo(() => {
-    return cachedPrs.filter((pr) => !openPrUrls.has(pr.pr_url));
-  }, [cachedPrs, openPrUrls]);
+    return cachedPrs.filter(
+      (pr) =>
+        !openPrUrls.has(pr.pr_url) &&
+        matchesFilter(`${pr.owner}/${pr.repo}`, pr.pr_title, "")
+    );
+  }, [cachedPrs, openPrUrls, matchesFilter]);
 
   const hasRecent = recentItems.length > 0;
   const hasOlder = olderItems.length > 0;
@@ -201,7 +221,7 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
     return (
       <div className="review-requests">
         <div className="review-requests-header">
-          <span className="review-requests-title">Review Requests</span>
+          <span className="review-requests-title">Review queue</span>
         </div>
         <div className="review-requests-loading">
           <div className="loading-view-spinner" />
@@ -215,7 +235,7 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
     return (
       <div className="review-requests">
         <div className="review-requests-header">
-          <span className="review-requests-title">Review Requests</span>
+          <span className="review-requests-title">Review queue</span>
         </div>
         <div className="review-requests-error">
           <span>{error}</span>
@@ -231,10 +251,10 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
     return (
       <div className="review-requests">
         <div className="review-requests-header">
-          <span className="review-requests-title">Review Requests</span>
+          <span className="review-requests-title">Review queue</span>
           <button className="review-requests-refresh" onClick={refreshAll}>Refresh</button>
         </div>
-        <div className="review-requests-empty">No pending review requests</div>
+        <div className="review-requests-empty">You're all caught up — no PRs are waiting on your review.</div>
       </div>
     );
   }
@@ -246,7 +266,7 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
   return (
     <div className="review-requests">
       <div className="review-requests-header">
-        <span className="review-requests-title">Review Requests</span>
+        <span className="review-requests-title">Review queue</span>
         {filterBar}
         <button className="review-requests-refresh" onClick={refreshAll}>Refresh</button>
       </div>
@@ -255,12 +275,12 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
           <CachedPrSection items={filteredCached} onSelectPr={onSelectPr} />
         )}
         {noFilterResults ? (
-          <div className="review-requests-empty">No results match current filters</div>
+          <div className="review-requests-empty">Nothing in the queue matches.</div>
         ) : (
           <>
             {filteredRecent.length > 0 && (
               <ReviewRequestSection
-                label="Last 30 days"
+                label="Needs your review"
                 items={filteredRecent}
                 onSelectPr={onSelectPr}
                 showGroupHeaders={showTeam && filteredRecent.some((i) => i.direct_request) && filteredRecent.some((i) => !i.direct_request)}
@@ -355,27 +375,29 @@ function ReviewRequestRow({
   const statusClass = STATUS_CLASSES[item.my_review_status];
 
   return (
-    <button
-      className="review-request-item"
-      onClick={() => onSelect(prRef)}
-    >
-      <div className="review-request-item-top">
-        <span className="review-request-repo">{item.owner}/{item.repo}</span>
-        <span className="review-request-number">#{item.number}</span>
-        {statusLabel && (
-          <span className={`review-status-badge ${statusClass}`}>{statusLabel}</span>
-        )}
-        {item.unresolved_thread_count > 0 && (
-          <span className="review-threads-badge">
-            {item.unresolved_thread_count} unresolved
+    <button className="queue-row" onClick={() => onSelect(prRef)}>
+      <span className="queue-avatar" aria-hidden="true">{initials(item.author)}</span>
+      <span className="queue-main">
+        <span className="queue-title">
+          <span className="queue-repo">{item.owner}/{item.repo}#{item.number}</span>
+          {item.title}
+        </span>
+        <span className="queue-meta">
+          <span className="queue-why">
+            {item.direct_request ? "Review requested" : "Team review request"} by{" "}
+            {item.author} · {formatTimeAgo(item.created_at)}
           </span>
-        )}
-      </div>
-      <div className="review-request-title">{item.title}</div>
-      <div className="review-request-meta">
-        <span className="review-request-author">{item.author}</span>
-        <span className="review-request-time">{formatTimeAgo(item.created_at)}</span>
-      </div>
+          {statusLabel && (
+            <span className={`review-status-badge ${statusClass}`}>{statusLabel}</span>
+          )}
+          {item.unresolved_thread_count > 0 && (
+            <span className="review-threads-badge">
+              {item.unresolved_thread_count} unresolved
+            </span>
+          )}
+        </span>
+      </span>
+      <span className="queue-review-btn">Review</span>
     </button>
   );
 }
@@ -396,7 +418,7 @@ function CachedPrSection({
         onClick={() => setCollapsed((v) => !v)}
       >
         <span className={`collapse-chevron ${collapsed ? "collapsed" : ""}`}>&#9662;</span>
-        <span className="review-requests-section-label">Recently Analyzed</span>
+        <span className="review-requests-section-label">Recently analyzed</span>
         <span className="review-requests-group-count">{items.length}</span>
       </button>
       {!collapsed && (
@@ -406,19 +428,22 @@ function CachedPrSection({
             return (
               <button
                 key={pr.pr_url}
-                className="review-request-item cached-pr-item"
+                className="queue-row queue-row--dim"
                 onClick={() => onSelectPr(prRef)}
               >
-                <div className="review-request-item-top">
-                  <span className="review-request-repo">{pr.owner}/{pr.repo}</span>
-                  <span className="review-request-number">#{pr.pr_number}</span>
-                  <span className="cached-badge" title="Loads instantly from cache">&#9889;</span>
-                </div>
-                <div className="review-request-title">{pr.pr_title}</div>
-                <div className="review-request-meta">
-                  <span className="review-request-author">{pr.file_count} file{pr.file_count !== 1 ? "s" : ""}</span>
-                  <span className="review-request-time">{formatTimeAgo(pr.cached_at)}</span>
-                </div>
+                <span className="queue-avatar" aria-hidden="true">{initials(pr.repo)}</span>
+                <span className="queue-main">
+                  <span className="queue-title">
+                    <span className="queue-repo">{pr.owner}/{pr.repo}#{pr.pr_number}</span>
+                    {pr.pr_title}
+                  </span>
+                  <span className="queue-meta">
+                    <span className="queue-why">
+                      Analyzed {formatTimeAgo(pr.cached_at)} · {pr.file_count} file{pr.file_count !== 1 ? "s" : ""} · opens instantly
+                    </span>
+                  </span>
+                </span>
+                <span className="queue-review-btn">Open</span>
               </button>
             );
           })}
