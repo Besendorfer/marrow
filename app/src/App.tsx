@@ -17,6 +17,8 @@ import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
 import { ReviewPicker } from "./components/ReviewPicker";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
+import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
@@ -41,8 +43,10 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [queueFilter, setQueueFilter] = useState("");
   const searchRef = useRef<SearchBarHandle>(null);
   const diffViewerRef = useRef<DiffViewerHandle>(null);
   // Visible file order from the sidebar, used by the [ / ] navigation shortcuts.
@@ -247,7 +251,8 @@ function App() {
       onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
-      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); },
+      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); setPaletteOpen(false); },
+      onTogglePalette: () => setPaletteOpen((v) => !v),
       onNextTab: () => selectAdjacentTab(1),
       onPrevTab: () => selectAdjacentTab(-1),
       onCloseTab: () => { if (activeTabId) closeTab(activeTabId); },
@@ -275,7 +280,7 @@ function App() {
     },
     {
       enabled: !!activeTab?.manifest,
-      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen,
+      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen,
     },
   );
 
@@ -635,6 +640,7 @@ function App() {
     updateTab(loadingTabId, (t) => ({
       ...t,
       error: null,
+      lastPrRef: prRef,
       loading: { prRef, prTitle: null, progress: null, fileCounts: {} },
     }));
 
@@ -1462,8 +1468,43 @@ function App() {
     }
   }
 
+  // Command palette registry — searchable home for every action, with the
+  // keyboard hint teaching the direct shortcut. Review commands only appear
+  // when a PR is loaded.
+  const paletteCommands: PaletteCommand[] = [];
+  if (activeTab?.manifest) {
+    const m = activeTab.manifest;
+    paletteCommands.push(
+      { id: "overview", section: "Review", title: "Back to overview", run: () => { if (activeTabId) updateTab(activeTabId, (t) => ({ ...t, selectedFile: null })); } },
+      { id: "next-file", section: "Review", title: "Next file", keys: "]", run: () => selectAdjacentFile(1) },
+      { id: "prev-file", section: "Review", title: "Previous file", keys: "[", run: () => selectAdjacentFile(-1) },
+      { id: "mark-viewed", section: "Review", title: "Mark file reviewed", keys: "V", run: () => { const p = activeTab.selectedFile?.path; if (p) toggleViewed(p); } },
+      { id: "mark-next", section: "Review", title: "Mark reviewed and go to next", run: markReviewedAndAdvance },
+      { id: "finish", section: "Review", title: "Finish review…", keys: "R", run: () => setReviewPickerOpen(true) },
+      { id: "search", section: "Review", title: "Search in diffs", keys: "/", run: () => searchRef.current?.open("local") },
+      { id: "threads", section: "Review", title: "Toggle threads view", keys: "T", run: toggleThreadsView },
+      { id: "refresh", section: "Review", title: "Refresh PR", keys: "⌃R", run: handleRefreshPr },
+      { id: "github", section: "Review", title: "Open PR on GitHub", run: () => { openUrl(m.pr_url); } },
+      { id: "view-split", section: "View", title: "Split diff view", run: () => setViewMode("split") },
+      { id: "view-unified", section: "View", title: "Unified diff view", run: () => setViewMode("unified") },
+      { id: "toggle-sig", section: "View", title: showHunkSignificance ? "Hide hunk significance" : "Show hunk significance", run: () => setShowHunkSignificance((v) => !v) },
+      { id: "toggle-notes", section: "View", title: showAiNotes ? "Hide AI notes" : "Show AI notes", run: () => setShowAiNotes((v) => !v) },
+    );
+  }
+  paletteCommands.push(
+    { id: "new-tab", section: "App", title: "New review tab", keys: "⌃T", run: handleNewReview },
+    { id: "settings", section: "App", title: "Settings…", run: () => setSettingsOpen(true) },
+    { id: "updates", section: "App", title: "Check for updates", run: () => checkForUpdates(false) },
+    { id: "help", section: "App", title: "Keyboard shortcuts", keys: "?", run: () => setHelpOpen(true) },
+  );
+
   const overlays = (
     <>
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={paletteCommands}
+      />
       <UpdateBanner
         status={updateStatus}
         onDownload={handleDownloadUpdate}
@@ -1536,6 +1577,7 @@ function App() {
         myReviewState={activeTab?.myReviewState}
         checksBlocking={showChecksModal}
         onCheckForUpdates={() => checkForUpdates(false)}
+        onOpenPalette={() => setPaletteOpen(true)}
       />
       <SettingsModal
         open={settingsOpen}
@@ -1547,8 +1589,8 @@ function App() {
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleFileDrop}
         >
-          <div className="empty-message">
-            {activeTab.loading ? (
+          {activeTab.loading ? (
+            <div className="empty-message">
               <LoadingView
                 prRef={activeTab.loading.prRef}
                 prTitle={activeTab.loading.prTitle}
@@ -1556,31 +1598,41 @@ function App() {
                 fileCounts={activeTab.loading.fileCounts}
                 onCancel={() => handleFetchCancel(activeTab.id)}
               />
-            ) : (
-              <>
-                {activeTab.error && (
-                  <div className="opener-error" role="alert">
-                    <strong>Failed to load PR</strong>
-                    <pre>{activeTab.error}</pre>
-                  </div>
-                )}
-                <h1>Marrow</h1>
-                <p>
-                  Drop a manifest JSON file here, or enter a PR URL below to start
-                  a review.
-                </p>
-                <PrOpener
-                  onFetchStart={(ref) => handleFetchStart(ref, activeTab.id)}
-                  onSettingsClick={() => setSettingsOpen(true)}
-                  onCheckForUpdates={() => checkForUpdates(false)}
-                />
-                <ReviewRequestList
-                  onSelectPr={(ref) => handleFetchStart(ref, activeTab.id)}
-                  openPrUrls={openPrUrls}
-                />
-              </>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="queue-home">
+              <PrOpener
+                onFetchStart={(ref) => handleFetchStart(ref, activeTab.id)}
+                onFilterChange={setQueueFilter}
+                onSettingsClick={() => setSettingsOpen(true)}
+                onCheckForUpdates={() => checkForUpdates(false)}
+              />
+              {activeTab.error && (
+                <div className="opener-error" role="alert">
+                  <strong>
+                    Couldn't load {activeTab.lastPrRef ?? "the PR"}
+                  </strong>
+                  <pre>{activeTab.error}</pre>
+                  {activeTab.lastPrRef && (
+                    <button
+                      className="opener-retry"
+                      onClick={() => handleFetchStart(activeTab.lastPrRef!, activeTab.id)}
+                    >
+                      Try again
+                    </button>
+                  )}
+                </div>
+              )}
+              <ReviewRequestList
+                onSelectPr={(ref) => handleFetchStart(ref, activeTab.id)}
+                openPrUrls={openPrUrls}
+                filter={queueFilter}
+              />
+              <div className="queue-drop-hint">
+                Tip: drop a manifest JSON file anywhere here to load a review.
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="review-content">
