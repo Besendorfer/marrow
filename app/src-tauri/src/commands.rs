@@ -1,4 +1,7 @@
+use marrow_core::ai::{AiBackend, ChatRole, ChatTurn};
 use marrow_core::bedrock::{region_from_arn, BedrockClient};
+use marrow_core::chat::{build_chat_system, ChatContext};
+use marrow_core::chat_history::{self, StoredChat};
 use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
@@ -9,10 +12,13 @@ use marrow_core::dismissed_highlights::{self, DismissedHighlights};
 use marrow_core::viewed_state::{self, ViewedFileState};
 use marrow_core::activity::{self, Observed};
 use marrow_core::watches::{self, Watch};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
+use tauri::ipc::Channel;
 use tauri::{command, State};
+use tokio_util::sync::CancellationToken;
 
 pub struct AppState {
     pub manifest_path: Mutex<Option<String>>,
@@ -23,6 +29,9 @@ pub struct AppState {
     // replay; after that point, hot-open emits suffice and we skip buffering
     // to avoid replaying stale URLs on the next cold-start.
     pub frontend_ready: Mutex<bool>,
+    // In-flight chat requests, keyed by a frontend-generated request id. Firing
+    // a token aborts the corresponding streaming `chat_send` (see `chat_cancel`).
+    pub chat_cancels: Mutex<HashMap<String, CancellationToken>>,
 }
 
 fn github_client() -> GithubClient {
@@ -573,6 +582,128 @@ pub fn load_cached_manifest_by_pr(pr_url: String) -> Result<Option<ReviewManifes
         &parsed.repo,
         parsed.number,
     ))
+}
+
+/// One prior turn of the conversation, as sent from the frontend.
+#[derive(Debug, Deserialize)]
+pub struct ChatTurnDto {
+    pub role: String,
+    pub content: String,
+}
+
+/// A chat request: a unique id (so the stream can be cancelled), the grounding
+/// context, the conversation so far, and the new user message.
+#[derive(Debug, Deserialize)]
+pub struct ChatRequest {
+    pub request_id: String,
+    pub context: ChatContext,
+    #[serde(default)]
+    pub history: Vec<ChatTurnDto>,
+    pub message: String,
+}
+
+/// Streaming events sent back over the IPC channel while a chat answer is
+/// generated.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatStreamEvent {
+    /// A fragment of the assistant's answer.
+    Delta { text: String },
+    /// A transient status (e.g. the CLI agent using tools); `label` None clears it.
+    Status { label: Option<String> },
+    /// The stream finished cleanly; `content` is the full assembled answer.
+    Done { content: String },
+    /// The stream failed; `message` is a human-readable error.
+    Error { message: String },
+}
+
+fn dto_role(role: &str) -> ChatRole {
+    match role {
+        "assistant" => ChatRole::Assistant,
+        _ => ChatRole::User,
+    }
+}
+
+#[command]
+pub async fn chat_send(
+    state: State<'_, AppState>,
+    channel: Channel<ChatStreamEvent>,
+    request: ChatRequest,
+) -> Result<(), String> {
+    let settings = load_settings();
+    let backend = match AiBackend::from_settings(&settings).await {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = channel.send(ChatStreamEvent::Error { message: e });
+            return Ok(());
+        }
+    };
+
+    let system = build_chat_system(&request.context);
+    let mut turns: Vec<ChatTurn> = request
+        .history
+        .iter()
+        .map(|t| ChatTurn { role: dto_role(&t.role), content: t.content.clone() })
+        .collect();
+    turns.push(ChatTurn { role: ChatRole::User, content: request.message });
+
+    // Register a cancellation token so `chat_cancel` can abort this stream. The
+    // std Mutex guard must be dropped before any await (it isn't Send).
+    let token = CancellationToken::new();
+    let request_id = request.request_id.clone();
+    state.chat_cancels.lock().unwrap().insert(request_id.clone(), token.clone());
+
+    let update_channel = channel.clone();
+    let mut on_update = move |u: marrow_core::ai::StreamUpdate| {
+        let ev = match u {
+            marrow_core::ai::StreamUpdate::Delta(text) => ChatStreamEvent::Delta { text },
+            marrow_core::ai::StreamUpdate::Status(label) => ChatStreamEvent::Status { label },
+        };
+        let _ = update_channel.send(ev);
+    };
+
+    // Race the streaming call against cancellation. On cancel, the select drops
+    // the `invoke_chat_stream` future — closing the HTTP/Bedrock stream (and
+    // killing the `claude` child, which is spawned with kill_on_drop) — and we
+    // send nothing further. The frontend keeps the partial answer it streamed.
+    tokio::select! {
+        result = backend.invoke_chat_stream(&system, &turns, &mut on_update) => {
+            match result {
+                Ok(content) => { let _ = channel.send(ChatStreamEvent::Done { content }); }
+                Err(message) => { let _ = channel.send(ChatStreamEvent::Error { message }); }
+            }
+        }
+        _ = token.cancelled() => {
+            // Aborted by the user; the partial answer already lives on the frontend.
+        }
+    }
+
+    state.chat_cancels.lock().unwrap().remove(&request_id);
+    Ok(())
+}
+
+/// Abort an in-flight [`chat_send`] identified by `request_id`. A no-op if the
+/// request already finished or never existed.
+#[command]
+pub fn chat_cancel(state: State<AppState>, request_id: String) {
+    if let Some(token) = state.chat_cancels.lock().unwrap().get(&request_id) {
+        token.cancel();
+    }
+}
+
+#[command]
+pub fn load_chat_history(owner: String, repo: String, pr_number: u64) -> Option<StoredChat> {
+    chat_history::load_chat(&owner, &repo, pr_number)
+}
+
+#[command]
+pub fn save_chat_history(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    state: StoredChat,
+) -> Result<(), String> {
+    chat_history::save_chat(&owner, &repo, pr_number, &state)
 }
 
 #[command]

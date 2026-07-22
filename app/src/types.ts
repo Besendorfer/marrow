@@ -95,6 +95,39 @@ export type CommentThreadsState =
   | { status: "loaded"; threads: ReviewThread[] }
   | { status: "error"; message: string };
 
+/** One turn of the per-PR review chat. `filePath` records which file was in
+ * focus when a user message was sent (for display); undefined for whole-PR scope. */
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  filePath?: string;
+}
+
+/** Tab-scoped state for the conversational diff Q&A panel. */
+export interface ChatState {
+  messages: ChatMessage[];
+  /** "idle" between turns; "streaming" while an answer is being generated. */
+  status: "idle" | "streaming";
+  /** The in-progress assistant answer accumulated from stream deltas. */
+  streamingText: string;
+  /** Transient status shown while the AI is working but not emitting text
+   * (e.g. the CLI agent using tools between blocks); null when none. */
+  streamingStatus: string | null;
+  /** When true, ground answers in the whole PR rather than the selected file. */
+  includeWholePr: boolean;
+  /** Whether the chat dock is open. */
+  open: boolean;
+  /** Last error message from a failed request, if any. */
+  error?: string;
+}
+
+/** Streaming events sent from the backend `chat_send` command over the IPC channel. */
+export type ChatStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "status"; label: string | null }
+  | { type: "done"; content: string }
+  | { type: "error"; message: string };
+
 export type SidebarView = "groups" | "comments" | "category" | "tree";
 
 export type DiffViewMode = "split" | "unified";
@@ -125,6 +158,8 @@ export interface Tab {
   staleViewedFiles: Set<string>;
   /** Keys (see highlightKey) of AI highlights the user has dismissed for this PR. */
   dismissedHighlights: Set<string>;
+  /** Conversational diff Q&A state for this PR. */
+  chat: ChatState;
   commentThreads: CommentThreadsState;
   selectedCommentFile: string | null;
   sidebarView: SidebarView;

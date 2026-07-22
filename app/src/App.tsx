@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileSidebar } from "./components/FileSidebar";
 import { DiffViewer, detectLanguage, type DiffViewerHandle } from "./components/DiffViewer";
@@ -19,18 +19,24 @@ import { ReviewPicker } from "./components/ReviewPicker";
 import { ToastContainer, createToast, type ToastData } from "./components/Toast";
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
 import { WelcomeSetup } from "./components/WelcomeSetup";
+import { ChatPanel } from "./components/ChatPanel";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
 function isOpenerTab(tab: Tab): boolean {
   return !tab.manifest && !tab.loading && !tab.error;
+}
+
+/** A fresh, closed chat panel for a new tab. */
+function emptyChatState(): ChatState {
+  return { messages: [], status: "idle", streamingText: "", streamingStatus: null, includeWholePr: false, open: false };
 }
 
 function App() {
@@ -307,6 +313,7 @@ function App() {
       onReply: () => diffViewerRef.current?.replyAtCursor(),
       onResolve: () => diffViewerRef.current?.resolveAtCursor(),
       onReviewPicker: () => { if (activeTab?.manifest) setReviewPickerOpen(true); },
+      onToggleChat: () => { if (!welcomeOpen) toggleChatOpen(); },
     },
     {
       enabled: !!activeTab?.manifest,
@@ -326,6 +333,7 @@ function App() {
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
+      chat: emptyChatState(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
       sidebarView: hasGroups ? "groups" : "category",
@@ -350,6 +358,7 @@ function App() {
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
+      chat: emptyChatState(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
       sidebarView: "category",
@@ -439,6 +448,7 @@ function App() {
             for (const tab of restored) {
               loadPersistedViewedState(tab);
               loadDismissedHighlights(tab);
+              loadChatHistory(tab);
               fetchMyReviewState(tab.id, tab.manifest!.pr_url);
               fetchChecksStatus(tab.id, tab.manifest!.pr_url);
             }
@@ -528,6 +538,7 @@ function App() {
     setError(null);
     loadPersistedViewedState(tab);
     loadDismissedHighlights(tab);
+    loadChatHistory(tab);
     fetchMyReviewState(tabId, data.pr_url);
     fetchChecksStatus(tabId, data.pr_url);
     if (!isActive) {
@@ -547,6 +558,7 @@ function App() {
     setError(null);
     loadPersistedViewedState(tab);
     loadDismissedHighlights(tab);
+    loadChatHistory(tab);
     fetchMyReviewState(tab.id, data.pr_url);
     fetchChecksStatus(tab.id, data.pr_url);
   }
@@ -637,6 +649,164 @@ function App() {
     const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
     invoke("save_dismissed_highlights", { owner, repo, prNumber: number, state: { keys: [...next] } })
       .catch(() => addToast("error", "Couldn't save — this dismissal may not persist"));
+  }
+
+  async function loadChatHistory(tab: Tab) {
+    if (!tab.manifest) return;
+    try {
+      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+      const saved = await invoke<{ messages: ChatMessage[] } | null>("load_chat_history", { owner, repo, prNumber: number });
+      if (saved && saved.messages.length > 0) {
+        updateTab(tab.id, (t) => ({ ...t, chat: { ...t.chat, messages: saved.messages } }));
+      }
+    } catch {
+      // Non-critical: start with an empty conversation on failure
+    }
+  }
+
+  // ---- Conversational diff Q&A (chat) ----
+
+  // Per-tab flag: when true, in-flight stream events for that tab are ignored
+  // (the user pressed Stop, cleared the chat, or sent a fresh message).
+  const chatCancelRef = useRef<Record<string, boolean>>({});
+  // Per-tab id of the in-flight chat request, so Stop can abort it server-side.
+  const chatRequestIdRef = useRef<Record<string, string>>({});
+
+  /** The diff/content context for the chat. Effective scope is the whole PR
+   * (relevant files only) when `includeWholePr` is set OR no file is selected
+   * (the overview) — auto-scope means there's no "select a file first" error
+   * path. Whole-PR omits full contents to save budget. AI highlights ride
+   * along so questions about "the warning on L287-318" resolve against them. */
+  function buildChatFiles(tab: Tab): Array<{ path: string; unified_diff: string; head_content?: string; highlights: FileDiff["highlights"] }> {
+    const manifest = tab.manifest!;
+    if (tab.chat.includeWholePr || !tab.selectedFile) {
+      const relevant = manifest.files.filter((f) => f.classification === "RELEVANT");
+      const files = relevant.length > 0 ? relevant : manifest.files;
+      return files.map((f) => ({ path: f.path, unified_diff: f.unified_diff, highlights: f.highlights }));
+    }
+    const f = tab.selectedFile;
+    return [{ path: f.path, unified_diff: f.unified_diff, head_content: f.head_content, highlights: f.highlights }];
+  }
+
+  /** Append the assistant's answer, return the chat to idle, and persist. */
+  function finalizeChat(tabId: string, prUrl: string, content: string) {
+    const tab = tabsRef.current.find((t) => t.id === tabId);
+    const messages: ChatMessage[] = [...(tab?.chat.messages ?? []), { role: "assistant", content }];
+    updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, messages, status: "idle", streamingText: "", streamingStatus: null } }));
+    try {
+      const { owner, repo, number } = parsePrUrl(prUrl);
+      invoke("save_chat_history", { owner, repo, prNumber: number, state: { messages } }).catch(() => {});
+    } catch {
+      // Non-critical: an unparseable URL just means this turn isn't persisted.
+    }
+  }
+
+  function handleChatSend(message: string) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest) return;
+    const tabId = tab.id;
+    const manifest = tab.manifest;
+    const files = buildChatFiles(tab);
+    if (files.length === 0) return;
+    const userMsg: ChatMessage = {
+      role: "user",
+      content: message,
+      filePath: tab.chat.includeWholePr ? undefined : tab.selectedFile?.path,
+    };
+    // Cap the history sent to the model — full history still renders and persists.
+    const history = tab.chat.messages.slice(-12).map((m) => ({ role: m.role, content: m.content }));
+    const requestId = crypto.randomUUID();
+
+    chatCancelRef.current[tabId] = false;
+    chatRequestIdRef.current[tabId] = requestId;
+    updateTab(tabId, (t) => ({
+      ...t,
+      chat: { ...t.chat, messages: [...t.chat.messages, userMsg], status: "streaming", streamingText: "", streamingStatus: null, error: undefined },
+    }));
+
+    const channel = new Channel<ChatStreamEvent>();
+    channel.onmessage = (ev) => {
+      // Drop events from a cancelled request AND from a superseded one: after
+      // Stop → new send, stragglers from the old stream can still arrive
+      // (chat_cancel is fire-and-forget) and must not touch the new request.
+      if (chatCancelRef.current[tabId] || chatRequestIdRef.current[tabId] !== requestId) return;
+      if (ev.type === "delta") {
+        // Any text clears a pending "Working…" status.
+        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, streamingText: t.chat.streamingText + ev.text, streamingStatus: null } }));
+      } else if (ev.type === "status") {
+        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, streamingStatus: ev.label } }));
+      } else if (ev.type === "done") {
+        finalizeChat(tabId, manifest.pr_url, ev.content);
+      } else if (ev.type === "error") {
+        updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "", streamingStatus: null, error: ev.message } }));
+      }
+    };
+
+    invoke("chat_send", {
+      channel,
+      request: { request_id: requestId, context: { pr_title: manifest.pr_title, summary: manifest.summary, files }, history, message },
+    }).catch((err) => {
+      if (chatCancelRef.current[tabId] || chatRequestIdRef.current[tabId] !== requestId) return;
+      updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "", error: String(err) } }));
+    });
+  }
+
+  /** Abort the in-flight stream (server-side too) and keep whatever streamed so far. */
+  function handleChatStop() {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest) return;
+    chatCancelRef.current[tab.id] = true;
+    const requestId = chatRequestIdRef.current[tab.id];
+    if (requestId) invoke("chat_cancel", { requestId }).catch(() => {});
+    const partial = tab.chat.streamingText.trim();
+    if (partial) {
+      finalizeChat(tab.id, tab.manifest.pr_url, partial);
+    } else {
+      updateTab(tab.id, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "" } }));
+    }
+  }
+
+  function handleChatClear() {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest) return;
+    chatCancelRef.current[tab.id] = true;
+    if (tab.chat.status === "streaming") {
+      const requestId = chatRequestIdRef.current[tab.id];
+      if (requestId) invoke("chat_cancel", { requestId }).catch(() => {});
+    }
+    updateTab(tab.id, (t) => ({ ...t, chat: { ...t.chat, messages: [], status: "idle", streamingText: "", error: undefined } }));
+    try {
+      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+      invoke("save_chat_history", { owner, repo, prNumber: number, state: { messages: [] } }).catch(() => {});
+    } catch {
+      // Non-critical.
+    }
+  }
+
+  function setChatOpen(open: boolean) {
+    updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, open } }));
+  }
+
+  function toggleChatOpen() {
+    updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, open: !t.chat.open } }));
+  }
+
+  function handleChatToggleWholePr(value: boolean) {
+    updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, includeWholePr: value } }));
+  }
+
+  /** Resolve a file mention from the chat (exact path, or a unique suffix
+   * match against the manifest) and select it. No absolute-line scroll API
+   * exists on DiffViewerHandle (only relative cursor movement), so this is a
+   * file-level jump only — the line number is accepted but unused. */
+  function handleChatOpenFile(path: string, _line?: number) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return;
+    const files = tab.manifest.files;
+    const exact = files.find((f) => f.path === path);
+    if (exact) { setSelectedFile(exact); return; }
+    const suffixMatches = files.filter((f) => f.path.endsWith("/" + path));
+    if (suffixMatches.length === 1) setSelectedFile(suffixMatches[0]);
   }
 
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -1530,6 +1700,7 @@ function App() {
       { id: "threads", section: "Review", title: "Toggle threads view", keys: "T", run: toggleThreadsView },
       { id: "refresh", section: "Review", title: "Refresh PR", keys: "⌃R", run: handleRefreshPr },
       { id: "github", section: "Review", title: "Open PR on GitHub", run: () => { openUrl(m.pr_url); } },
+      { id: "ask-ai", section: "Review", title: "Ask AI about this change", keys: "⌘J", run: toggleChatOpen },
       { id: "view-split", section: "View", title: "Split diff view", run: () => setViewMode("split") },
       { id: "view-unified", section: "View", title: "Unified diff view", run: () => setViewMode("unified") },
       { id: "toggle-sig", section: "View", title: showHunkSignificance ? "Hide hunk significance" : "Show hunk significance", run: () => setShowHunkSignificance((v) => !v) },
@@ -1627,6 +1798,8 @@ function App() {
         checksBlocking={showChecksModal}
         onCheckForUpdates={() => checkForUpdates(false)}
         onOpenPalette={() => setPaletteOpen(true)}
+        chatOpen={activeTab?.chat.open ?? false}
+        onToggleChat={activeTab?.manifest ? toggleChatOpen : undefined}
       />
       <SettingsModal
         open={settingsOpen}
@@ -1810,6 +1983,19 @@ function App() {
             )}
           </div>
           </>
+          )}
+          {activeTab.chat.open && (
+            <ChatPanel
+              chat={activeTab.chat}
+              selectedFilePath={activeTab.selectedFile?.path ?? null}
+              filePaths={activeTab.manifest.files.map((f) => f.path)}
+              onSend={handleChatSend}
+              onStop={handleChatStop}
+              onClose={() => setChatOpen(false)}
+              onClear={handleChatClear}
+              onToggleWholePr={handleChatToggleWholePr}
+              onOpenFile={handleChatOpenFile}
+            />
           )}
         </div>
         </div>

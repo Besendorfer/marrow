@@ -87,6 +87,7 @@ pub fn run() {
             pending_deep_link: Mutex::new(None),
             pr_node_ids: Mutex::new(HashMap::new()),
             frontend_ready: Mutex::new(false),
+            chat_cancels: Mutex::new(HashMap::new()),
         })
         .setup(|app| {
             // Custom menu intercepts Ctrl+W / Ctrl+Q at the native layer (see menu.rs).
@@ -259,6 +260,10 @@ pub fn run() {
             commands::set_mini_player_enabled,
             commands::dismiss_mini_player,
             commands::open_pr_in_main,
+            commands::chat_send,
+            commands::chat_cancel,
+            commands::load_chat_history,
+            commands::save_chat_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
