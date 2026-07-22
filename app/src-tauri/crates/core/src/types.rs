@@ -194,6 +194,8 @@ pub struct PrMetadata {
     pub user: Option<PrUser>,
     #[serde(default)]
     pub draft: Option<bool>,
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,15 +1,18 @@
 use crate::ai::{extract_json_array, AiBackend};
 use crate::config::resolve_github_token;
+use crate::dismissed_highlights;
 use crate::github::GithubClient;
 use crate::manifest_cache;
 use crate::pr_parser::parse_pr_ref;
-use crate::prompts::{build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_summary_prompt};
+use crate::prompts::{
+    build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_summary_prompt, PriorNote,
+};
 use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest, Settings,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use sha2::{Sha256, Digest};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Sink for fetch progress updates. The Tauri command passes a closure that
 /// emits a `fetch-progress` event to the webview; the `marrow` CLI passes one that
@@ -61,11 +64,17 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let head_sha = metadata.head.sha;
     let author = metadata.user.as_ref().map(|u| u.login.clone()).unwrap_or_default();
     let draft = metadata.draft.unwrap_or(false);
+    let pr_body = metadata.body.unwrap_or_default();
 
-    if let Some(cached) = manifest_cache::load_cached_manifest(&parsed.owner, &parsed.repo, parsed.number) {
+    // Loaded before this run's manifest overwrites the cache (see the
+    // `save_cached_manifest` call at the end of this function) so it's still
+    // the *previous* analysis — used below to feed prior triage back into the
+    // highlight prompt.
+    let previous_manifest = manifest_cache::load_cached_manifest(&parsed.owner, &parsed.repo, parsed.number);
+    if let Some(cached) = &previous_manifest {
         if cached.head_sha == head_sha {
             emit_progress(app, 6, "Loaded from cache", FetchStatus::Done, Some(&pr_title), None);
-            return Ok(cached);
+            return Ok(cached.clone());
         }
     }
 
@@ -128,7 +137,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         // Step 4: AI highlight analysis + summary + grouping (parallel)
         emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((0, 3)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
-        let highlight_prompt = build_highlight_prompt(&pr_title, &per_file_diffs);
+        let prior_notes = build_prior_notes(&previous_manifest, &parsed.owner, &parsed.repo, parsed.number);
+        let highlight_prompt = build_highlight_prompt(&pr_title, &pr_body, &per_file_diffs, &prior_notes);
 
         let summary_prompt = build_summary_prompt(&pr_title, &relevant);
         let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
@@ -326,6 +336,49 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
 
     Ok(manifest)
+}
+
+/// Build the prior-triage context fed back into the highlight prompt: for
+/// every highlight in the *previous* cached manifest that the reviewer
+/// dismissed, look up its resolution (if any) and carry it forward so
+/// re-analysis doesn't re-flag an already-triaged concern. Best-effort —
+/// missing previous manifest or dismissed-state file just yields no notes;
+/// this must never fail the fetch.
+fn build_prior_notes(
+    previous_manifest: &Option<ReviewManifest>,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+) -> Vec<PriorNote> {
+    let Some(previous) = previous_manifest else {
+        return Vec::new();
+    };
+    let Some(dismissed) = dismissed_highlights::load_dismissed(owner, repo, pr_number) else {
+        return Vec::new();
+    };
+    let dismissed_keys: HashSet<&str> = dismissed.keys.iter().map(|k| k.as_str()).collect();
+
+    let mut notes = Vec::new();
+    for file in &previous.files {
+        for h in &file.highlights {
+            let key = dismissed_highlights::highlight_key(&file.path, h.start_line, h.end_line, &h.comment);
+            if !dismissed_keys.contains(key.as_str()) {
+                continue;
+            }
+            let (state, reason) = dismissed
+                .resolutions
+                .get(&key)
+                .map(|r| (r.state.clone(), r.reason.clone()))
+                .unwrap_or_default();
+            notes.push(PriorNote {
+                path: file.path.clone(),
+                comment: h.comment.clone(),
+                state,
+                reason,
+            });
+        }
+    }
+    notes
 }
 
 /// Extract per-file diffs for the relevant files from a pre-built diff map.

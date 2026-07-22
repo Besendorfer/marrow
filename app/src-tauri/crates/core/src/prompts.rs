@@ -47,7 +47,7 @@ Respond with ONLY a valid JSON array. Each element must be an object with:
 
 Do NOT include any text before or after the JSON array. Just the JSON."#;
 
-pub const HIGHLIGHT_PROMPT: &str = r#"You are a code review assistant. You are given the diffs of files that have been classified as relevant for review. Your job is to identify specific changes within each file that deserve human attention.
+pub const HIGHLIGHT_PROMPT: &str = r#"You are a code review assistant. You are given a PR's title and description, plus the diffs of files that have been classified as relevant for review. Your job is to surface the specific changes a human reviewer should actually spend attention on — not everything that changed, only what's worth their time.
 
 Focus on:
 - Security implications (auth checks added/removed, input validation changes, permission changes)
@@ -66,16 +66,26 @@ Do NOT flag:
 - Straightforward additions of new independent functionality
 - Log message changes
 - Comment-only changes
+- A change that IS the PR's stated purpose (per its title/description), merely for being a behavior change — the PR exists to change that behavior; only flag it if it's risky beyond what the title/description already tells the reviewer
+- A concern the provided diff itself already answers — if another hunk in this file's diff, or another file's diff, shows the case is handled, don't raise it
+
+Before flagging anything, apply these rules:
+
+1. Resolve before you flag. Never write a note that just asks the reviewer to "verify", "confirm", or "check" something the diff already shows. Read the rest of this file's diff and the other files' diffs first. If the answer is there, either drop the note entirely or turn it into an "info" that states the conclusion — e.g. "Null input is handled by the early return at L42" — never "verify null input is handled".
+2. Respect truncation honestly. If a file's diff ends with a truncation marker ("... (truncated)"), do not speculate about what the unseen remainder contains, and do not flag a "verify X" note whose answer might live in that missing part. If the file still looks risky given what you can see, flag the truncation itself as "info" (e.g. "Diff truncated before the auth check — worth viewing the full file").
+3. Respect prior triage. You may be given a list of notes already reviewed in an earlier pass, with how each was resolved. Do not re-flag a concern one of those already covers unless this diff materially changes the picture. If the continuity is worth a nod, emit at most one "info" note referencing the prior resolution — never repeat the original warning verbatim.
+
+Severity measures actionability, not category:
+- "critical": a likely defect with severe consequences — security hole, data loss, auth bypass, crash. The reviewer must act on this before merging.
+- "warning": a likely defect or genuine risk. Use this test: if the author did not intend this, it is a bug. An intentional-looking behavior change is NOT a warning, even if it's important — that belongs under "info".
+- "info": an accurate, useful observation — an intentional behavior change worth double-checking, a notable addition, a design tradeoff worth knowing about.
 
 For each highlight, provide:
 - "path": the file path
 - "start_line": the line number in the NEW (head) version of the file where the notable change starts
 - "end_line": the line number in the NEW (head) version where it ends
-- "severity": one of "critical", "warning", "info"
-  - "critical": security risk, data loss risk, auth bypass, breaking API change
-  - "warning": behavior change worth verifying, removed safety check, non-obvious side effect
-  - "info": worth noting but likely fine — refactored logic, changed defaults, added dependency
-- "comment": a concise explanation (under 20 words) of what the reviewer should pay attention to
+- "severity": one of "critical", "warning", "info" (see above)
+- "comment": under 30 words. State the risk or the fact, not a request to verify — the reviewer should learn something from it, not receive a homework assignment.
 
 Respond with ONLY a valid JSON array of these highlight objects. If there are no notable changes, return an empty array [].
 Do NOT include any text before or after the JSON array. Just the JSON."#;
@@ -146,6 +156,18 @@ fn build_file_context_prompt(
     )
 }
 
+/// Truncate `s` to at most `max` chars (char-boundary safe — unlike byte
+/// slicing, which can panic mid-character on multibyte input) if it exceeds
+/// the budget. Returns `None` when no truncation is needed. Mirrors the
+/// equivalent helper in chat.rs.
+fn truncate_chars(s: &str, max: usize) -> Option<String> {
+    if s.chars().count() <= max {
+        None
+    } else {
+        Some(s.chars().take(max).collect())
+    }
+}
+
 pub fn build_classification_prompt(
     pr_title: &str,
     file_list: &[String],
@@ -154,13 +176,9 @@ pub fn build_classification_prompt(
     let files_str = file_list.join("\n");
 
     // Truncate diff to ~30000 chars for the AI prompt
-    let truncated_diff = if diff_content.len() > 30000 {
-        format!(
-            "{}\n\n... (diff truncated for brevity)",
-            &diff_content[..30000]
-        )
-    } else {
-        diff_content.to_string()
+    let truncated_diff = match truncate_chars(diff_content, 30000) {
+        Some(t) => format!("{}\n\n... (diff truncated for brevity)", t),
+        None => diff_content.to_string(),
     };
 
     format!(
@@ -169,25 +187,165 @@ pub fn build_classification_prompt(
     )
 }
 
+/// A previously reviewed highlight, fed back into the prompt so re-analysis
+/// doesn't re-flag a concern that was already triaged. `state` is
+/// "fixed" | "intentional" | "noise" | "" (plain dismiss, no resolution recorded).
+pub struct PriorNote {
+    pub path: String,
+    pub comment: String,
+    pub state: String,
+    pub reason: String,
+}
+
 pub fn build_highlight_prompt(
     pr_title: &str,
+    pr_body: &str,
     per_file_diffs: &[(String, String)], // (path, diff)
+    prior_notes: &[PriorNote],
 ) -> String {
     let mut context = String::new();
     for (path, diff) in per_file_diffs {
         context.push_str(&format!("=== FILE: {} ===\n", path));
         // Truncate per-file diff to 5000 chars
-        if diff.len() > 5000 {
-            context.push_str(&diff[..5000]);
-            context.push_str("\n... (truncated)\n");
-        } else {
-            context.push_str(diff);
+        match truncate_chars(diff, 5000) {
+            Some(t) => {
+                context.push_str(&t);
+                context.push_str("\n... (truncated)\n");
+            }
+            None => context.push_str(diff),
         }
         context.push_str("\n\n");
     }
 
+    let body_section = if pr_body.trim().is_empty() {
+        String::new()
+    } else {
+        let truncated_body = match truncate_chars(pr_body, 2000) {
+            Some(t) => format!("{}\n... (truncated)", t),
+            None => pr_body.to_string(),
+        };
+        format!("\nPR Description:\n{}\n", truncated_body)
+    };
+
+    let prior_section = if prior_notes.is_empty() {
+        String::new()
+    } else {
+        let mut s =
+            String::from("\n=== PREVIOUSLY REVIEWED NOTES (do not re-flag; see instructions) ===\n");
+        for note in prior_notes {
+            let label = match note.state.as_str() {
+                "" | "noise" => "dismissed",
+                other => other,
+            };
+            s.push_str(&format!("- [{}] {}: {}", label, note.path, note.comment));
+            if !note.reason.is_empty() {
+                s.push_str(&format!(" — reviewer: {}", note.reason));
+            }
+            s.push('\n');
+        }
+        s
+    };
+
     format!(
-        "{}\n\n---\n\nPR Title: {}\n\n{}",
-        HIGHLIGHT_PROMPT, pr_title, context
+        "{}\n\n---\n\nPR Title: {}\n{}{}\n{}",
+        HIGHLIGHT_PROMPT, pr_title, body_section, prior_section, context
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highlight_prompt_includes_pr_body_section() {
+        let prompt = build_highlight_prompt(
+            "Add retry logic",
+            "This PR adds exponential backoff to the fetch client.",
+            &[("client.rs".to_string(), "some diff".to_string())],
+            &[],
+        );
+        assert!(prompt.contains("PR Description:"));
+        assert!(prompt.contains("This PR adds exponential backoff to the fetch client."));
+    }
+
+    #[test]
+    fn highlight_prompt_omits_body_section_when_empty() {
+        let prompt = build_highlight_prompt(
+            "Add retry logic",
+            "",
+            &[("client.rs".to_string(), "some diff".to_string())],
+            &[],
+        );
+        assert!(!prompt.contains("PR Description:"));
+    }
+
+    #[test]
+    fn highlight_prompt_includes_prior_notes_section() {
+        let prior_notes = vec![
+            PriorNote {
+                path: "a.rs".to_string(),
+                comment: "Null check removed".to_string(),
+                state: "fixed".to_string(),
+                reason: "restored in follow-up commit".to_string(),
+            },
+            PriorNote {
+                path: "b.rs".to_string(),
+                comment: "Config default changed".to_string(),
+                state: "intentional".to_string(),
+                reason: String::new(),
+            },
+            PriorNote {
+                path: "c.rs".to_string(),
+                comment: "Unused import".to_string(),
+                state: String::new(),
+                reason: String::new(),
+            },
+        ];
+        let prompt = build_highlight_prompt("Title", "", &[], &prior_notes);
+        assert!(prompt.contains("PREVIOUSLY REVIEWED NOTES"));
+        assert!(prompt.contains("- [fixed] a.rs: Null check removed — reviewer: restored in follow-up commit"));
+        assert!(prompt.contains("- [intentional] b.rs: Config default changed"));
+        assert!(prompt.contains("- [dismissed] c.rs: Unused import"));
+    }
+
+    #[test]
+    fn highlight_prompt_omits_prior_section_when_empty() {
+        let prompt = build_highlight_prompt("Title", "", &[], &[]);
+        assert!(!prompt.contains("PREVIOUSLY REVIEWED NOTES"));
+    }
+
+    #[test]
+    fn highlight_prompt_per_file_truncation_is_char_safe_on_multibyte() {
+        // A >5000-char diff made entirely of a 3-byte multibyte char would panic
+        // under `&diff[..5000]` byte slicing (it lands mid-character). Chars,
+        // not bytes, must be counted and sliced.
+        let diff: String = std::iter::repeat('★').take(6000).collect();
+        let prompt = build_highlight_prompt(
+            "Title",
+            "",
+            &[("weird.rs".to_string(), diff)],
+            &[],
+        );
+        assert!(prompt.contains("... (truncated)"));
+    }
+
+    #[test]
+    fn classification_prompt_truncation_is_char_safe_on_multibyte() {
+        let diff: String = std::iter::repeat('★').take(31000).collect();
+        let prompt = build_classification_prompt("Title", &["a.rs".to_string()], &diff);
+        assert!(prompt.contains("diff truncated for brevity"));
+    }
+
+    #[test]
+    fn pr_body_truncation_is_char_safe_on_multibyte() {
+        let body: String = std::iter::repeat('★').take(2500).collect();
+        let prompt = build_highlight_prompt(
+            "Title",
+            &body,
+            &[],
+            &[],
+        );
+        assert!(prompt.contains("PR Description:"));
+        assert!(prompt.contains("... (truncated)"));
+    }
 }
