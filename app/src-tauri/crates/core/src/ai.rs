@@ -307,24 +307,45 @@ async fn consume_sse(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("AI stream read failed: {e}"))?;
         buf.extend_from_slice(&chunk);
-        while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-            let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
-            let line = String::from_utf8_lossy(&line_bytes);
-            let line = line.trim_end_matches(['\r', '\n']);
-            let Some(data) = line.strip_prefix("data:") else { continue };
-            let data = data.trim();
-            if data == "[DONE]" {
-                return Ok(full);
-            }
-            if let Some(delta) = extract(data) {
-                if !delta.is_empty() {
-                    full.push_str(&delta);
-                    on(StreamUpdate::Delta(delta));
-                }
+        if sse_drain_lines(&mut buf, &mut full, &mut extract, on) {
+            return Ok(full);
+        }
+    }
+    // A spec-compliant stream terminates every line with \n, but if the server
+    // closes with a trailing partial line, don't silently drop its delta.
+    if !buf.is_empty() {
+        buf.push(b'\n');
+        sse_drain_lines(&mut buf, &mut full, &mut extract, on);
+    }
+    Ok(full)
+}
+
+/// Drain complete `\n`-terminated lines from `buf`, feeding each `data:`
+/// payload through `extract` and appending deltas to `full`. Returns true when
+/// the `[DONE]` sentinel is seen.
+fn sse_drain_lines(
+    buf: &mut Vec<u8>,
+    full: &mut String,
+    extract: &mut impl FnMut(&str) -> Option<String>,
+    on: &mut (dyn FnMut(StreamUpdate) + Send),
+) -> bool {
+    while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+        let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
+        let line = String::from_utf8_lossy(&line_bytes);
+        let line = line.trim_end_matches(['\r', '\n']);
+        let Some(data) = line.strip_prefix("data:") else { continue };
+        let data = data.trim();
+        if data == "[DONE]" {
+            return true;
+        }
+        if let Some(delta) = extract(data) {
+            if !delta.is_empty() {
+                full.push_str(&delta);
+                on(StreamUpdate::Delta(delta));
             }
         }
     }
-    Ok(full)
+    false
 }
 
 /// Build the OpenAI/Anthropic-style `messages` array from a system preamble and
@@ -952,5 +973,50 @@ mod tests {
         assert_eq!(pick("some-local-model", "", true, false), Provider::OpenAiCompatible);
         // But an ARN still wins over a stray base URL.
         assert_eq!(pick("arn:aws:bedrock:...", "", true, false), Provider::Bedrock);
+    }
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use super::*;
+
+    fn drain(input: &[u8]) -> (String, bool) {
+        let mut buf = input.to_vec();
+        let mut full = String::new();
+        let mut extract = |data: &str| Some(data.to_string());
+        let mut on = |_: StreamUpdate| {};
+        let done = sse_drain_lines(&mut buf, &mut full, &mut extract, &mut on);
+        (full, done)
+    }
+
+    #[test]
+    fn drains_complete_lines_and_stops_on_done() {
+        let (full, done) = drain(b"data: a\ndata: b\ndata: [DONE]\ndata: c\n");
+        assert_eq!(full, "ab");
+        assert!(done);
+    }
+
+    #[test]
+    fn trailing_partial_line_is_recovered_with_pushed_newline() {
+        // Mirrors consume_sse's end-of-stream path: a final line with no \n is
+        // left in buf by the first drain, then recovered after pushing one.
+        let mut buf = b"data: a\ndata: tail".to_vec();
+        let mut full = String::new();
+        let mut extract = |data: &str| Some(data.to_string());
+        let mut on = |_: StreamUpdate| {};
+        assert!(!sse_drain_lines(&mut buf, &mut full, &mut extract, &mut on));
+        assert_eq!(full, "a");
+        assert_eq!(buf, b"data: tail");
+        buf.push(b'\n');
+        sse_drain_lines(&mut buf, &mut full, &mut extract, &mut on);
+        assert_eq!(full, "atail");
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn non_data_lines_and_crlf_are_tolerated() {
+        let (full, done) = drain(b"event: ping\r\ndata: x\r\n\r\n");
+        assert_eq!(full, "x");
+        assert!(!done);
     }
 }
