@@ -333,6 +333,13 @@ export interface PrActivityItem {
   unresolvedThreads?: number | null;
   ciState?: string | null;
   unread: boolean;
+  /** "needs_you" | "yours" | "watching" — see Rust `compute_tier`. */
+  tier: string;
+  /** Sortable relevance score — see Rust `compute_urgency`. Not used by the
+   * current widget; for a future queue view to sort by. */
+  urgency: number;
+  /** Muted until the next delta wakes it. Current widget ignores this. */
+  snoozed: boolean;
 }
 
 /** Payload of the `pr-activity` event (matches Rust `PrActivityPayload`). */

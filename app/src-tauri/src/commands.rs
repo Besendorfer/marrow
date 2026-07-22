@@ -186,6 +186,24 @@ pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
     activity::save_activity_store(&store)
 }
 
+/// Snooze a PR in the activity feed: like `mark_pr_seen`, but also mutes it
+/// until the next poll's diff finds any delta (see `activity::snooze`), at
+/// which point it wakes back up on its own.
+#[command]
+pub fn snooze_pr(pr_url: String, observed: Observed) -> Result<(), String> {
+    let mut store = activity::load_activity_store();
+    activity::snooze(&mut store, &pr_url, observed, activity::now_rfc3339());
+    activity::save_activity_store(&store)
+}
+
+/// Clear a manual snooze without waiting for a delta.
+#[command]
+pub fn unsnooze_pr(pr_url: String) -> Result<(), String> {
+    let mut store = activity::load_activity_store();
+    activity::unsnooze(&mut store, &pr_url);
+    activity::save_activity_store(&store)
+}
+
 /// Create the floating mini-player window, left HIDDEN. Built eagerly at
 /// startup (and on enable) so that the first show is never a window-creation —
 /// creating a webview window activates the app, which would yank you back to
@@ -334,6 +352,22 @@ pub fn dismiss_mini_player(app: tauri::AppHandle) -> Result<(), String> {
 pub fn open_pr_in_main(app: tauri::AppHandle, pr_ref: String) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let _ = app.emit("deep-link-open", &pr_ref);
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.set_focus();
+    }
+    Ok(())
+}
+
+/// Resume a PR the user was already reviewing, from the mini-player's "Now
+/// Reviewing" card: like `open_pr_in_main`, but emits `deep-link-resume`
+/// instead of `deep-link-open` so the main window can distinguish "jump back
+/// to my open tab and advance to the next unviewed file" from "open a PR I
+/// haven't started" (which still goes through the ordinary deep-link-open
+/// flow if no matching tab is open).
+#[command]
+pub fn resume_review_in_main(app: tauri::AppHandle, pr_ref: String) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("deep-link-resume", &pr_ref);
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.set_focus();
     }

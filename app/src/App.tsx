@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
 import { FileSidebar } from "./components/FileSidebar";
 import { DiffViewer, detectLanguage, type DiffViewerHandle } from "./components/DiffViewer";
 import { CommentsViewer } from "./components/CommentsViewer";
@@ -519,6 +519,55 @@ function App() {
     return () => { unlisten.then((fn) => fn()); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** Bumped per resume event so the advance effect runs even without a tab-id transition. */
+  const [resumePing, setResumePing] = useState(0);
+
+  // Listen for "resume this PR" from the mini-player's Now Reviewing card. If
+  // a tab for it is already open, jump back in and advance past whatever was
+  // last viewed; otherwise fall back to the ordinary deep-link open flow.
+  useEffect(() => {
+    const unlisten = listen<string>("deep-link-resume", (event) => {
+      if (!event.payload) return;
+      // canonicalPrKey (unlike extractPrRef) also accepts the owner/repo#number
+      // shape this event carries, not just a github.com URL.
+      const incomingKey = canonicalPrKey(event.payload);
+      const existing = incomingKey
+        ? tabsRef.current.find(
+            (t) => t.manifest && canonicalPrKey(t.manifest.pr_url) === incomingKey
+          )
+        : null;
+      if (existing) {
+        pendingResumeTabIdRef.current = existing.id;
+        // Bump a nonce so the advance effect below runs even when the target
+        // tab is ALREADY active — handleSelectTab with the current id causes
+        // no state transition, and without a run the stale ref would fire on
+        // a later unrelated switch back to this tab, yanking the user's file.
+        setResumePing((p) => p + 1);
+        handleSelectTab(existing.id);
+        return;
+      }
+      if (fetchingRef.current) {
+        addToast("info", "Already fetching a PR — try again when it finishes.");
+        return;
+      }
+      handleFetchStart(event.payload);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Once the tab targeted by `deep-link-resume` above actually becomes active
+  // (a render after handleSelectTab), advance to the next unviewed file —
+  // deferred to here because guidedOrder()/nextUnviewed() close over this
+  // render's `activeTab`, which isn't current yet inside the listener above.
+  useEffect(() => {
+    if (!pendingResumeTabIdRef.current) return;
+    if (activeTabId !== pendingResumeTabIdRef.current) return;
+    if (!activeTab?.manifest) return;
+    pendingResumeTabIdRef.current = null;
+    const next = nextUnviewed(guidedOrder(), -1);
+    if (next) setSelectedFile(next);
+  }, [activeTabId, activeTab?.manifest, resumePing]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function loadManifest(path: string) {
     try {
       const data = await invoke<ReviewManifest>("load_manifest", { path });
@@ -957,6 +1006,13 @@ function App() {
   tabsRef.current = tabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  // Set by the `deep-link-resume` listener when the target tab isn't active
+  // yet; consumed by the effect that advances to the next unviewed file once
+  // it is (see both near the deep-link listeners above).
+  const pendingResumeTabIdRef = useRef<string | null>(null);
+  // Last `review-session` payload emitted (JSON), so the broadcast effect
+  // below doesn't re-emit an unchanged payload on every unrelated render.
+  const lastReviewSessionRef = useRef<string>("");
   // Latest tab handlers in refs so the once-mounted menu listeners never act on stale state.
   const closeTabRef = useRef<(id: string) => void>(() => {});
   const newTabRef = useRef<() => void>(() => {});
@@ -1704,6 +1760,33 @@ function App() {
     }, 500);
     return () => clearTimeout(timer);
   }, [tabs, activeTabId]);
+
+  // Broadcast the active tab's review session to every window (the mini-player
+  // widget's "Now Reviewing" card). Null when the active tab has no manifest
+  // (queue home) — the widget hides the card. Cheap event, so no debounce, but
+  // skip re-emitting an unchanged payload (e.g. re-renders that don't actually
+  // move viewedCount/nextFile).
+  useEffect(() => {
+    const manifest = activeTab?.manifest ?? null;
+    const payload = manifest
+      ? {
+          prUrl: manifest.pr_url,
+          prRef: (() => {
+            const { owner, repo, number } = parsePrUrl(manifest.pr_url);
+            return `${owner}/${repo}#${number}`;
+          })(),
+          number: manifest.pr_number,
+          title: manifest.pr_title,
+          viewedCount: activeTab?.viewedFiles.size ?? 0,
+          relevantCount: manifest.files.filter((f) => f.classification !== "NOT_RELEVANT").length,
+          nextFile: nextUnviewed(guidedOrder(), -1)?.path ?? null,
+        }
+      : null;
+    const serialized = JSON.stringify(payload);
+    if (serialized === lastReviewSessionRef.current) return;
+    lastReviewSessionRef.current = serialized;
+    emit("review-session", payload).catch(() => {});
+  }, [activeTabId, activeTab?.manifest, activeTab?.viewedFiles]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist user preferences whenever they change (debounced, with dirty check)
   useEffect(() => {
