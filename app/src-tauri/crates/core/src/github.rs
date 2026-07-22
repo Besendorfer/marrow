@@ -224,6 +224,20 @@ fn resolve_review_state(pr: &serde_json::Value, viewer: &str) -> (String, bool) 
     (status, is_re_requested)
 }
 
+/// Lowercase a `statusCheckRollup.state` GraphQL enum
+/// (`SUCCESS`/`FAILURE`/`ERROR`/`PENDING`/`EXPECTED`) to the activity feed's
+/// `ci_state` convention. `EXPECTED` (checks queued but not yet reported)
+/// reads the same as `PENDING` to callers — both mean "not settled yet".
+fn normalize_ci_state(state: &str) -> String {
+    match state {
+        "SUCCESS" => "success".to_string(),
+        "FAILURE" => "failure".to_string(),
+        "ERROR" => "error".to_string(),
+        "PENDING" | "EXPECTED" => "pending".to_string(),
+        other => other.to_lowercase(),
+    }
+}
+
 impl GithubClient {
     pub fn new(token: Option<String>) -> Self {
         Self {
@@ -1762,6 +1776,7 @@ impl GithubClient {
             reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }
             reviews(last: 100) { nodes { author { login } state } }
             comments(last: 1) { nodes { author { login } } }
+            commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
         "#;
 
         // Build one query per chunk from immutable reads, then fire them all at once.
@@ -1813,6 +1828,12 @@ impl GithubClient {
                     .and_then(|v| v.as_str())
                 {
                     o.last_actor = Some(login.to_string());
+                }
+                if let Some(state) = pr
+                    .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
+                    .and_then(|v| v.as_str())
+                {
+                    o.observed.ci_state = Some(normalize_ci_state(state));
                 }
             }
         }

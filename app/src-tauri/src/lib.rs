@@ -32,16 +32,23 @@ async fn poll_activity_once(
     let collected = client
         .collect_activity(&watches, cap, notif_since.as_deref())
         .await;
-    let store = marrow_core::activity::load_activity_store();
+    let mut store = marrow_core::activity::load_activity_store();
     let viewer = collected.viewer.unwrap_or_default();
     let payload = marrow_core::activity::compute_activity(
         collected.observations,
-        &store,
+        &mut store,
         collected.truncated,
         marrow_core::activity::now_rfc3339(),
         &viewer,
         settings.show_approved_prs,
     );
+    // Persist only when compute_activity actually mutated the store (a delta
+    // woke a snoozed PR). Skipping quiet polls keeps this loop from being a
+    // periodic writer racing mark_pr_seen/snooze_pr on the unlocked,
+    // last-write-wins activity.json.
+    if store.dirty {
+        let _ = marrow_core::activity::save_activity_store(&store);
+    }
     let _ = handle.emit("pr-activity", payload);
     Some((collected.notif_poll_interval, collected.notif_last_modified))
 }
@@ -256,10 +263,13 @@ pub fn run() {
             commands::get_watches,
             commands::save_watches,
             commands::mark_pr_seen,
+            commands::snooze_pr,
+            commands::unsnooze_pr,
             commands::set_activity_window_visible,
             commands::set_mini_player_enabled,
             commands::dismiss_mini_player,
             commands::open_pr_in_main,
+            commands::resume_review_in_main,
             commands::chat_send,
             commands::chat_cancel,
             commands::load_chat_history,
