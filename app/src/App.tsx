@@ -28,6 +28,7 @@ import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
+import type { ReviewSession } from "./hooks/useActivityFeed";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
 function isOpenerTab(tab: Tab): boolean {
@@ -567,6 +568,23 @@ function App() {
     const next = nextUnviewed(guidedOrder(), -1);
     if (next) setSelectedFile(next);
   }, [activeTabId, activeTab?.manifest, resumePing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Bridge for the mini-player's "Open on GitHub" row action: the floating
+  // widget's webview has no shell:open capability (see mini-player.json), so
+  // it can't call the shell plugin directly like the dock (which runs in this
+  // same main window) does. It emits this event instead and the main window —
+  // which does have the capability — opens the URL on its behalf.
+  useEffect(() => {
+    const unlisten = listen<string>("aw-open-external", (event) => {
+      // Scope the bridge to what it exists for: activity items carry GitHub
+      // html_urls, so anything else is a bug (or a compromised webview) and
+      // gets dropped rather than handed to the OS opener.
+      if (event.payload?.startsWith("https://github.com/")) {
+        openUrl(event.payload).catch(() => {});
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
 
   async function loadManifest(path: string) {
     try {
@@ -1768,7 +1786,9 @@ function App() {
   // move viewedCount/nextFile).
   useEffect(() => {
     const manifest = activeTab?.manifest ?? null;
-    const payload = manifest
+    // Typed as ReviewSession so this inline emit can't drift from the shape
+    // the widget's useReviewSession listener expects.
+    const payload: ReviewSession | null = manifest
       ? {
           prUrl: manifest.pr_url,
           prRef: (() => {

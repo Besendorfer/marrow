@@ -4266,14 +4266,25 @@ mark.search-highlight-current {
   border-radius: 999px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
+.activity-widget--pill {
+  max-width: 280px;
+  overflow: hidden;
+}
 .activity-widget--pill:hover { border-color: var(--accent); }
 .activity-widget--alert { animation: aw-pulse 2s ease-in-out infinite; }
-.aw-pill__count {
-  font-weight: 600;
-  font-size: 13px;
-  min-width: 16px;
-  text-align: center;
+
+/* Rotating ticker text shown on the pill — top 3 items by urgency, crossfaded
+   every 6s (paused on hover; static under prefers-reduced-motion). */
+.aw-ticker__text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  transition: opacity 0.3s ease;
 }
+.aw-ticker__text--hidden { opacity: 0; }
 
 /* ---- Header ---- */
 .aw-head {
@@ -4352,15 +4363,86 @@ mark.search-highlight-current {
 .aw-eq i:nth-child(2) { height: 12px; animation-delay: -0.4s; }
 .aw-eq i:nth-child(3) { height: 8px; animation-delay: -0.1s; }
 
-/* ---- "Now playing" focus block (Tier 1) ---- */
-.aw-focus {
+/* ---- "Now Reviewing" card ---- */
+.aw-now {
   flex: none;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  margin: 8px 8px 4px;
+  padding: 10px 12px;
+  background: var(--accent-bg);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius-md);
 }
-.aw-focus__transport { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
-.aw-focus__pos { font-size: 11px; color: var(--text-muted); margin-left: 4px; }
+.aw-now--compact { margin: 6px 8px; padding: 6px 10px; }
+.aw-now__top { display: flex; align-items: center; gap: 10px; }
+.aw-now__info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.aw-now__eyebrow {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.aw-now__title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.aw-now__meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.aw-now__resume {
+  flex: none;
+  background: var(--accent-strong);
+  color: var(--white);
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.aw-now__resume:hover { background: var(--accent-strong-hover); }
+.aw-now__bar {
+  margin-top: 8px;
+  height: 3px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.aw-now__bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  transition: width 0.25s ease;
+}
+
+/* ---- Compact tier's footer strip (prev/next through the needs-you tier) ---- */
+.aw-compact-foot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  min-width: 0;
+}
+.aw-compact-foot__transport { display: flex; align-items: center; gap: 2px; flex: none; }
+.aw-compact-foot__next {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.aw-compact-foot__next--empty { color: var(--text-muted); font-style: italic; }
 
 /* ---- Feed (Tier 2) ---- */
 .aw-feed { flex: 1; overflow-y: auto; padding: 4px; }
@@ -4372,8 +4454,48 @@ mark.search-highlight-current {
 }
 .aw-truncated { padding: 8px; font-style: italic; }
 
-/* ---- Row ---- */
-.aw-row {
+/* ---- Tier sections ---- */
+.aw-tier { padding: 2px 4px 6px; }
+.aw-tier__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 6px 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+}
+.aw-tier__head--clickable { cursor: pointer; font: inherit; text-align: left; }
+.aw-tier__head--clickable:hover { color: var(--text-secondary); }
+.aw-tier__count {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-secondary);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  padding: 0 6px;
+  line-height: 1.6;
+}
+.aw-tier--snoozed { margin-top: 4px; border-top: 1px solid var(--border); padding-top: 4px; }
+
+/* ---- Row ----
+   `.aw-row` is a positioning wrapper (not a button — a button can't nest the
+   hover-actions cluster's own buttons); `.aw-row__activate` carries the click
+   target and the row's visual chrome. */
+.aw-row { position: relative; border-radius: 8px; }
+.aw-row:hover { background: var(--bg-tertiary); }
+.aw-row__activate {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4384,9 +4506,10 @@ mark.search-highlight-current {
   border-radius: 8px;
   background: transparent;
   color: inherit;
+  font: inherit;
   cursor: pointer;
 }
-.aw-row:hover { background: var(--bg-tertiary); }
+.aw-row--snoozed { opacity: 0.6; }
 .aw-row__dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: transparent; flex: none;
@@ -4410,15 +4533,19 @@ mark.search-highlight-current {
   color: var(--text-muted);
   white-space: nowrap;
 }
-.aw-chip {
-  font-size: 10px;
-  padding: 0 6px;
-  border-radius: 999px;
+/* One-line composed "story" sentence, replacing the old deltas/reasons chips. */
+.aw-story {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
   white-space: nowrap;
-  line-height: 1.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.aw-chip--delta { color: var(--diff-add-text); background: var(--diff-add-bg); }
-.aw-chip--reason { color: var(--text-secondary); background: var(--bg-tertiary); }
+.aw-story--neutral { color: var(--text-secondary); }
+.aw-story--urgent { color: var(--risk-medium); }
+.aw-story--bad { color: var(--risk-critical); }
+.aw-story--good { color: var(--diff-add-text); }
 .aw-row__status { display: flex; align-items: center; gap: 6px; flex: none; }
 .aw-row__time { font-size: 11px; color: var(--text-muted); }
 .aw-ci { font-size: 12px; }
@@ -4433,30 +4560,56 @@ mark.search-highlight-current {
   padding: 0 6px;
 }
 
-/* ---- Layout tiers ---- */
-
-/* Compact (short): a single horizontal strip — the "now playing" PR + transport,
-   no scrolling feed. Driven by `.aw--compact` (toggled in JS from a measured
-   height) because height-axis container queries don't match in the macOS
-   WKWebView. The list/focus swap itself is done by conditional render. */
-.activity-widget.aw--compact .aw-controls { display: none; }
-.activity-widget.aw--compact .aw-focus {
-  flex: 1;
-  border-bottom: none;
+/* ---- Row hover quick actions ----
+   Absolutely positioned over the CI/time area (like the mockup); revealed on
+   hover OR keyboard focus so the actions stay reachable via Tab. Always
+   visible (not hover-gated) on snoozed rows, which only ever show Unsnooze. */
+.aw-row__actions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 0;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
-.activity-widget.aw--compact .aw-focus__transport { margin-bottom: 0; flex: none; }
-/* Let the PR row consume the remaining width so the title isn't truncated
-   while empty space sits to its right. */
-.activity-widget.aw--compact .aw-focus .aw-row { flex: 1; min-width: 0; }
+.aw-row:hover .aw-row__actions,
+.aw-row:focus-within .aw-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.aw-row--snoozed .aw-row__actions { opacity: 1; pointer-events: auto; }
+.aw-row__action {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.aw-row__action:hover { background: var(--bg-primary); color: var(--text-primary); }
 
-/* Narrow: shed chips and time to stay tidy. (Width-axis container queries do
+/* ---- Layout tiers ---- */
+
+/* Compact (short): Now Reviewing card + a single prev/next footer strip, no
+   scrolling feed. Driven by `.aw--compact` (toggled in JS from a measured
+   height) because height-axis container queries don't match in the macOS
+   WKWebView. The card/footer swap itself is done by conditional render. */
+.activity-widget.aw--compact .aw-controls { display: none; }
+
+/* Narrow: shed the time column to stay tidy. (Width-axis container queries do
    work in the WKWebView, so this one stays a container query.) */
 @container aw (max-width: 248px) {
-  .aw-chip--reason, .aw-row__time { display: none; }
+  .aw-row__time { display: none; }
 }
 
 /* ---- Watch-list editor (settings) ---- */
@@ -4496,6 +4649,11 @@ mark.search-highlight-current {
 @keyframes aw-pulse {
   0%, 100% { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
   50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent), 0 8px 24px rgba(0, 0, 0, 0.45); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aw-now__bar-fill { transition: none; }
+  .aw-ticker__text { transition: none; }
 }
 
 /* ─── PR Overview (summary-first landing) ─────────────────────────────── */
