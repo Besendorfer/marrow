@@ -26,7 +26,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
@@ -333,6 +333,7 @@ function App() {
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
+      noteResolutions: new Map(),
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
@@ -358,6 +359,7 @@ function App() {
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
+      noteResolutions: new Map(),
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
       selectedCommentFile: null,
@@ -631,24 +633,59 @@ function App() {
     if (!tab.manifest) return;
     try {
       const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
-      const saved = await invoke<{ keys: string[] } | null>("load_dismissed_highlights", { owner, repo, prNumber: number });
+      const saved = await invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> } | null>("load_dismissed_highlights", { owner, repo, prNumber: number });
       if (saved && saved.keys.length > 0) {
-        updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: new Set(saved.keys) }));
+        updateTab(tab.id, (t) => ({
+          ...t,
+          dismissedHighlights: new Set(saved.keys),
+          noteResolutions: new Map(Object.entries(saved.resolutions ?? {})),
+        }));
       }
     } catch {
       // Non-critical: start with nothing dismissed on failure
     }
   }
 
-  function toggleHighlightDismissed(key: string) {
+  /** Persist the current tab's dismissed-set + resolutions in one write. */
+  function saveDismissedState(tab: Tab, keys: Set<string>, resolutions: Map<string, NoteResolution>) {
+    if (!tab.manifest) return;
+    const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+    invoke("save_dismissed_highlights", {
+      owner,
+      repo,
+      prNumber: number,
+      state: { keys: [...keys], resolutions: Object.fromEntries(resolutions) },
+    }).catch(() => addToast("error", "Couldn't save — this dismissal may not persist"));
+  }
+
+  /** Dismiss (hide) a note, optionally recording how/why it was resolved.
+   * `resolution: null` is a plain/quick dismiss — no resolution metadata is
+   * recorded (renders as the legacy "Dismissed" chip, same as noise). */
+  function resolveHighlight(key: string, resolution: NoteResolution | null) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab || !tab.manifest) return;
-    const next = new Set(tab.dismissedHighlights);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: next }));
-    const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
-    invoke("save_dismissed_highlights", { owner, repo, prNumber: number, state: { keys: [...next] } })
-      .catch(() => addToast("error", "Couldn't save — this dismissal may not persist"));
+    const nextKeys = new Set(tab.dismissedHighlights);
+    nextKeys.add(key);
+    const nextResolutions = new Map(tab.noteResolutions);
+    if (resolution) {
+      nextResolutions.set(key, { ...resolution, at: new Date().toISOString() });
+    } else {
+      nextResolutions.delete(key);
+    }
+    updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: nextKeys, noteResolutions: nextResolutions }));
+    saveDismissedState(tab, nextKeys, nextResolutions);
+  }
+
+  /** Restore a previously-dismissed note, clearing any recorded resolution. */
+  function restoreHighlight(key: string) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest) return;
+    const nextKeys = new Set(tab.dismissedHighlights);
+    nextKeys.delete(key);
+    const nextResolutions = new Map(tab.noteResolutions);
+    nextResolutions.delete(key);
+    updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: nextKeys, noteResolutions: nextResolutions }));
+    saveDismissedState(tab, nextKeys, nextResolutions);
   }
 
   async function loadChatHistory(tab: Tab) {
@@ -1624,12 +1661,22 @@ function App() {
       for (const tab of tabsRef.current) {
         if (!tab.manifest) continue;
         const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
-        invoke<{ keys: string[] } | null>("load_dismissed_highlights", { owner, repo, prNumber: number })
+        invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> } | null>("load_dismissed_highlights", { owner, repo, prNumber: number })
           .then((saved) => {
             const keys = saved?.keys ?? [];
+            const resolutions = saved?.resolutions ?? {};
             updateTab(tab.id, (t) => {
-              const same = t.dismissedHighlights.size === keys.length && keys.every((k) => t.dismissedHighlights.has(k));
-              return same ? t : { ...t, dismissedHighlights: new Set(keys) };
+              const sameKeys = t.dismissedHighlights.size === keys.length && keys.every((k) => t.dismissedHighlights.has(k));
+              // Resolutions must be compared too, or a metadata-only change
+              // (e.g. the resolve script adding a reason to an existing key)
+              // would be invisible until restart.
+              const entries = Object.entries(resolutions);
+              const sameRes = t.noteResolutions.size === entries.length && entries.every(([k, r]) => {
+                const cur = t.noteResolutions.get(k);
+                return !!cur && cur.state === r.state && (cur.reason ?? "") === (r.reason ?? "") && (cur.at ?? "") === (r.at ?? "");
+              });
+              if (sameKeys && sameRes) return t;
+              return { ...t, dismissedHighlights: new Set(keys), noteResolutions: new Map(entries) };
             });
           })
           .catch(() => {});
@@ -1963,7 +2010,7 @@ function App() {
                 const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
                 return (
                   <>
-                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} onToggleHighlightDismissed={toggleHighlightDismissed} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
                     <NextFileBar
                       index={idx >= 0 ? idx : 0}
                       total={order.length}

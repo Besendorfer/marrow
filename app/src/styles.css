@@ -1913,6 +1913,128 @@ tr.cursor-selected td {
   color: var(--text-primary);
 }
 
+/* "Resolve…" popover on an inline AI note — mark fixed/intentional + optional reason. */
+.note-resolve-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.note-resolve-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.highlight-marker:hover .note-resolve-btn {
+  opacity: 1;
+}
+.note-resolve-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.note-resolve-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 220px;
+  padding: var(--space-2);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+}
+
+.note-resolve-popover-states {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.note-resolve-popover-states button {
+  flex: 1;
+  font-size: 11px;
+  padding: 4px 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--chip-border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.note-resolve-popover-states button.active {
+  background: var(--accent-strong);
+  border-color: var(--accent);
+  color: var(--white);
+}
+
+.note-resolve-reason {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 11px;
+  font-family: var(--font-sans);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--chip-border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.note-resolve-confirm {
+  align-self: flex-end;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: var(--accent-strong);
+  color: var(--white);
+  cursor: pointer;
+}
+.note-resolve-confirm:hover {
+  background: var(--accent-strong-hover);
+}
+
+/* Resolution-state chip in the dismissed-notes list. */
+.note-res-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--chip-border);
+  background: var(--chip-bg);
+  color: var(--text-muted);
+}
+
+.note-res-chip--fixed {
+  color: var(--diff-add-text);
+  border-color: rgba(63, 185, 80, 0.4);
+}
+
+.note-res-chip--intentional {
+  color: var(--accent);
+  border-color: rgba(88, 166, 255, 0.4);
+}
+
+.note-res-reason {
+  color: var(--text-muted);
+  font-size: 11px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Highlighted line background tint */
 .highlighted.highlighted-critical {
   background: rgba(248, 81, 73, 0.08) !important;
