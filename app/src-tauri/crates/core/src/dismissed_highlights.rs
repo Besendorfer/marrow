@@ -36,6 +36,42 @@ pub struct NoteResolution {
     pub at: String,
 }
 
+/// Port of the frontend's `hashString` (app/src/utils.ts) — a djb2-xor
+/// variant operating on UTF-16 code units, matching JS's `charCodeAt`
+/// iteration exactly (surrogate pairs count as two units in both). Must stay
+/// bit-for-bit identical: it's how the Rust side recognizes which cached
+/// highlight a frontend-computed dismissal key refers to.
+fn hash_comment(s: &str) -> String {
+    let mut h: i32 = 5381;
+    for unit in s.encode_utf16() {
+        let shifted = h.wrapping_shl(5);
+        h = shifted.wrapping_add(h).wrapping_add(unit as i32);
+    }
+    to_base36(h as u32)
+}
+
+fn to_base36(mut n: u32) -> String {
+    if n == 0 {
+        return "0".to_string();
+    }
+    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut buf = Vec::new();
+    while n > 0 {
+        buf.push(DIGITS[(n % 36) as usize]);
+        n /= 36;
+    }
+    buf.reverse();
+    String::from_utf8(buf).unwrap()
+}
+
+/// The same stable identifier the frontend computes for a highlight (see
+/// `highlightKey` in app/src/utils.ts) — path + line range + a hash of the
+/// comment text, so it survives re-fetches but changes if the note's wording
+/// changes.
+pub fn highlight_key(path: &str, start_line: u64, end_line: u64, comment: &str) -> String {
+    format!("{}:{}-{}:{}", path, start_line, end_line, hash_comment(comment))
+}
+
 fn dismissed_dir() -> PathBuf {
     app_config_dir().join("dismissed")
 }
@@ -84,6 +120,39 @@ pub fn save_dismissed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference vectors generated from the actual JS `hashString` (app/src/utils.ts):
+    ///
+    /// ```
+    /// node -e '
+    ///   function hashString(s) {
+    ///     let h = 5381;
+    ///     for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    ///     return (h >>> 0).toString(36);
+    ///   }
+    ///   console.log(hashString(""));
+    ///   console.log(hashString("a"));
+    ///   console.log(hashString("hello world"));
+    ///   console.log(hashString("This removes the null check without a fallback — could NPE if input is empty."));
+    ///   console.log(hashString("emoji test 🚀 unicode"));
+    /// '
+    /// ```
+    #[test]
+    fn hash_comment_matches_js_hashstring() {
+        assert_eq!(hash_comment(""), "45h");
+        assert_eq!(hash_comment("a"), "3t3a");
+        assert_eq!(hash_comment("hello world"), "eslcxt");
+        assert_eq!(
+            hash_comment("This removes the null check without a fallback — could NPE if input is empty."),
+            "1xoypnn"
+        );
+        assert_eq!(hash_comment("emoji test 🚀 unicode"), "1v9mnp9");
+    }
+
+    #[test]
+    fn highlight_key_matches_frontend_format() {
+        assert_eq!(highlight_key("a.rs", 1, 2, "a"), "a.rs:1-2:3t3a");
+    }
 
     #[test]
     fn old_format_json_loads() {
