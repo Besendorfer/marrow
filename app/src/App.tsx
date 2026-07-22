@@ -575,7 +575,12 @@ function App() {
   // which does have the capability — opens the URL on its behalf.
   useEffect(() => {
     const unlisten = listen<string>("aw-open-external", (event) => {
-      if (event.payload) openUrl(event.payload).catch(() => {});
+      // Scope the bridge to what it exists for: activity items carry GitHub
+      // html_urls, so anything else is a bug (or a compromised webview) and
+      // gets dropped rather than handed to the OS opener.
+      if (event.payload?.startsWith("https://github.com/")) {
+        openUrl(event.payload).catch(() => {});
+      }
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);
