@@ -568,6 +568,18 @@ function App() {
     if (next) setSelectedFile(next);
   }, [activeTabId, activeTab?.manifest, resumePing]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Bridge for the mini-player's "Open on GitHub" row action: the floating
+  // widget's webview has no shell:open capability (see mini-player.json), so
+  // it can't call the shell plugin directly like the dock (which runs in this
+  // same main window) does. It emits this event instead and the main window —
+  // which does have the capability — opens the URL on its behalf.
+  useEffect(() => {
+    const unlisten = listen<string>("aw-open-external", (event) => {
+      if (event.payload) openUrl(event.payload).catch(() => {});
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
   async function loadManifest(path: string) {
     try {
       const data = await invoke<ReviewManifest>("load_manifest", { path });
