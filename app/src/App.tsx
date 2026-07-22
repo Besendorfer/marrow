@@ -28,6 +28,7 @@ import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
+import type { ReviewSession } from "./hooks/useActivityFeed";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
 function isOpenerTab(tab: Tab): boolean {
@@ -1785,7 +1786,9 @@ function App() {
   // move viewedCount/nextFile).
   useEffect(() => {
     const manifest = activeTab?.manifest ?? null;
-    const payload = manifest
+    // Typed as ReviewSession so this inline emit can't drift from the shape
+    // the widget's useReviewSession listener expects.
+    const payload: ReviewSession | null = manifest
       ? {
           prUrl: manifest.pr_url,
           prRef: (() => {
