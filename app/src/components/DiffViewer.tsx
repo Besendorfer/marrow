@@ -1,7 +1,7 @@
 import { Fragment, createContext, forwardRef, memo, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
-import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch } from "../types";
+import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch, NoteResolution } from "../types";
 import { timeAgo, highlightKey } from "../utils";
 
 const extToLang: Record<string, string> = {
@@ -103,7 +103,12 @@ interface DiffViewerProps {
   showAiNotes: boolean;
   /** Keys (highlightKey) of AI highlights dismissed for this PR — hidden from the diff. */
   dismissedHighlights?: Set<string>;
-  onToggleHighlightDismissed?: (key: string) => void;
+  /** Resolution metadata (state + reason) for dismissed highlights, keyed by highlightKey. */
+  noteResolutions?: Map<string, NoteResolution>;
+  /** Dismiss a note, optionally recording how/why (null = plain dismiss, no resolution recorded). */
+  onResolveHighlight?: (key: string, resolution: NoteResolution | null) => void;
+  /** Restore a previously-dismissed note, clearing any recorded resolution. */
+  onRestoreHighlight?: (key: string) => void;
   onCreateComment?: (path: string, endLine: number, side: "LEFT" | "RIGHT", body: string, startLine?: number, startSide?: "LEFT" | "RIGHT") => Promise<void>;
   onEditComment?: (commentId: string, body: string) => void;
   onReply?: (threadId: string, commentId: string, body: string) => void;
@@ -846,10 +851,30 @@ const severityLabel: Record<string, string> = {
 // Dismissal used to live on the top-of-file banner list; now that notes render
 // only inline, the action reaches HighlightMarker via context rather than
 // threading a prop through every hunk-rendering layer.
-const HighlightDismissContext = createContext<((h: Highlight) => void) | null>(null);
+const HighlightDismissContext = createContext<{ resolve: (h: Highlight, resolution: NoteResolution | null) => void } | null>(null);
 
 function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight; onPostAsComment?: (h: Highlight) => void }) {
-  const onDismiss = useContext(HighlightDismissContext);
+  const ctx = useContext(HighlightDismissContext);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [resolveState, setResolveState] = useState<"fixed" | "intentional">("fixed");
+  const [reason, setReason] = useState("");
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!popoverOpen) return;
+    function onOutside(e: MouseEvent) {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) setPopoverOpen(false);
+    }
+    document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
+  }, [popoverOpen]);
+
+  function confirmResolve(state: "fixed" | "intentional") {
+    ctx?.resolve(highlight, { state, reason: reason.trim() || undefined });
+    setPopoverOpen(false);
+    setReason("");
+  }
+
   return (
     <div className={`highlight-marker highlight-${highlight.severity}`}>
       <span className="highlight-icon">
@@ -866,10 +891,60 @@ function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight;
           Comment…
         </button>
       )}
-      {onDismiss && (
+      {ctx && (
+        <div className="note-resolve-wrap">
+          <button
+            className="note-resolve-btn"
+            onClick={(e) => { e.stopPropagation(); setPopoverOpen((v) => !v); }}
+            title="Mark this note as fixed or intentional"
+          >
+            Resolve…
+          </button>
+          {popoverOpen && (
+            <div
+              ref={popoverRef}
+              className="note-resolve-popover"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { e.preventDefault(); setPopoverOpen(false); }
+                if (e.key === "Enter") { e.preventDefault(); confirmResolve(resolveState); }
+              }}
+            >
+              <div className="note-resolve-popover-states">
+                <button
+                  type="button"
+                  className={resolveState === "fixed" ? "active" : ""}
+                  onClick={() => setResolveState("fixed")}
+                >
+                  Fixed
+                </button>
+                <button
+                  type="button"
+                  className={resolveState === "intentional" ? "active" : ""}
+                  onClick={() => setResolveState("intentional")}
+                >
+                  Intentional
+                </button>
+              </div>
+              <input
+                type="text"
+                className="note-resolve-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Why? (optional — feeds future AI runs)"
+                autoFocus
+              />
+              <button type="button" className="note-resolve-confirm" onClick={() => confirmResolve(resolveState)}>
+                Confirm
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {ctx && (
         <button
           className="highlight-dismiss"
-          onClick={(e) => { e.stopPropagation(); onDismiss(highlight); }}
+          onClick={(e) => { e.stopPropagation(); ctx.resolve(highlight, null); }}
           title="Dismiss this AI note"
           aria-label="Dismiss AI note"
         >
@@ -1487,7 +1562,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, dismissedHighlights, noteResolutions, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1669,12 +1744,13 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const highlights = allNotes.filter((h) => !dismissed.has(keyFor(h)));
   const dismissedNotes = allNotes.filter((h) => dismissed.has(keyFor(h)));
   const [showDismissed, setShowDismissed] = useState(false);
+  const resolutions = noteResolutions ?? new Map<string, NoteResolution>();
   const dismissHighlight = useMemo(
     () =>
-      onToggleHighlightDismissed
-        ? (h: Highlight) => onToggleHighlightDismissed(highlightKey(file.path, h))
+      onResolveHighlight
+        ? { resolve: (h: Highlight, resolution: NoteResolution | null) => onResolveHighlight(highlightKey(file.path, h), resolution) }
         : null,
-    [onToggleHighlightDismissed, file.path]
+    [onResolveHighlight, file.path]
   );
   // Track original collapsed state so we can restore it when search ends
   const preSearchCollapsed = useRef<Set<number> | null>(null);
@@ -2224,31 +2300,40 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
           <button className="highlights-show-dismissed" onClick={() => setShowDismissed((v) => !v)}>
             {showDismissed ? "Hide" : "Show"} {dismissedNotes.length} dismissed {dismissedNotes.length === 1 ? "note" : "notes"}
           </button>
-          {showDismissed && dismissedNotes.map((h, i) => (
-            <div
-              key={`dismissed-${i}`}
-              className={`highlights-summary-item highlight-${h.severity} highlight-dismissed`}
-              style={{ cursor: "pointer" }}
-              onClick={() => {
-                const el = document.getElementById(`diff-line-${h.start_line}`);
-                el?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-              title="Jump to code"
-            >
-              <span className="highlight-severity-badge">{severityLabel[h.severity] || "Info"}</span>
-              <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
-              <span className="highlight-summary-text">{h.comment}</span>
-              {onToggleHighlightDismissed && (
-                <button
-                  className="highlight-post-comment"
-                  onClick={(e) => { e.stopPropagation(); onToggleHighlightDismissed(keyFor(h)); }}
-                  title="Restore this AI note"
-                >
-                  Restore
-                </button>
-              )}
-            </div>
-          ))}
+          {showDismissed && dismissedNotes.map((h, i) => {
+            const resolution = resolutions.get(keyFor(h));
+            const chipLabel = resolution?.state === "fixed" ? "Fixed" : resolution?.state === "intentional" ? "Intentional" : "Dismissed";
+            const chipModifier = resolution?.state === "fixed" ? "note-res-chip--fixed" : resolution?.state === "intentional" ? "note-res-chip--intentional" : "";
+            return (
+              <div
+                key={`dismissed-${i}`}
+                className={`highlights-summary-item highlight-${h.severity} highlight-dismissed`}
+                style={{ cursor: "pointer" }}
+                onClick={() => {
+                  const el = document.getElementById(`diff-line-${h.start_line}`);
+                  el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+                title="Jump to code"
+              >
+                <span className="highlight-severity-badge">{severityLabel[h.severity] || "Info"}</span>
+                <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
+                <span className={`note-res-chip ${chipModifier}`}>{chipLabel}</span>
+                <span className="highlight-summary-text">{h.comment}</span>
+                {resolution?.reason && (
+                  <span className="note-res-reason" title={resolution.reason}>{resolution.reason}</span>
+                )}
+                {onRestoreHighlight && (
+                  <button
+                    className="highlight-post-comment"
+                    onClick={(e) => { e.stopPropagation(); onRestoreHighlight(keyFor(h)); }}
+                    title="Restore this AI note"
+                  >
+                    Restore
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       <div className="diff-content" ref={diffContentRef}>

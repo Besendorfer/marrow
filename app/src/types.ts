@@ -128,6 +128,21 @@ export type ChatStreamEvent =
   | { type: "done"; content: string }
   | { type: "error"; message: string };
 
+export type NoteResolutionState = "fixed" | "intentional" | "noise";
+
+/** How/why an AI note was resolved. Mirrors `NoteResolution` in
+ * `dismissed_highlights.rs` — `reason`/`at` are optional there too (empty
+ * string on the wire), kept optional here for the same reason. */
+export interface NoteResolution {
+  /** Normally a NoteResolutionState, but Rust serde-defaults a malformed
+   * entry's state to "" rather than failing the whole file, so loaded values
+   * can fall outside the union (rendered as plain "Dismissed"). The
+   * `string & {}` keeps union autocomplete while admitting that. */
+  state: NoteResolutionState | (string & {});
+  reason?: string;
+  at?: string;
+}
+
 export type SidebarView = "groups" | "comments" | "category" | "tree";
 
 export type DiffViewMode = "split" | "unified";
@@ -158,6 +173,9 @@ export interface Tab {
   staleViewedFiles: Set<string>;
   /** Keys (see highlightKey) of AI highlights the user has dismissed for this PR. */
   dismissedHighlights: Set<string>;
+  /** Resolution metadata (state + reason) for dismissed highlights, keyed by
+   * highlightKey. A dismissed key may have no entry here (plain/legacy dismiss). */
+  noteResolutions: Map<string, NoteResolution>;
   /** Conversational diff Q&A state for this PR. */
   chat: ChatState;
   commentThreads: CommentThreadsState;
