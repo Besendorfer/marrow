@@ -134,7 +134,11 @@ export type NoteResolutionState = "fixed" | "intentional" | "noise";
  * `dismissed_highlights.rs` — `reason`/`at` are optional there too (empty
  * string on the wire), kept optional here for the same reason. */
 export interface NoteResolution {
-  state: NoteResolutionState;
+  /** Normally a NoteResolutionState, but Rust serde-defaults a malformed
+   * entry's state to "" rather than failing the whole file, so loaded values
+   * can fall outside the union (rendered as plain "Dismissed"). The
+   * `string & {}` keeps union autocomplete while admitting that. */
+  state: NoteResolutionState | (string & {});
   reason?: string;
   at?: string;
 }
