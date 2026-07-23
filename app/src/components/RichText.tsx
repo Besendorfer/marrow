@@ -85,15 +85,55 @@ function renderBold(text: string, keyPrefix: string): React.ReactNode[] {
   });
 }
 
+/** CommonMark-style inline code-span scan: a run of N backticks opens a span
+ * closed only by the next run of exactly N backticks (so `` a`b `` works and
+ * multi-backtick runs don't pair off with random singles). Unclosed runs stay
+ * literal text. */
+function splitCodeSpans(text: string): Array<{ code: string } | { text: string }> {
+  const out: Array<{ code: string } | { text: string }> = [];
+  let plain = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== "`") { plain += text[i]; i++; continue; }
+    let n = 0;
+    while (text[i + n] === "`") n++;
+    // Find a closing run of exactly n backticks.
+    let close = -1;
+    for (let j = i + n; j < text.length; j++) {
+      if (text[j] !== "`") continue;
+      let m = 0;
+      while (text[j + m] === "`") m++;
+      if (m === n) { close = j; break; }
+      j += m - 1;
+    }
+    if (close === -1) {
+      plain += "`".repeat(n);
+      i += n;
+      continue;
+    }
+    if (plain) { out.push({ text: plain }); plain = ""; }
+    let code = text.slice(i + n, close);
+    // CommonMark: strip one leading+trailing space when both present and the
+    // content isn't all spaces (lets you write code that starts with `).
+    if (code.length >= 2 && code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "") {
+      code = code.slice(1, -1);
+    }
+    out.push({ code });
+    i = close + n;
+  }
+  if (plain) out.push({ text: plain });
+  return out;
+}
+
 /** Render inline `code` spans (recognizing in-scope file:line mentions as
  * clickable links), [text](url) / ![alt](url) links, and **bold**. */
 export function renderInline(text: string, filePaths: string[], onOpenFile?: (path: string, line?: number) => void): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   // Code spans first — nothing inside them is markdown.
-  const parts = text.split(/(`[^`]+`)/g);
-  parts.forEach((part, i) => {
-    if (part.startsWith("`") && part.endsWith("`") && part.length > 1) {
-      const inner = part.slice(1, -1);
+  const parts = splitCodeSpans(text);
+  parts.forEach((tok, i) => {
+    if ("code" in tok) {
+      const inner = tok.code;
       const ref = filePaths.length > 0 ? parseFileRef(inner, filePaths) : null;
       if (ref && onOpenFile) {
         nodes.push(
@@ -114,7 +154,7 @@ export function renderInline(text: string, filePaths: string[], onOpenFile?: (pa
     }
     // Then links (and image syntax, rendered as a labeled link — no remote
     // image loading), then bold in the remaining plain runs.
-    const linkParts = part.split(/(!?\[[^\]]*\]\([^\s)]+\))/g);
+    const linkParts = tok.text.split(/(!?\[[^\]]*\]\([^\s)]+\))/g);
     linkParts.forEach((lp, k) => {
       const m = lp.match(/^(!?)\[([^\]]*)\]\(([^\s)]+)\)$/);
       if (m) {
