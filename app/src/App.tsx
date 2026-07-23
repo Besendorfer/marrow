@@ -2016,7 +2016,7 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${activeTab?.chat.open || activeTab?.commentsOpen ? " app--right-panel" : ""}`}>
       <ActivityWidget onOpenPr={(ref) => handleFetchStart(ref, activeTabId ?? undefined)} />
       <Header
         tabs={tabs}

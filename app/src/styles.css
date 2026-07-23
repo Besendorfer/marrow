@@ -4105,6 +4105,7 @@ mark.search-highlight-current {
   right: 16px;
   /* Clears the next-file bar at the bottom of the diff pane. */
   bottom: 64px;
+  transition: right 0.2s ease;
   width: 340px;
   height: 440px;
   min-width: 210px;
@@ -5974,3 +5975,13 @@ mark.search-highlight-current {
   color: var(--accent); text-decoration: none;
 }
 .rt-link:hover { text-decoration: underline; }
+
+/* When a right panel (chat/comments, 380px, in-flow at the window's right
+   edge) is open, the fixed-position activity dock/pill steps left of it so
+   it never covers the panel's content. */
+.app--right-panel .activity-widget--dock {
+  right: calc(380px + 24px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-widget--dock { transition: none; }
+}
