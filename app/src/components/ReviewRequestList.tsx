@@ -28,7 +28,10 @@ export function initials(login: string): string {
  * image fails to load (private/unreachable avatar, offline, etc). `size` picks
  * between the two existing queue-avatar footprints (30px default, 16px `--sm`). */
 export function Avatar({ login, size = 30 }: { login: string; size?: 16 | 30 }) {
-  const [failed, setFailed] = useState(false);
+  // Keyed to the login so a recycled instance (same list slot, new user)
+  // retries the image instead of inheriting the previous user's failure.
+  const [failedLogin, setFailedLogin] = useState<string | null>(null);
+  const failed = failedLogin === login;
   const sizeClass = size === 16 ? " queue-avatar--sm" : "";
   if (failed || !login) {
     return (
@@ -44,7 +47,7 @@ export function Avatar({ login, size = 30 }: { login: string; size?: 16 | 30 }) 
       alt=""
       width={size}
       height={size}
-      onError={() => setFailed(true)}
+      onError={() => setFailedLogin(login)}
     />
   );
 }
