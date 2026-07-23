@@ -65,13 +65,23 @@ function ExternalLink({ label, url }: { label: string; url: string }) {
   );
 }
 
-/** Bold runs within a plain-text span. */
+/** Italic runs (single *asterisk*, non-space-adjacent) within a plain span. */
+function renderItalic(text: string, keyPrefix: string): React.ReactElement[] {
+  return text.split(/(\*[^\s*][^*]*\*)/g).flatMap((ip, j) => {
+    if (ip.length > 2 && ip.startsWith("*") && ip.endsWith("*") && !/\s$/.test(ip.slice(1, -1))) {
+      return [<em key={`${keyPrefix}-i${j}`}>{ip.slice(1, -1)}</em>];
+    }
+    return ip ? [<span key={`${keyPrefix}-i${j}`}>{ip}</span>] : [];
+  });
+}
+
+/** Bold (then italic) runs within a plain-text span. */
 function renderBold(text: string, keyPrefix: string): React.ReactNode[] {
   return text.split(/(\*\*[^*]+\*\*)/g).flatMap((bp, j) => {
     if (bp.startsWith("**") && bp.endsWith("**") && bp.length > 4) {
       return [<strong key={`${keyPrefix}-${j}`}>{bp.slice(2, -2)}</strong>];
     }
-    return bp ? [<span key={`${keyPrefix}-${j}`}>{bp}</span>] : [];
+    return bp ? renderItalic(bp, `${keyPrefix}-${j}`) : [];
   });
 }
 
@@ -123,6 +133,7 @@ type Block =
   | { kind: "quote"; lines: string[] }
   | { kind: "list"; ordered: boolean; items: { text: string; task?: "done" | "todo" }[] }
   | { kind: "hr" }
+  | { kind: "fence"; lang?: string; code: string }
   | { kind: "para"; lines: string[] };
 
 const HEADING_RE = /^(#{1,4})\s+(.*)$/;
@@ -139,6 +150,21 @@ function parseBlocks(segment: string): Block[] {
   while (i < lines.length) {
     const line = lines[i];
     if (line.trim() === "") { i++; continue; }
+    // Fenced code: only a line STARTING with ``` opens a fence (GitHub
+    // semantics) — inline ``` inside a sentence stays literal text.
+    const f = line.match(/^```([\w+-]*)\s*$/);
+    if (f) {
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        code.push(lines[i]);
+        i++;
+      }
+      i++; // consume the closing fence (or run off the end — unterminated
+      // fences render as code anyway, which also suits streaming chat text).
+      blocks.push({ kind: "fence", lang: f[1] || undefined, code: code.join("\n") });
+      continue;
+    }
     const h = line.match(HEADING_RE);
     if (h) { blocks.push({ kind: "heading", level: h[1].length, text: h[2] }); i++; continue; }
     if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { blocks.push({ kind: "hr" }); i++; continue; }
@@ -174,7 +200,7 @@ function parseBlocks(segment: string): Block[] {
       continue;
     }
     const p: string[] = [];
-    while (i < lines.length && lines[i].trim() !== "" && !HEADING_RE.test(lines[i]) && !LIST_RE.test(lines[i]) && !lines[i].startsWith(">")) {
+    while (i < lines.length && lines[i].trim() !== "" && !HEADING_RE.test(lines[i]) && !LIST_RE.test(lines[i]) && !lines[i].startsWith(">") && !/^```/.test(lines[i])) {
       p.push(lines[i]);
       i++;
     }
@@ -199,17 +225,14 @@ export function RichText({ content, filePaths = [], onOpenFile }: { content: str
   // PR templates are full of HTML comments — never render them.
   const cleaned = content.replace(/<!--[\s\S]*?-->/g, "");
   // Split on fenced code blocks, keeping the fences as delimiters.
-  const segments = cleaned.split(/(```[\s\S]*?```)/g);
   return (
     <>
-      {segments.map((seg, i) => {
-        const fence = seg.match(/^```([\w+-]*)\n?([\s\S]*?)```$/);
-        if (fence) {
-          return <CodeBlock key={i} lang={fence[1] || undefined} code={fence[2].replace(/\n$/, "")} />;
-        }
-        return parseBlocks(seg).map((b, j) => {
-          const key = `${i}-${j}`;
+      {(() => {
+        return parseBlocks(cleaned).map((b, j) => {
+          const key = `b-${j}`;
           switch (b.kind) {
+            case "fence":
+              return <CodeBlock key={key} lang={b.lang} code={b.code} />;
             case "heading":
               return <div key={key} className={`rt-h rt-h--${b.level}`}>{renderInline(b.text, filePaths, onOpenFile)}</div>;
             case "hr":
@@ -241,7 +264,7 @@ export function RichText({ content, filePaths = [], onOpenFile }: { content: str
               );
           }
         });
-      })}
+      })()}
     </>
   );
 }
