@@ -69,17 +69,23 @@ function ExternalLink({ label, url }: { label: string; url: string }) {
 function renderItalic(text: string, keyPrefix: string): React.ReactElement[] {
   return text.split(/(\*[^\s*][^*]*\*)/g).flatMap((ip, j) => {
     if (ip.length > 2 && ip.startsWith("*") && ip.endsWith("*") && !/\s$/.test(ip.slice(1, -1))) {
-      return [<em key={`${keyPrefix}-i${j}`}>{ip.slice(1, -1)}</em>];
+      return [<em key={`${keyPrefix}-i${j}`}>{unescapeMd(ip.slice(1, -1))}</em>];
     }
-    return ip ? [<span key={`${keyPrefix}-i${j}`}>{ip}</span>] : [];
+    return ip ? [<span key={`${keyPrefix}-i${j}`}>{unescapeMd(ip)}</span>] : [];
   });
+}
+
+/** GFM backslash escapes: \` \* \_ etc. render the punctuation literally.
+ * Applied only at plain-text leaves — never inside code spans. */
+function unescapeMd(s: string): string {
+  return s.replace(/\\([\\`*_{}[\]()#+\-.!<>~|])/g, "$1");
 }
 
 /** Bold (then italic) runs within a plain-text span. */
 function renderBold(text: string, keyPrefix: string): React.ReactNode[] {
   return text.split(/(\*\*[^*]+\*\*)/g).flatMap((bp, j) => {
     if (bp.startsWith("**") && bp.endsWith("**") && bp.length > 4) {
-      return [<strong key={`${keyPrefix}-${j}`}>{bp.slice(2, -2)}</strong>];
+      return [<strong key={`${keyPrefix}-${j}`}>{unescapeMd(bp.slice(2, -2))}</strong>];
     }
     return bp ? renderItalic(bp, `${keyPrefix}-${j}`) : [];
   });
