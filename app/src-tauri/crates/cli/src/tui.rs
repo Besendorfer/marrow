@@ -2260,6 +2260,7 @@ mod tests {
             draft: false,
             summary: String::new(),
             change_groups: Vec::new(),
+            body: String::new(),
             files: vec![
                 file("pkg/low.go", "low", "@@ -1,1 +1,1 @@\n-a\n+b\n"),
                 file("pkg/high.go", "high", "@@ -1,1 +1,2 @@\n a\n+b\n"),

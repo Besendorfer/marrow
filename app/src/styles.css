@@ -2530,42 +2530,6 @@ tr.cursor-selected td {
   border-color: var(--text-muted);
 }
 
-/* ─── PR Summary (header bar) ──────────────────────────────────────────── */
-.header-summary {
-  padding: 8px 16px;
-  background: rgba(88, 166, 255, 0.06);
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-}
-
-.header-summary p {
-  margin: 0 0 6px 0;
-}
-
-.header-summary p:last-child {
-  margin-bottom: 0;
-}
-
-.summary-toggle {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-  font-family: var(--font-sans);
-  padding: 3px 10px;
-  flex-shrink: 0;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.summary-toggle:hover {
-  color: var(--text-primary);
-  border-color: var(--text-muted);
-}
-
 /* ─── PR Summary (diff pane placeholder) ──────────────────────────────── */
 .pr-summary {
   display: flex;
@@ -4781,6 +4745,76 @@ mark.search-highlight-current {
   color: var(--text-muted);
 }
 
+.overview-chip--branch {
+  font-family: var(--font-mono);
+}
+
+/* Outlined amber, mirroring .risk-high's badge treatment — filled red stays
+   reserved for critical severity only. */
+.overview-chip--conflict {
+  background: transparent;
+  border-color: rgba(219, 109, 40, 0.55);
+  color: var(--risk-high);
+}
+
+.overview-chip--label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* The one place an arbitrary GitHub label color is allowed — dot only, never
+   the chip background. */
+.overview-label-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.overview-description-body {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  position: relative;
+}
+
+.overview-description-body--collapsed {
+  max-height: 9.6em;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+}
+
+.overview-description-toggle {
+  margin-top: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  padding: 0;
+}
+
+.overview-description-toggle:hover {
+  text-decoration: underline;
+}
+
+.overview-approvers {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: 4px;
+}
+
+.overview-approver {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .overview-noise {
   font-size: 12.5px;
   color: var(--text-secondary);
@@ -5089,9 +5123,31 @@ mark.search-highlight-current {
   display: inline-flex;
 }
 
+/* Real GitHub avatar image — same circular footprint as .queue-avatar, which
+   the Avatar component falls back to on image load failure. */
+.queue-avatar-img {
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--bg-tertiary);
+}
+
 .queue-draft-chip {
   font-size: 10.5px;
   color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  padding: 0px 7px;
+  white-space: nowrap;
+}
+
+.queue-approval-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--chip-border);
   border-radius: var(--radius-pill);
@@ -5476,8 +5532,11 @@ mark.search-highlight-current {
 
 .overview-meta {
   display: flex;
+  /* The chip set (author, CI, files, branch, conflicts, labels) can outgrow
+     one line on a busy PR — wrap instead of overflowing horizontally. */
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   padding: 2px 2px 6px;
   min-width: 0;
 }
@@ -5785,3 +5844,28 @@ mark.search-highlight-current {
   color: var(--text-muted);
   white-space: nowrap;
 }
+
+/* ─── RichText block-level markdown (PR descriptions, chat answers) ─────── */
+.rt-h { font-weight: 600; color: var(--text-primary); margin: var(--space-3) 0 var(--space-1); line-height: 1.3; }
+.rt-h:first-child { margin-top: 0; }
+.rt-h--1 { font-size: 16px; }
+.rt-h--2 { font-size: 14.5px; }
+.rt-h--3 { font-size: 13.5px; }
+.rt-h--4 { font-size: 13px; color: var(--text-secondary); text-transform: none; }
+.rt-hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-3) 0; }
+.rt-quote {
+  margin: var(--space-2) 0;
+  padding: var(--space-1) var(--space-3);
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+.rt-list { margin: var(--space-2) 0; padding-left: var(--space-5); }
+.rt-list li { margin: 3px 0; }
+.rt-list li.rt-task { list-style: none; margin-left: calc(-1 * var(--space-4)); }
+.rt-check { margin-right: var(--space-2); color: var(--text-secondary); }
+.rt-check--done { color: var(--diff-add-text); }
+.rt-link {
+  background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
+  color: var(--accent); text-decoration: none;
+}
+.rt-link:hover { text-decoration: underline; }

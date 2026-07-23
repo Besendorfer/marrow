@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
-import { SummaryParagraphs } from "./SummaryParagraphs";
 import type { ReviewManifest, Tab, CommentThreadsState, MyReviewState } from "../types";
 
 function useClickOutside(
@@ -85,8 +84,6 @@ export function Header({
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
-  const hasSummary = !!manifest?.summary;
 
   return (
     <header className="header">
@@ -172,15 +169,6 @@ export function Header({
                 {isRefreshing ? "Refreshing" : "Refresh"}
               </button>
             )}
-            {hasSummary && (
-              <button
-                className="summary-toggle"
-                onClick={() => setSummaryExpanded((p) => !p)}
-                title={summaryExpanded ? "Hide summary" : "Show summary"}
-              >
-                {summaryExpanded ? "Hide summary" : "Show summary"}
-              </button>
-            )}
           </div>
           <div className="header-right">
             {onToggleChat && (
@@ -204,11 +192,6 @@ export function Header({
               onCheckForUpdates={onCheckForUpdates}
             />
           </div>
-        </div>
-      )}
-      {hasSummary && summaryExpanded && (
-        <div className="header-summary">
-          <SummaryParagraphs text={manifest!.summary} />
         </div>
       )}
     </header>

@@ -1,4 +1,4 @@
-use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
 use std::collections::HashMap;
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -632,6 +632,7 @@ impl GithubClient {
                 direct_request: false,
                 my_review_status: "pending".to_string(),
                 unresolved_thread_count: 0,
+                approval_count: 0,
             });
         }
 
@@ -706,6 +707,7 @@ impl GithubClient {
 
             if let Some(reviews) = pr.pointer("/reviews/nodes").and_then(|v| v.as_array()) {
                 item.my_review_status = resolve_user_review_status(reviews, username);
+                item.approval_count = resolve_approvers(reviews).len() as u32;
             }
 
             // Unresolved thread count
@@ -1451,7 +1453,11 @@ impl GithubClient {
                     pullRequest(number: {}) {{
                         merged
                         isDraft
+                        mergeable
                         author {{ login }}
+                        labels(first: 10) {{
+                            nodes {{ name color }}
+                        }}
                         reviewRequests(first: 20) {{
                             nodes {{
                                 requestedReviewer {{
@@ -1508,6 +1514,31 @@ impl GithubClient {
             .map(|reviews| resolve_approvers(reviews))
             .unwrap_or_default();
 
+        let mergeable = pr
+            .get("mergeable")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+
+        let labels = pr
+            .pointer("/labels/nodes")
+            .and_then(|v| v.as_array())
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|n| {
+                        let name = n.get("name").and_then(|v| v.as_str())?.to_string();
+                        let color = n
+                            .get("color")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        Some(PrLabel { name, color })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(MyReviewState {
             status,
             is_re_requested,
@@ -1515,6 +1546,8 @@ impl GithubClient {
             author,
             draft,
             approved_by,
+            mergeable,
+            labels,
         })
     }
 }

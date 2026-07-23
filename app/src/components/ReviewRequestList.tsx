@@ -11,10 +11,45 @@ interface ReviewRequestListProps {
   openPrUrls: Set<string>;
   /** Text filter from the omnibox — matches repo, title, and author. */
   filter?: string;
+  /** Opens Settings — offered from the error card when the failure looks
+   * auth-shaped (bad/missing token). */
+  onOpenSettings?: () => void;
 }
+
+/** Matches error strings that look like a bad/missing GitHub token, so the
+ * error card can offer a direct path to Settings instead of just Retry. */
+const AUTH_ERROR_RE = /401|bad credentials|unauthoriz/i;
 
 export function initials(login: string): string {
   return login.slice(0, 2).toUpperCase();
+}
+
+/** A real GitHub avatar, falling back to the existing initials circle if the
+ * image fails to load (private/unreachable avatar, offline, etc). `size` picks
+ * between the two existing queue-avatar footprints (30px default, 16px `--sm`). */
+export function Avatar({ login, size = 30 }: { login: string; size?: 16 | 30 }) {
+  // Keyed to the login so a recycled instance (same list slot, new user)
+  // retries the image instead of inheriting the previous user's failure.
+  const [failedLogin, setFailedLogin] = useState<string | null>(null);
+  const failed = failedLogin === login;
+  const sizeClass = size === 16 ? " queue-avatar--sm" : "";
+  if (failed || !login) {
+    return (
+      <span className={`queue-avatar${sizeClass}`} aria-hidden="true">
+        {initials(login)}
+      </span>
+    );
+  }
+  return (
+    <img
+      className={`queue-avatar-img${sizeClass}`}
+      src={`https://github.com/${login}.png?size=64`}
+      alt=""
+      width={size}
+      height={size}
+      onError={() => setFailedLogin(login)}
+    />
+  );
 }
 
 function cutoffDateStr(): string {
@@ -39,7 +74,7 @@ const STATUS_CLASSES: Record<ReviewStatus, string> = {
   pending: "",
 };
 
-export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, filter }: ReviewRequestListProps) {
+export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, filter, onOpenSettings }: ReviewRequestListProps) {
   const [cachedPrs, setCachedPrs] = useState<CachedPrInfo[]>([]);
   const [recentItems, setRecentItems] = useState<ReviewRequestItem[]>([]);
   const [olderItems, setOlderItems] = useState<ReviewRequestItem[]>([]);
@@ -51,6 +86,7 @@ export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, fi
 
   const [showOlder, setShowOlder] = useState(true);
   const [showTeam, setShowTeam] = useState(true);
+  const [showDrafts, setShowDrafts] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   const settingsRef = useRef<Settings | null>(null);
@@ -65,6 +101,7 @@ export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, fi
       settingsRef.current = s;
       setShowOlder(s.filter_older);
       setShowTeam(s.filter_team);
+      setShowDrafts(s.show_draft_prs);
       setSettingsLoaded(true);
 
       fetchRecent();
@@ -125,9 +162,9 @@ export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, fi
   }
 
   const saveFilters = useCallback(
-    (older: boolean, team: boolean) => {
+    (older: boolean, team: boolean, drafts: boolean) => {
       if (settingsRef.current) {
-        const updated = { ...settingsRef.current, filter_older: older, filter_team: team };
+        const updated = { ...settingsRef.current, filter_older: older, filter_team: team, show_draft_prs: drafts };
         settingsRef.current = updated;
         invoke("save_settings", { settings: updated });
       }
@@ -138,14 +175,30 @@ export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, fi
   function toggleOlder() {
     setShowOlder((v) => {
       const next = !v;
-      setShowTeam((team) => { saveFilters(next, team); return team; });
+      setShowTeam((team) => {
+        setShowDrafts((drafts) => { saveFilters(next, team, drafts); return drafts; });
+        return team;
+      });
       return next;
     });
   }
   function toggleTeam() {
     setShowTeam((v) => {
       const next = !v;
-      setShowOlder((older) => { saveFilters(older, next); return older; });
+      setShowOlder((older) => {
+        setShowDrafts((drafts) => { saveFilters(older, next, drafts); return drafts; });
+        return older;
+      });
+      return next;
+    });
+  }
+  function toggleDrafts() {
+    setShowDrafts((v) => {
+      const next = !v;
+      setShowOlder((older) => {
+        setShowTeam((team) => { saveFilters(older, team, next); return team; });
+        return older;
+      });
       return next;
     });
   }
@@ -163,17 +216,19 @@ export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, fi
   const filteredRecent = useMemo(() => {
     return recentItems.filter((item) => {
       if (!item.direct_request && !showTeam) return false;
+      if (item.draft && !showDrafts) return false;
       return matchesFilter(`${item.owner}/${item.repo}`, item.title, item.author);
     });
-  }, [recentItems, showTeam, matchesFilter]);
+  }, [recentItems, showTeam, showDrafts, matchesFilter]);
 
   const filteredOlder = useMemo(() => {
     if (!showOlder) return [];
     return olderItems.filter((item) => {
       if (!item.direct_request && !showTeam) return false;
+      if (item.draft && !showDrafts) return false;
       return matchesFilter(`${item.owner}/${item.repo}`, item.title, item.author);
     });
-  }, [olderItems, showOlder, showTeam, matchesFilter]);
+  }, [olderItems, showOlder, showTeam, showDrafts, matchesFilter]);
 
   const filteredCached = useMemo(() => {
     return cachedPrs.filter(
@@ -194,6 +249,10 @@ export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, fi
       <label className="review-requests-filter">
         <input type="checkbox" checked={showOlder} onChange={toggleOlder} />
         Older
+      </label>
+      <label className="review-requests-filter">
+        <input type="checkbox" checked={showDrafts} onChange={toggleDrafts} />
+        Drafts
       </label>
       {hasTeam && (
         <>
@@ -232,6 +291,11 @@ export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, fi
           <button className="review-requests-retry" onClick={refreshAll}>
             Retry
           </button>
+          {onOpenSettings && AUTH_ERROR_RE.test(error) && (
+            <button className="review-requests-retry" onClick={onOpenSettings}>
+              Open Settings
+            </button>
+          )}
         </div>
       </div>
     );
@@ -366,7 +430,7 @@ function ReviewRequestRow({
 
   return (
     <button className={`queue-row${item.draft ? " queue-row--draft" : ""}`} onClick={() => onSelect(prRef)}>
-      <span className="queue-avatar" aria-hidden="true">{initials(item.author)}</span>
+      <Avatar login={item.author} size={30} />
       <span className="queue-main">
         <span className="queue-title">
           <span className="queue-repo">{item.owner}/{item.repo}#{item.number}</span>
@@ -379,6 +443,11 @@ function ReviewRequestRow({
           {item.draft && <span className="queue-draft-chip">Draft</span>}
           {statusLabel && (
             <span className={`review-status-badge ${statusClass}`}>{statusLabel}</span>
+          )}
+          {item.approval_count > 0 && (
+            <span className="queue-approval-chip">
+              <span className="risk-dot risk-dot--ok" /> {item.approval_count} approval{item.approval_count === 1 ? "" : "s"}
+            </span>
           )}
           {item.unresolved_thread_count > 0 && (
             <span className="review-threads-badge">
