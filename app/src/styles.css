@@ -2530,42 +2530,6 @@ tr.cursor-selected td {
   border-color: var(--text-muted);
 }
 
-/* ─── PR Summary (header bar) ──────────────────────────────────────────── */
-.header-summary {
-  padding: 8px 16px;
-  background: rgba(88, 166, 255, 0.06);
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-}
-
-.header-summary p {
-  margin: 0 0 6px 0;
-}
-
-.header-summary p:last-child {
-  margin-bottom: 0;
-}
-
-.summary-toggle {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-  font-family: var(--font-sans);
-  padding: 3px 10px;
-  flex-shrink: 0;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.summary-toggle:hover {
-  color: var(--text-primary);
-  border-color: var(--text-muted);
-}
-
 /* ─── PR Summary (diff pane placeholder) ──────────────────────────────── */
 .pr-summary {
   display: flex;
