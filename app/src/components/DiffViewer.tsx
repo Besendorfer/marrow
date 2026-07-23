@@ -3,6 +3,7 @@ import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch, NoteResolution } from "../types";
 import { timeAgo, highlightKey } from "../utils";
+import { RichText } from "./RichText";
 
 const extToLang: Record<string, string> = {
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
@@ -149,6 +150,10 @@ export interface DiffViewerHandle {
   replyAtCursor: () => void;
   /** Resolve/reopen the review thread on the cursor line, if any. */
   resolveAtCursor: () => void;
+  /** Scroll the given review thread into view and flash it. Returns false
+   * when the thread isn't rendered in this file (e.g. the diff hasn't
+   * mounted it yet) so the caller can retry. */
+  scrollToThread: (threadId: string, expandIfHidden?: boolean) => boolean;
 }
 
 /** Small keyboard-driven reply box, shown when `r` is pressed on a thread line. */
@@ -181,8 +186,8 @@ export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lan
   const parts = body.split(/(```suggestion\n[\s\S]*?\n```)/g);
 
   if (parts.length === 1) {
-    // No suggestion blocks — render as plain pre-wrapped text
-    return <div className="comment-body">{body}</div>;
+    // No suggestion blocks — render as Markdown
+    return <div className="comment-body"><RichText content={body} /></div>;
   }
 
   return (
@@ -202,7 +207,7 @@ export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lan
           );
         }
         if (!part.trim()) return null;
-        return <span key={i}>{part}</span>;
+        return <RichText key={i} content={part} />;
       })}
     </div>
   );
@@ -504,7 +509,7 @@ function InlineThreadMarker({
   const showActions = onReply || onToggleResolved;
 
   return (
-    <tr className={`inline-thread-row ${thread.is_resolved ? "inline-thread-resolved" : ""}`}>
+    <tr className={`inline-thread-row ${thread.is_resolved ? "inline-thread-resolved" : ""}`} data-thread-id={thread.id}>
       <td colSpan={colSpan}>
         <div className="inline-thread">
           {isSingle ? (
@@ -2219,6 +2224,23 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const nextFinding = () => stepFinding(1);
   const prevFinding = () => stepFinding(-1);
 
+  const scrollToThread = (threadId: string, expandIfHidden = false): boolean => {
+    const c = diffContentRef.current;
+    if (!c) return false;
+    const el = c.querySelector<HTMLElement>(`[data-thread-id="${threadId}"]`);
+    if (!el) {
+      // The thread may live inside a default-collapsed low-significance hunk,
+      // which renders no rows at all. Expand and let the caller's retry loop
+      // find it on a later frame.
+      if (expandIfHidden) expandAll();
+      return false;
+    }
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("finding-flash");
+    setTimeout(() => el.classList.remove("finding-flash"), 1200);
+    return true;
+  };
+
   // Scroll to + paint the cursor on the pending row once it has (re-)rendered.
   useEffect(() => {
     if (pendingScroll == null) return;
@@ -2242,7 +2264,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   useImperativeHandle(ref, () => ({
     nextHunk, prevHunk, foldAll,
     cursorMove, cursorEdge, cursorPage, nextFinding, prevFinding, foldAtCursor,
-    commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor,
+    commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor, scrollToThread,
   }));
 
   return (
