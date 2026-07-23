@@ -5978,10 +5978,16 @@ mark.search-highlight-current {
 
 /* When a right panel (chat/comments, 380px, in-flow at the window's right
    edge) is open, the fixed-position activity dock/pill steps left of it so
-   it never covers the panel's content. */
-.app--right-panel .activity-widget--dock {
+   it never covers the panel's content. The expanded dock and collapsed pill
+   are separate classes — both need the offset. */
+.app--right-panel .activity-widget--dock,
+.app--right-panel .activity-widget--pill {
   right: calc(380px + 24px);
 }
+.activity-widget--pill {
+  transition: right 0.2s ease;
+}
 @media (prefers-reduced-motion: reduce) {
-  .activity-widget--dock { transition: none; }
+  .activity-widget--dock,
+  .activity-widget--pill { transition: none; }
 }
