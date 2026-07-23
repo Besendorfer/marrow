@@ -20,6 +20,17 @@ use std::collections::{HashMap, HashSet};
 /// reusable by any frontend.
 pub type ProgressFn<'a> = &'a (dyn Fn(FetchProgress) + Send + Sync);
 
+/// Truncate `s` to at most `max` chars on a char boundary (char-safe, unlike
+/// byte slicing). Mirrors the equivalent helpers in prompts.rs/chat.rs —
+/// bounds the cached manifest's stored PR body size.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        s.chars().take(max).collect()
+    }
+}
+
 fn emit_progress(
     progress: ProgressFn,
     step: u8,
@@ -330,6 +341,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         draft,
         summary,
         change_groups,
+        body: truncate_chars(&pr_body, 10000),
         files: file_diffs,
     };
 

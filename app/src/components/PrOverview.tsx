@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import { SummaryParagraphs } from "./SummaryParagraphs";
-import { initials } from "./ReviewRequestList";
+import { Avatar } from "./ReviewRequestList";
+import { RichText } from "./RichText";
 import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState } from "../types";
 
 interface PrOverviewProps {
@@ -33,6 +35,35 @@ function CiChip({ checks }: { checks: PrChecksStatus }) {
 
 function fileName(path: string): string {
   return path.split("/").pop() ?? path;
+}
+
+/** Collapsed-by-default PR description card, rendered as minimal markdown. */
+function DescriptionCard({ body }: { body: string }) {
+  const [expanded, setExpanded] = useState(false);
+  // Only offer the toggle when the collapsed body actually overflows — a
+  // short description gets a plain card, not a do-nothing "Show more".
+  const [overflows, setOverflows] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (el) setOverflows(el.scrollHeight > el.clientHeight + 1);
+  }, [body]);
+  return (
+    <div className="overview-card overview-description">
+      <h4>Description</h4>
+      <div
+        ref={bodyRef}
+        className={`overview-description-body${expanded ? "" : " overview-description-body--collapsed"}`}
+      >
+        <RichText content={body} />
+      </div>
+      {(overflows || expanded) && (
+        <button className="overview-description-toggle" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function GroupRow({
@@ -95,6 +126,11 @@ export function PrOverview({
   const author = reviewState?.author || manifest.author;
   const draft = reviewState ? reviewState.draft : manifest.draft;
   const approvedBy = reviewState?.approved_by ?? [];
+  const labels = reviewState?.labels ?? [];
+  const visibleLabels = labels.slice(0, 5);
+  const hiddenLabelCount = labels.length - visibleLabels.length;
+  const totalAdd = manifest.files.reduce((n, f) => n + f.additions, 0);
+  const totalDel = manifest.files.reduce((n, f) => n + f.deletions, 0);
   const criticalNotes = relevant.reduce(
     (n, f) => n + (f.highlights?.filter((h) => h.severity === "critical").length ?? 0),
     0
@@ -113,7 +149,7 @@ export function PrOverview({
           </span>
           {author && (
             <span className="overview-chip overview-chip--author">
-              <span className="queue-avatar queue-avatar--sm" aria-hidden="true">{initials(author)}</span> {author}
+              <Avatar login={author} size={16} /> {author}
             </span>
           )}
           {draft && <span className="overview-chip overview-chip--draft">Draft</span>}
@@ -122,6 +158,21 @@ export function PrOverview({
             {relevant.length} relevant of {manifest.files.length}{" "}
             {manifest.files.length === 1 ? "file" : "files"}
           </span>
+          <span className="overview-chip overview-chip--branch">
+            {manifest.base_ref} ← {manifest.head_ref} · +{totalAdd} −{totalDel}
+          </span>
+          {reviewState?.mergeable === "conflicting" && (
+            <span className="overview-chip overview-chip--conflict">Has conflicts</span>
+          )}
+          {visibleLabels.map((label) => (
+            <span key={label.name} className="overview-chip overview-chip--label">
+              <span className="overview-label-dot" style={{ background: `#${label.color}` }} />
+              {label.name}
+            </span>
+          ))}
+          {hiddenLabelCount > 0 && (
+            <span className="overview-chip">+{hiddenLabelCount}</span>
+          )}
         </div>
         {manifest.summary && (
           <div className="overview-card">
@@ -129,6 +180,7 @@ export function PrOverview({
             <SummaryParagraphs text={manifest.summary} />
           </div>
         )}
+        {manifest.body && <DescriptionCard body={manifest.body} />}
         {groups.length > 0 && (
           <div className="overview-card">
             <h4>Change groups</h4>
@@ -188,7 +240,14 @@ export function PrOverview({
           <h4>Review state</h4>
           {approvedBy.length > 0 ? (
             <div className="overview-state-line overview-approvals">
-              <span className="risk-dot risk-dot--ok" /> Approved by {approvedBy.join(", ")}
+              <span className="risk-dot risk-dot--ok" /> Approved by
+              <span className="overview-approvers">
+                {approvedBy.map((login) => (
+                  <span key={login} className="overview-approver">
+                    <Avatar login={login} size={16} /> {login}
+                  </span>
+                ))}
+              </span>
             </div>
           ) : (
             reviewState && <div className="overview-state-line">No approvals yet</div>

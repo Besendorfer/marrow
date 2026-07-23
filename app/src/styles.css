@@ -4781,6 +4781,76 @@ mark.search-highlight-current {
   color: var(--text-muted);
 }
 
+.overview-chip--branch {
+  font-family: var(--font-mono);
+}
+
+/* Outlined amber, mirroring .risk-high's badge treatment — filled red stays
+   reserved for critical severity only. */
+.overview-chip--conflict {
+  background: transparent;
+  border-color: rgba(219, 109, 40, 0.55);
+  color: var(--risk-high);
+}
+
+.overview-chip--label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* The one place an arbitrary GitHub label color is allowed — dot only, never
+   the chip background. */
+.overview-label-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.overview-description-body {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  position: relative;
+}
+
+.overview-description-body--collapsed {
+  max-height: 9.6em;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+}
+
+.overview-description-toggle {
+  margin-top: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  padding: 0;
+}
+
+.overview-description-toggle:hover {
+  text-decoration: underline;
+}
+
+.overview-approvers {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: 4px;
+}
+
+.overview-approver {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .overview-noise {
   font-size: 12.5px;
   color: var(--text-secondary);
@@ -5089,9 +5159,31 @@ mark.search-highlight-current {
   display: inline-flex;
 }
 
+/* Real GitHub avatar image — same circular footprint as .queue-avatar, which
+   the Avatar component falls back to on image load failure. */
+.queue-avatar-img {
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--bg-tertiary);
+}
+
 .queue-draft-chip {
   font-size: 10.5px;
   color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  padding: 0px 7px;
+  white-space: nowrap;
+}
+
+.queue-approval-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--chip-border);
   border-radius: var(--radius-pill);
@@ -5476,8 +5568,11 @@ mark.search-highlight-current {
 
 .overview-meta {
   display: flex;
+  /* The chip set (author, CI, files, branch, conflicts, labels) can outgrow
+     one line on a busy PR — wrap instead of overflowing horizontally. */
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   padding: 2px 2px 6px;
   min-width: 0;
 }

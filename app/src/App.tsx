@@ -1486,6 +1486,8 @@ function App() {
           status: statusMap[event] as MyReviewState["status"],
           is_re_requested: false,
           is_merged: t.myReviewState?.is_merged ?? false,
+          mergeable: t.myReviewState?.mergeable ?? "",
+          labels: t.myReviewState?.labels ?? [],
         },
       }));
 
@@ -1645,6 +1647,8 @@ function App() {
                       status: t.myReviewState?.status ?? "pending",
                       is_re_requested: t.myReviewState?.is_re_requested ?? false,
                       is_merged: true,
+                      mergeable: t.myReviewState?.mergeable ?? "",
+                      labels: t.myReviewState?.labels ?? [],
                     },
                   }
             );
@@ -2001,6 +2005,7 @@ function App() {
                 onSelectCachedPr={handleOpenCachedPr}
                 openPrUrls={openPrUrls}
                 filter={queueFilter}
+                onOpenSettings={() => setSettingsOpen(true)}
               />
               {staleConfirm && (
                 <div className="settings-overlay" onMouseDown={() => setStaleConfirm(null)}>

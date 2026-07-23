@@ -44,6 +44,9 @@ export interface ReviewManifest {
   draft: boolean;
   summary: string;
   change_groups: ChangeGroup[];
+  /** The PR description, truncated char-safely to bound cache size. Empty
+   * when the PR has no body or on manifests fetched before this field existed. */
+  body: string;
   files: FileDiff[];
 }
 
@@ -221,6 +224,9 @@ export interface Settings {
   activity_per_watch_cap: number;
   activity_mini_player: boolean;
   show_approved_prs: boolean;
+  /** Whether the review queue shows draft PRs. On by default (current
+   * behavior); the frontend filters draft rows out when this is off. */
+  show_draft_prs: boolean;
   setup_done: boolean;
 }
 
@@ -233,6 +239,16 @@ export interface MyReviewState {
   author: string;
   draft: boolean;
   approved_by: string[];
+  /** Lowercased GitHub `mergeable` enum: "mergeable" | "conflicting" |
+   * "unknown". Empty when GitHub hasn't computed it or the field is absent. */
+  mergeable: string;
+  labels: PrLabel[];
+}
+
+export interface PrLabel {
+  name: string;
+  /** Hex color without the leading '#', as GitHub returns it. */
+  color: string;
 }
 
 export interface CheckRunInfo {
@@ -275,6 +291,7 @@ export interface ReviewRequestItem {
   direct_request: boolean;
   my_review_status: ReviewStatus;
   unresolved_thread_count: number;
+  approval_count: number;
 }
 
 export type UpdateStatus =
