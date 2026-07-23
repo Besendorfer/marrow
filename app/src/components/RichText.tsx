@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import hljs from "highlight.js";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 
 /** Render a fenced code block with highlight.js. */
 export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
@@ -47,11 +48,33 @@ function parseFileRef(text: string, filePaths: string[]): { path: string; line?:
   return { path: resolved, line: m[2] ? Number(m[2]) : undefined };
 }
 
+/** External link, opened via the shell plugin (main-window contexts only —
+ * everything that renders RichText lives in the main window). http(s) only. */
+function ExternalLink({ label, url }: { label: string; url: string }) {
+  const safe = /^https?:\/\//i.test(url);
+  if (!safe) return <span>{label}</span>;
+  return (
+    <button type="button" className="rt-link" title={url} onClick={() => openUrl(url).catch(() => {})}>
+      {label}
+    </button>
+  );
+}
+
+/** Bold runs within a plain-text span. */
+function renderBold(text: string, keyPrefix: string): React.ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*)/g).flatMap((bp, j) => {
+    if (bp.startsWith("**") && bp.endsWith("**") && bp.length > 4) {
+      return [<strong key={`${keyPrefix}-${j}`}>{bp.slice(2, -2)}</strong>];
+    }
+    return bp ? [<span key={`${keyPrefix}-${j}`}>{bp}</span>] : [];
+  });
+}
+
 /** Render inline `code` spans (recognizing in-scope file:line mentions as
- * clickable links) and **bold** within a single text run. */
+ * clickable links), [text](url) / ![alt](url) links, and **bold**. */
 export function renderInline(text: string, filePaths: string[], onOpenFile?: (path: string, line?: number) => void): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  // Split on inline code first; bold is handled within non-code runs.
+  // Code spans first — nothing inside them is markdown.
   const parts = text.split(/(`[^`]+`)/g);
   parts.forEach((part, i) => {
     if (part.startsWith("`") && part.endsWith("`") && part.length > 1) {
@@ -74,23 +97,104 @@ export function renderInline(text: string, filePaths: string[], onOpenFile?: (pa
       }
       return;
     }
-    const boldParts = part.split(/(\*\*[^*]+\*\*)/g);
-    boldParts.forEach((bp, j) => {
-      if (bp.startsWith("**") && bp.endsWith("**") && bp.length > 2) {
-        nodes.push(<strong key={`${i}-${j}`}>{bp.slice(2, -2)}</strong>);
-      } else if (bp) {
-        nodes.push(<span key={`${i}-${j}`}>{bp}</span>);
+    // Then links (and image syntax, rendered as a labeled link — no remote
+    // image loading), then bold in the remaining plain runs.
+    const linkParts = part.split(/(!?\[[^\]]*\]\([^\s)]+\))/g);
+    linkParts.forEach((lp, k) => {
+      const m = lp.match(/^(!?)\[([^\]]*)\]\(([^\s)]+)\)$/);
+      if (m) {
+        const label = m[1] ? `🖼 ${m[2] || "image"}` : m[2] || m[3];
+        nodes.push(<ExternalLink key={`${i}-${k}`} label={label} url={m[3]} />);
+        return;
       }
+      nodes.push(...renderBold(lp, `${i}-${k}`));
     });
   });
   return nodes;
 }
 
-/** Fenced ```code``` blocks (highlighted with highlight.js) plus paragraphs with
- * inline code and bold. Deliberately small — the project has no Markdown dep. */
+type Block =
+  | { kind: "heading"; level: number; text: string }
+  | { kind: "quote"; lines: string[] }
+  | { kind: "list"; ordered: boolean; items: { text: string; task?: "done" | "todo" }[] }
+  | { kind: "hr" }
+  | { kind: "para"; lines: string[] };
+
+const HEADING_RE = /^(#{1,4})\s+(.*)$/;
+const LIST_RE = /^\s*(?:([-*])|(\d+)[.)])\s+(.*)$/;
+const TASK_RE = /^\[([ xX])\]\s+(.*)$/;
+
+/** Line-oriented block parser for GitHub-flavored PR bodies / chat answers.
+ * Deliberately small — headings, lists (incl. task items), quotes, rules,
+ * paragraphs. Nested lists flatten; unknown constructs degrade to text. */
+function parseBlocks(segment: string): Block[] {
+  const lines = segment.split("\n");
+  const blocks: Block[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") { i++; continue; }
+    const h = line.match(HEADING_RE);
+    if (h) { blocks.push({ kind: "heading", level: h[1].length, text: h[2] }); i++; continue; }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { blocks.push({ kind: "hr" }); i++; continue; }
+    if (line.startsWith(">")) {
+      const q: string[] = [];
+      while (i < lines.length && lines[i].startsWith(">")) {
+        q.push(lines[i].replace(/^>\s?/, ""));
+        i++;
+      }
+      blocks.push({ kind: "quote", lines: q });
+      continue;
+    }
+    const l = line.match(LIST_RE);
+    if (l) {
+      const ordered = !!l[2];
+      const items: { text: string; task?: "done" | "todo" }[] = [];
+      while (i < lines.length) {
+        const im = lines[i].match(LIST_RE);
+        if (!im || !!im[2] !== ordered) break;
+        let text = im[3];
+        let task: "done" | "todo" | undefined;
+        const t = text.match(TASK_RE);
+        if (t) { task = t[1].trim() ? "done" : "todo"; text = t[2]; }
+        items.push({ text, task });
+        i++;
+        // Continuation lines (indented, not a new item) fold into the item.
+        while (i < lines.length && lines[i].trim() !== "" && !LIST_RE.test(lines[i]) && /^\s{2,}/.test(lines[i])) {
+          items[items.length - 1].text += " " + lines[i].trim();
+          i++;
+        }
+      }
+      blocks.push({ kind: "list", ordered, items });
+      continue;
+    }
+    const p: string[] = [];
+    while (i < lines.length && lines[i].trim() !== "" && !HEADING_RE.test(lines[i]) && !LIST_RE.test(lines[i]) && !lines[i].startsWith(">")) {
+      p.push(lines[i]);
+      i++;
+    }
+    blocks.push({ kind: "para", lines: p });
+  }
+  return blocks;
+}
+
+/** Inline nodes for multiple source lines, preserving single newlines as
+ * breaks (GitHub renders PR-body newlines hard, like comments). */
+function renderLines(lines: string[], filePaths: string[], onOpenFile?: (path: string, line?: number) => void): React.ReactNode[] {
+  return lines.flatMap((ln, i) => {
+    const nodes = renderInline(ln, filePaths, onOpenFile);
+    return i < lines.length - 1 ? [...nodes, <br key={`br-${i}`} />] : nodes;
+  });
+}
+
+/** Minimal GitHub-flavored markdown: fenced code (highlighted), headings,
+ * lists with task boxes, quotes, rules, links, inline code/bold. Deliberately
+ * small — the project has no Markdown dep; unknown syntax degrades to text. */
 export function RichText({ content, filePaths = [], onOpenFile }: { content: string; filePaths?: string[]; onOpenFile?: (path: string, line?: number) => void }) {
+  // PR templates are full of HTML comments — never render them.
+  const cleaned = content.replace(/<!--[\s\S]*?-->/g, "");
   // Split on fenced code blocks, keeping the fences as delimiters.
-  const segments = content.split(/(```[\s\S]*?```)/g);
+  const segments = cleaned.split(/(```[\s\S]*?```)/g);
   return (
     <>
       {segments.map((seg, i) => {
@@ -98,14 +202,40 @@ export function RichText({ content, filePaths = [], onOpenFile }: { content: str
         if (fence) {
           return <CodeBlock key={i} lang={fence[1] || undefined} code={fence[2].replace(/\n$/, "")} />;
         }
-        return seg
-          .split(/\n\n+/)
-          .filter((p) => p.trim().length > 0)
-          .map((para, j) => (
-            <p key={`${i}-${j}`} className="chat-para">
-              {renderInline(para, filePaths, onOpenFile)}
-            </p>
-          ));
+        return parseBlocks(seg).map((b, j) => {
+          const key = `${i}-${j}`;
+          switch (b.kind) {
+            case "heading":
+              return <div key={key} className={`rt-h rt-h--${b.level}`}>{renderInline(b.text, filePaths, onOpenFile)}</div>;
+            case "hr":
+              return <hr key={key} className="rt-hr" />;
+            case "quote":
+              return <blockquote key={key} className="rt-quote">{renderLines(b.lines, filePaths, onOpenFile)}</blockquote>;
+            case "list": {
+              const Tag = b.ordered ? "ol" : "ul";
+              return (
+                <Tag key={key} className="rt-list">
+                  {b.items.map((it, k) => (
+                    <li key={k} className={it.task ? "rt-task" : undefined}>
+                      {it.task && (
+                        <span className={`rt-check rt-check--${it.task}`} aria-hidden>
+                          {it.task === "done" ? "☑" : "☐"}
+                        </span>
+                      )}
+                      {renderInline(it.text, filePaths, onOpenFile)}
+                    </li>
+                  ))}
+                </Tag>
+              );
+            }
+            case "para":
+              return (
+                <p key={key} className="chat-para">
+                  {renderLines(b.lines, filePaths, onOpenFile)}
+                </p>
+              );
+          }
+        });
       })}
     </>
   );
