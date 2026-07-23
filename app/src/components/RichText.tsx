@@ -2,7 +2,12 @@ import { useMemo } from "react";
 import hljs from "highlight.js";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 
-/** Render a fenced code block with highlight.js. */
+/** Render a fenced code block with highlight.js.
+ *
+ * SECURITY: the only innerHTML sink in the shared renderer, fed untrusted
+ * input (PR bodies, AI answers). Safe today because hljs entity-escapes code
+ * and the catch path runs escapeHtml — any change to this function must
+ * preserve that; never interpolate unescaped input into the HTML. */
 export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   const html = useMemo(() => {
     try {
