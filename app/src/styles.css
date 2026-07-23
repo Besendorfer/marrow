@@ -1813,6 +1813,20 @@ tr.cursor-selected td {
   border-left-color: var(--accent);
 }
 
+/* New-since-last-refresh treatment: subtle, no layout shift — a small accent
+   dot ahead of the severity label rather than restyling the whole card. */
+.highlight-marker--new {
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-secondary));
+}
+
+.highlight-new-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
 .highlight-icon {
   font-family: var(--font-sans);
   font-weight: 600;
@@ -4761,6 +4775,31 @@ mark.search-highlight-current {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+/* Accent-tinted, not filled — mirrors the "Now Reviewing" card's language
+   rather than a severity color, since new notes aren't inherently a warning. */
+.overview-chip--new-notes {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-sans);
+  background: var(--accent-bg);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.overview-chip--new-notes:hover {
+  border-color: var(--accent);
+}
+
+.overview-chip--new-notes .overview-new-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
 }
 
 /* The one place an arbitrary GitHub label color is allowed — dot only, never

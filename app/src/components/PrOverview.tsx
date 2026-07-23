@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { SummaryParagraphs } from "./SummaryParagraphs";
 import { Avatar } from "./ReviewRequestList";
 import { RichText } from "./RichText";
+import { highlightKey } from "../utils";
 import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState } from "../types";
 
 interface PrOverviewProps {
@@ -14,6 +15,19 @@ interface PrOverviewProps {
   startTarget: FileDiff | null;
   onStartReview: () => void;
   onSelectFile: (f: FileDiff) => void;
+  /** Keys (see highlightKey) of AI highlights introduced by the most recent
+   * refresh's re-analysis — surfaced as a "new AI notes" chip when non-empty. */
+  newHighlightKeys?: Set<string>;
+}
+
+/** First file (in manifest order) whose highlights include a new-note key. */
+function firstNewNoteFile(manifest: ReviewManifest, newHighlightKeys: Set<string>): FileDiff | null {
+  for (const f of manifest.files) {
+    for (const h of f.highlights ?? []) {
+      if (newHighlightKeys.has(highlightKey(f.path, h))) return f;
+    }
+  }
+  return null;
 }
 
 function CiChip({ checks }: { checks: PrChecksStatus }) {
@@ -118,7 +132,9 @@ export function PrOverview({
   startTarget,
   onStartReview,
   onSelectFile,
+  newHighlightKeys,
 }: PrOverviewProps) {
+  const newNoteCount = newHighlightKeys?.size ?? 0;
   const relevant = manifest.files.filter((f) => f.classification !== "NOT_RELEVANT");
   const setAside = manifest.files.length - relevant.length;
   const byPath = new Map(manifest.files.map((f) => [f.path, f]));
@@ -154,6 +170,18 @@ export function PrOverview({
           )}
           {draft && <span className="overview-chip overview-chip--draft">Draft</span>}
           {checksStatus && <CiChip checks={checksStatus} />}
+          {newNoteCount > 0 && (
+            <button
+              type="button"
+              className="overview-chip overview-chip--new-notes"
+              onClick={() => {
+                const f = firstNewNoteFile(manifest, newHighlightKeys!);
+                if (f) onSelectFile(f);
+              }}
+            >
+              <span className="overview-new-dot" /> {newNoteCount} new AI {newNoteCount === 1 ? "note" : "notes"}
+            </button>
+          )}
           <span className="overview-chip">
             {relevant.length} relevant of {manifest.files.length}{" "}
             {manifest.files.length === 1 ? "file" : "files"}

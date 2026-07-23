@@ -27,7 +27,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution } from "./types";
-import { parsePrUrl, extractPrRef, canonicalPrKey } from "./utils";
+import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey } from "./utils";
 import type { ReviewSession } from "./hooks/useActivityFeed";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
@@ -38,6 +38,15 @@ function isOpenerTab(tab: Tab): boolean {
 /** A fresh, closed chat panel for a new tab. */
 function emptyChatState(): ChatState {
   return { messages: [], status: "idle", streamingText: "", streamingStatus: null, includeWholePr: false, open: false };
+}
+
+/** Every AI highlight key (see highlightKey) across a manifest's files. */
+function collectHighlightKeys(manifest: ReviewManifest): Set<string> {
+  const keys = new Set<string>();
+  for (const f of manifest.files) {
+    for (const h of f.highlights) keys.add(highlightKey(f.path, h));
+  }
+  return keys;
 }
 
 function App() {
@@ -1092,6 +1101,13 @@ function App() {
       const staleCount = newStale.size - tab.staleViewedFiles.size;
       if (staleCount > 0) parts.push(`${staleCount} file${staleCount > 1 ? "s" : ""} changed since reviewed`);
 
+      // Re-analysis may surface highlights the previous pass didn't — diff the
+      // key sets so the overview/diff can call out what's new since last refresh.
+      const oldHighlightKeys = collectHighlightKeys(tab.manifest);
+      const newHighlightKeys = new Set(
+        [...collectHighlightKeys(newManifest)].filter((k) => !oldHighlightKeys.has(k))
+      );
+
       const refreshedTab: Tab = {
         ...tab,
         manifest: newManifest,
@@ -1107,6 +1123,7 @@ function App() {
               ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? null
               : newManifest.files[0] ?? null,
         commentThreads: { status: "idle" },
+        newHighlightKeys,
       };
 
       updateTab(tab.id, () => refreshedTab);
@@ -1119,6 +1136,9 @@ function App() {
         addToast("success", `PR updated: ${parts.join(", ")}`);
       } else {
         addToast("info", "PR refreshed — no changes detected");
+      }
+      if (newHighlightKeys.size > 0) {
+        addToast("info", `${newHighlightKeys.size} new AI ${newHighlightKeys.size === 1 ? "note" : "notes"} from re-analysis`);
       }
     } catch (err) {
       updateTab(tab.id, (t) => ({ ...t, isRefreshing: false }));
@@ -2065,6 +2085,13 @@ function App() {
               startTarget={nextUnviewed(guidedOrder(), -1)}
               onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
               onSelectFile={setSelectedFile}
+              newHighlightKeys={
+                // Dismissing a new note removes it from the chip immediately —
+                // a dead "1 new AI note" pointing at a hidden note is worse
+                // than no chip.
+                activeTab.newHighlightKeys &&
+                new Set([...activeTab.newHighlightKeys].filter((k) => !activeTab.dismissedHighlights.has(k)))
+              }
             />
           ) : (
           <>
@@ -2118,7 +2145,7 @@ function App() {
                 const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
                 return (
                   <>
-                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} newHighlightKeys={activeTab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
                     <NextFileBar
                       index={idx >= 0 ? idx : 0}
                       total={order.length}
