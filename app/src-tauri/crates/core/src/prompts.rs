@@ -80,6 +80,8 @@ Severity measures actionability, not category:
 - "warning": a likely defect or genuine risk. Use this test: if the author did not intend this, it is a bug. An intentional-looking behavior change is NOT a warning, even if it's important — that belongs under "info".
 - "info": an accurate, useful observation — an intentional behavior change worth double-checking, a notable addition, a design tradeoff worth knowing about.
 
+Be exhaustive in this pass. Report every notable finding you can defend now — do not hold minor-but-real findings for a later look; a finding you skip may never surface again. Thoroughness in one pass beats a drip of follow-ups across re-analyses.
+
 For each highlight, provide:
 - "path": the file path
 - "start_line": the line number in the NEW (head) version of the file where the notable change starts

@@ -179,6 +179,10 @@ export interface Tab {
   /** Resolution metadata (state + reason) for dismissed highlights, keyed by
    * highlightKey. A dismissed key may have no entry here (plain/legacy dismiss). */
   noteResolutions: Map<string, NoteResolution>;
+  /** Keys (see highlightKey) of AI highlights newly introduced by the most
+   * recent refresh's re-analysis, relative to the manifest it replaced.
+   * Transient — not persisted, and undefined outside a just-refreshed tab. */
+  newHighlightKeys?: Set<string>;
   /** Conversational diff Q&A state for this PR. */
   chat: ChatState;
   commentThreads: CommentThreadsState;

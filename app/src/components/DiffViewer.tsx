@@ -105,6 +105,9 @@ interface DiffViewerProps {
   dismissedHighlights?: Set<string>;
   /** Resolution metadata (state + reason) for dismissed highlights, keyed by highlightKey. */
   noteResolutions?: Map<string, NoteResolution>;
+  /** Keys (highlightKey) of AI highlights introduced by the most recent
+   * refresh's re-analysis — rendered with a "new" accent treatment. */
+  newHighlightKeys?: Set<string>;
   /** Dismiss a note, optionally recording how/why (null = plain dismiss, no resolution recorded). */
   onResolveHighlight?: (key: string, resolution: NoteResolution | null) => void;
   /** Restore a previously-dismissed note, clearing any recorded resolution. */
@@ -853,7 +856,7 @@ const severityLabel: Record<string, string> = {
 // threading a prop through every hunk-rendering layer.
 const HighlightDismissContext = createContext<{ resolve: (h: Highlight, resolution: NoteResolution | null) => void } | null>(null);
 
-function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight; onPostAsComment?: (h: Highlight) => void }) {
+function HighlightMarker({ highlight, isNew, onPostAsComment }: { highlight: Highlight; isNew?: boolean; onPostAsComment?: (h: Highlight) => void }) {
   const ctx = useContext(HighlightDismissContext);
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [resolveState, setResolveState] = useState<"fixed" | "intentional">("fixed");
@@ -876,7 +879,8 @@ function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight;
   }
 
   return (
-    <div className={`highlight-marker highlight-${highlight.severity}`}>
+    <div className={`highlight-marker highlight-${highlight.severity}${isNew ? " highlight-marker--new" : ""}`}>
+      {isNew && <span className="highlight-new-dot" title="New since your last refresh" />}
       <span className="highlight-icon">
         {severityLabel[highlight.severity] || "Info"}
       </span>
@@ -1025,6 +1029,7 @@ function buildThreadsByLine(threads: ReviewThread[] | undefined): Map<number, Re
 function UnifiedHunkLines({
   lines,
   highlights,
+  newHighlights,
   commentingOn,
   dragging,
   onLineMouseDown,
@@ -1042,6 +1047,8 @@ function UnifiedHunkLines({
 }: {
   lines: DiffLine[];
   highlights: Highlight[];
+  /** Highlights (by reference into `highlights`) new since the last refresh. */
+  newHighlights?: Set<Highlight> | null;
   commentingOn?: CommentingOn | null;
   dragging?: { anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null;
   onLineMouseDown?: (line: number, side: "LEFT" | "RIGHT") => void;
@@ -1103,7 +1110,7 @@ function UnifiedHunkLines({
             {hlStart && (
               <tr className="highlight-row">
                 <td colSpan={4}>
-                  <HighlightMarker highlight={hlStart} onPostAsComment={onPostHighlightAsComment} />
+                  <HighlightMarker highlight={hlStart} isNew={newHighlights?.has(hlStart)} onPostAsComment={onPostHighlightAsComment} />
                 </td>
               </tr>
             )}
@@ -1166,6 +1173,7 @@ function UnifiedHunkLines({
 function UnifiedView({
   hunks,
   highlights,
+  newHighlights,
   collapsedHunks,
   onToggleHunk,
   showSignificance,
@@ -1186,6 +1194,7 @@ function UnifiedView({
 }: {
   hunks: Hunk[];
   highlights: Highlight[];
+  newHighlights?: Set<Highlight> | null;
   collapsedHunks: Set<number>;
   onToggleHunk: (index: number) => void;
   showSignificance: boolean;
@@ -1265,13 +1274,13 @@ function UnifiedView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -1286,6 +1295,7 @@ function UnifiedView({
 function SplitHunkLines({
   splitLines,
   highlights,
+  newHighlights,
   commentingOn,
   dragging,
   onLineMouseDown,
@@ -1303,6 +1313,8 @@ function SplitHunkLines({
 }: {
   splitLines: SplitLine[];
   highlights: Highlight[];
+  /** Highlights (by reference into `highlights`) new since the last refresh. */
+  newHighlights?: Set<Highlight> | null;
   commentingOn?: CommentingOn | null;
   dragging?: { anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null;
   onLineMouseDown?: (line: number, side: "LEFT" | "RIGHT") => void;
@@ -1377,7 +1389,7 @@ function SplitHunkLines({
             {hlStart && (
               <tr className="highlight-row">
                 <td colSpan={4}>
-                  <HighlightMarker highlight={hlStart} onPostAsComment={onPostHighlightAsComment} />
+                  <HighlightMarker highlight={hlStart} isNew={newHighlights?.has(hlStart)} onPostAsComment={onPostHighlightAsComment} />
                 </td>
               </tr>
             )}
@@ -1442,6 +1454,7 @@ function SplitHunkLines({
 function SplitView({
   hunks,
   highlights,
+  newHighlights,
   collapsedHunks,
   onToggleHunk,
   showSignificance,
@@ -1462,6 +1475,7 @@ function SplitView({
 }: {
   hunks: Hunk[];
   highlights: Highlight[];
+  newHighlights?: Set<Highlight> | null;
   collapsedHunks: Set<number>;
   onToggleHunk: (index: number) => void;
   showSignificance: boolean;
@@ -1544,13 +1558,13 @@ function SplitView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                        <SplitHunkLines splitLines={splitLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                <SplitHunkLines splitLines={splitLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -1562,7 +1576,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, dismissedHighlights, noteResolutions, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, dismissedHighlights, noteResolutions, newHighlightKeys, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1743,6 +1757,16 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const dismissed = dismissedHighlights ?? new Set<string>();
   const highlights = allNotes.filter((h) => !dismissed.has(keyFor(h)));
   const dismissedNotes = allNotes.filter((h) => dismissed.has(keyFor(h)));
+  // Highlight objects (by reference into `highlights`) new since the last
+  // refresh — HighlightMarker renders these with a "new" accent treatment.
+  const newHighlights = useMemo(() => {
+    if (!newHighlightKeys || newHighlightKeys.size === 0) return null;
+    const s = new Set<Highlight>();
+    for (const h of highlights) {
+      if (newHighlightKeys.has(keyFor(h))) s.add(h);
+    }
+    return s;
+  }, [highlights, newHighlightKeys, file.path]);
   const [showDismissed, setShowDismissed] = useState(false);
   const resolutions = noteResolutions ?? new Map<string, NoteResolution>();
   const dismissHighlight = useMemo(
@@ -2342,6 +2366,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
             <UnifiedView
               hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
+              newHighlights={newHighlights}
               collapsedHunks={fullFile ? NO_COLLAPSED : collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
@@ -2364,6 +2389,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
             <SplitView
               hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
+              newHighlights={newHighlights}
               collapsedHunks={fullFile ? NO_COLLAPSED : collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
@@ -2392,7 +2418,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
               <col />
             </colgroup>
             <tbody>
-              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
+              <UnifiedHunkLines lines={diffLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
             </tbody>
           </table>
         )}
