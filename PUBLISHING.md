@@ -123,6 +123,29 @@ brew install marrow
 > The formula is also attached to every CLI release, so the manual copy above
 > always works if the automation is unavailable (e.g. the secret is missing).
 
+### Desktop app cask (`brew install --cask`)
+
+The same tap also carries a **cask** for the desktop app in `Casks/marrow.rb`
+(same `marrow` token as the CLI formula — `brew install besendorfer/tap/marrow`
+resolves the formula, `--cask` the app):
+
+```bash
+brew install --cask besendorfer/tap/marrow
+```
+
+Updating it is automated by the same `homebrew-tap.yml` workflow: when a
+desktop `v*` release is *published*, the `update-cask` job downloads that
+release's `Marrow_aarch64.dmg`, computes its sha256, regenerates
+`Casks/marrow.rb`, and pushes to the tap (same `HOMEBREW_TAP_TOKEN` secret,
+same publish-not-tag reasoning as the formula). Backfill or re-sync with a
+manual run: Actions → "Update Homebrew Tap" → `workflow_dispatch` with the
+desktop tag (e.g. `v0.24.0`).
+
+The cask declares `auto_updates true` — the app updates itself via the Tauri
+updater, so `brew upgrade` leaves it alone unless `--greedy`. Never rebuild a
+release's DMG after publishing: the cask pins its sha256 (same rule as
+`latest.json`/`marrow.rb`).
+
 ### Bare `brew install marrow` (homebrew-core, later)
 
 To drop the tap entirely and get `brew install marrow`, submit the formula to
