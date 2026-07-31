@@ -75,15 +75,32 @@ function renderItalic(text: string, keyPrefix: string): React.ReactElement[] {
   });
 }
 
-/** GFM backslash escapes: \` \* \_ etc. render the punctuation literally.
- * Applied only at plain-text leaves — never inside code spans. */
-function unescapeMd(s: string): string {
-  return s.replace(/\\([\\`*_{}[\]()#+\-.!<>~|])/g, "$1");
+/** Escaped `\\` and `\*` must be invisible to the emphasis delimiter regexes
+ * (an escaped asterisk never opens emphasis), so they're sentinel-encoded
+ * before splitting and decoded back at the text leaves in unescapeMd. `\\`
+ * goes first so the backslash in `\\*` isn't misread as escaping the star. */
+const ESC_BS = "\u0000";
+const ESC_STAR = "\u0001";
+function encodeEscapes(s: string): string {
+  return s.replace(/\\\\/g, ESC_BS).replace(/\\\*/g, ESC_STAR);
 }
 
-/** Bold (then italic) runs within a plain-text span. */
+/** GFM backslash escapes: \` \* \_ etc. render the punctuation literally.
+ * Applied only at plain-text leaves — never inside code spans. `\\` and `\*`
+ * arrive sentinel-encoded (see encodeEscapes). */
+function unescapeMd(s: string): string {
+  return s
+    .replace(/\\([`_{}[\]()#+\-.!<>~|])/g, "$1")
+    .replace(/\u0000/g, "\\")
+    .replace(/\u0001/g, "*");
+}
+
+/** Bold and ***bold-italic*** (then italic) runs within a plain-text span. */
 function renderBold(text: string, keyPrefix: string): React.ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*)/g).flatMap((bp, j) => {
+  return encodeEscapes(text).split(/(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*)/g).flatMap((bp, j) => {
+    if (bp.startsWith("***") && bp.endsWith("***") && bp.length > 6) {
+      return [<strong key={`${keyPrefix}-${j}`}><em>{unescapeMd(bp.slice(3, -3))}</em></strong>];
+    }
     if (bp.startsWith("**") && bp.endsWith("**") && bp.length > 4) {
       return [<strong key={`${keyPrefix}-${j}`}>{unescapeMd(bp.slice(2, -2))}</strong>];
     }
