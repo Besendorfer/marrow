@@ -56,7 +56,7 @@ const SECTIONS: Section[] = [
       { keys: ["z"], label: "Fold / unfold hunk at cursor" },
       { keys: ["Z"], label: "Fold / unfold all hunks" },
       { keys: ["V"], label: "Toggle file viewed" },
-      { keys: ["T"], label: "Toggle threads / diff" },
+      { keys: ["T"], label: "Toggle comments panel" },
       { keys: ["⌃r", "F5"], label: "Refresh PR" },
       { keys: ["/"], label: "Search" },
       { keys: ["?"], label: "Toggle this help" },

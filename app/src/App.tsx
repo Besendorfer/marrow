@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { FileSidebar } from "./components/FileSidebar";
-import { DiffViewer, detectLanguage, type DiffViewerHandle } from "./components/DiffViewer";
-import { CommentsViewer } from "./components/CommentsViewer";
+import { DiffViewer, type DiffViewerHandle } from "./components/DiffViewer";
+import { CommentsPanel } from "./components/CommentsPanel";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
 import { ReviewRequestList } from "./components/ReviewRequestList";
@@ -70,6 +70,11 @@ function App() {
   const [viewerLogin, setViewerLogin] = useState<string | null>(null);
   const searchRef = useRef<SearchBarHandle>(null);
   const diffViewerRef = useRef<DiffViewerHandle>(null);
+  // Jump-to-thread from the comments panel: the target thread id, and a ping
+  // bumped on every jump so the retry effect below reruns even when the
+  // selected file doesn't change (thread already on the open file).
+  const pendingThreadIdRef = useRef<string | null>(null);
+  const [threadScrollPing, setThreadScrollPing] = useState(0);
   // Visible file order from the sidebar, used by the [ / ] navigation shortcuts.
   const visibleOrderRef = useRef<string[]>([]);
   const handleVisibleFilesChange = useCallback((paths: string[]) => {
@@ -273,15 +278,27 @@ function App() {
     handleSelectTab(tabs[(i + delta + tabs.length) % tabs.length].id);
   }
 
+  // Chat and Comments are mutually exclusive right-dock panels — opening one closes the other.
   function toggleThreadsView() {
     if (!activeTab?.manifest) return;
-    if (activeTab.sidebarView === "comments") {
-      const hasGroups = (activeTab.manifest.change_groups ?? []).length > 0;
-      handleViewChange(hasGroups ? "groups" : "category");
-    } else {
-      handleViewChange("comments");
-    }
+    const opening = !activeTab.commentsOpen;
+    updateTab(activeTabId, (t) => ({
+      ...t,
+      commentsOpen: opening,
+      chat: opening ? { ...t.chat, open: false } : t.chat,
+    }));
+    // Fetch is driven by the commentsOpen+idle effect below, so every path
+    // that opens the panel (toggle, palette, legacy session restore) fetches.
   }
+
+  // Whenever the panel is open on a tab whose threads were never fetched,
+  // fetch them. Single trigger for all open paths — including a restored
+  // pre-panel session that had the old comments *mode* persisted.
+  useEffect(() => {
+    if (activeTab?.commentsOpen && activeTab.manifest && activeTab.commentThreads.status === "idle") {
+      handleRequestComments();
+    }
+  }, [activeTabId, activeTab?.commentsOpen, activeTab?.commentThreads.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useKeyboardShortcuts(
     {
@@ -346,7 +363,7 @@ function App() {
       noteResolutions: new Map(),
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
-      selectedCommentFile: null,
+      commentsOpen: false,
       sidebarView: hasGroups ? "groups" : "category",
       isRefreshing: false,
       lastCommentCount: 0,
@@ -372,7 +389,7 @@ function App() {
       noteResolutions: new Map(),
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
-      selectedCommentFile: null,
+      commentsOpen: false,
       sidebarView: "category",
       isRefreshing: false,
       lastCommentCount: 0,
@@ -436,10 +453,15 @@ function App() {
                   if (file) tab.selectedFile = file;
                 }
                 if (entry.sidebar_view) {
-                  tab.sidebarView = entry.sidebar_view as SidebarView;
-                }
-                if (entry.selected_comment_file) {
-                  tab.selectedCommentFile = entry.selected_comment_file;
+                  // Pre-#144 sessions may have persisted the now-removed "comments"
+                  // mode — map it onto the panel instead of a dead sidebar view.
+                  if ((entry.sidebar_view as string) === "comments") {
+                    const hasGroups = (manifest.change_groups ?? []).length > 0;
+                    tab.sidebarView = hasGroups ? "groups" : "category";
+                    tab.commentsOpen = true;
+                  } else {
+                    tab.sidebarView = entry.sidebar_view as SidebarView;
+                  }
                 }
                 return tab;
               } catch {
@@ -577,6 +599,35 @@ function App() {
     const next = nextUnviewed(guidedOrder(), -1);
     if (next) setSelectedFile(next);
   }, [activeTabId, activeTab?.manifest, resumePing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Once a jump-to-thread target's file is selected, the DiffViewer for it may
+  // not have mounted (or rendered the thread row) yet on this same tick — retry
+  // via rAF for up to ~1s rather than a single synchronous call.
+  useEffect(() => {
+    if (!pendingThreadIdRef.current) return;
+    const id = pendingThreadIdRef.current;
+    let attempts = 0;
+    let raf = 0;
+    const tryScroll = () => {
+      attempts++;
+      // First attempt may expand collapsed low-significance hunks — a thread
+      // inside one has no DOM row until its hunk renders.
+      if (diffViewerRef.current?.scrollToThread(id, attempts === 1)) {
+        pendingThreadIdRef.current = null;
+        return;
+      }
+      if (attempts > 60) {
+        pendingThreadIdRef.current = null;
+        // Outdated threads (line: null, position gone from the current diff)
+        // have no row to land on — say so instead of silently doing nothing.
+        addToast("info", "Couldn't locate this thread in the current diff — it may be outdated.");
+        return;
+      }
+      raf = requestAnimationFrame(tryScroll);
+    };
+    raf = requestAnimationFrame(tryScroll);
+    return () => cancelAnimationFrame(raf);
+  }, [activeTabId, activeTab?.selectedFile?.path, threadScrollPing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Bridge for the mini-player's "Open on GitHub" row action: the floating
   // widget's webview has no shell:open capability (see mini-player.json), so
@@ -900,8 +951,16 @@ function App() {
     updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, open } }));
   }
 
+  // Chat and Comments are mutually exclusive right-dock panels — opening chat closes comments.
   function toggleChatOpen() {
-    updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, open: !t.chat.open } }));
+    updateTab(activeTabId, (t) => {
+      const opening = !t.chat.open;
+      return { ...t, chat: { ...t.chat, open: opening }, commentsOpen: opening ? false : t.commentsOpen };
+    });
+  }
+
+  function setCommentsOpen(open: boolean) {
+    updateTab(activeTabId, (t) => ({ ...t, commentsOpen: open }));
   }
 
   function handleChatToggleWholePr(value: boolean) {
@@ -1254,9 +1313,6 @@ function App() {
 
   function handleViewChange(view: SidebarView) {
     updateTab(activeTabId,(t) => ({ ...t, sidebarView: view }));
-    if (view === "comments") {
-      handleRequestComments();
-    }
   }
 
   async function handleRequestComments() {
@@ -1268,19 +1324,7 @@ function App() {
       const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
         prUrl: tab.manifest.pr_url,
       });
-      // Set first file with comments as selected if none selected
-      const firstFile = threads.length > 0 ? threads[0].path : null;
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.id === activeTabId
-            ? {
-                ...t,
-                commentThreads: { status: "loaded", threads },
-                selectedCommentFile: t.selectedCommentFile ?? firstFile,
-              }
-            : t
-        )
-      );
+      updateTab(activeTabId,(t) => ({ ...t, commentThreads: { status: "loaded", threads } }));
     } catch (err) {
       updateTab(activeTabId,(t) => ({
         ...t,
@@ -1289,8 +1333,30 @@ function App() {
     }
   }
 
-  function handleSelectCommentFile(path: string) {
-    updateTab(activeTabId,(t) => ({ ...t, selectedCommentFile: path }));
+  /** File-group header click in the comments panel — jump to the file, no thread scroll. */
+  function handleOpenCommentFile(path: string) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return;
+    const file = tab.manifest.files.find((f) => f.path === path);
+    if (file) setSelectedFile(file);
+    else addToast("info", "File not in this diff");
+  }
+
+  /** Thread-card location click in the comments panel — select the file (if
+   * needed) then scroll/flash the thread into view once the diff has mounted it. */
+  function handleJumpToThread(thread: ReviewThread) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return;
+    if (tab.selectedFile?.path !== thread.path) {
+      const file = tab.manifest.files.find((f) => f.path === thread.path);
+      if (!file) {
+        addToast("info", "File not in this diff");
+        return;
+      }
+      setSelectedFile(file);
+    }
+    pendingThreadIdRef.current = thread.id;
+    setThreadScrollPing((p) => p + 1);
   }
 
   async function handleReply(threadId: string, commentId: string, body: string) {
@@ -1794,7 +1860,9 @@ function App() {
             pr_url: t.manifest!.pr_url,
             selected_file: t.selectedFile?.path ?? null,
             sidebar_view: t.sidebarView,
-            selected_comment_file: t.selectedCommentFile,
+            // Retired with the comments panel (#144) — kept on the wire type
+            // for schema stability, always written null now.
+            selected_comment_file: null,
           })),
         active_pr: tabs.find((t) => t.id === activeTabId)?.manifest?.pr_url ?? null,
       };
@@ -1871,7 +1939,7 @@ function App() {
       { id: "mark-next", section: "Review", title: "Mark reviewed and go to next", run: markReviewedAndAdvance },
       { id: "finish", section: "Review", title: "Finish review…", keys: "R", run: () => setReviewPickerOpen(true) },
       { id: "search", section: "Review", title: "Search in diffs", keys: "/", run: () => searchRef.current?.open("local") },
-      { id: "threads", section: "Review", title: "Toggle threads view", keys: "T", run: toggleThreadsView },
+      { id: "threads", section: "Review", title: "Toggle comments panel", keys: "T", run: toggleThreadsView },
       { id: "refresh", section: "Review", title: "Refresh PR", keys: "⌃R", run: handleRefreshPr },
       { id: "github", section: "Review", title: "Open PR on GitHub", run: () => { openUrl(m.pr_url); } },
       { id: "ask-ai", section: "Review", title: "Ask AI about this change", keys: "⌘J", run: toggleChatOpen },
@@ -1948,7 +2016,7 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${activeTab?.chat.open || activeTab?.commentsOpen ? " app--right-panel" : ""}`}>
       <ActivityWidget onOpenPr={(ref) => handleFetchStart(ref, activeTabId ?? undefined)} />
       <Header
         tabs={tabs}
@@ -2074,7 +2142,7 @@ function App() {
           onOpenChange={setSearchOpen}
         />
         <div className="main-content">
-          {activeTab.sidebarView !== "comments" && !activeTab.selectedFile ? (
+          {!activeTab.selectedFile ? (
             <PrOverview
               manifest={activeTab.manifest}
               checksStatus={activeChecks ?? null}
@@ -2109,33 +2177,13 @@ function App() {
             sidebarView={activeTab.sidebarView}
             onViewChange={handleViewChange}
             commentThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : []}
-            selectedCommentFile={activeTab.selectedCommentFile}
-            onSelectCommentFile={handleSelectCommentFile}
+            commentsOpen={activeTab.commentsOpen ?? false}
+            onToggleComments={toggleThreadsView}
             onVisibleFilesChange={handleVisibleFilesChange}
             onShowOverview={() => { if (activeTabId) updateTab(activeTabId, (t) => ({ ...t, selectedFile: null })); }}
           />
           <div className="diff-pane">
-            {activeTab.sidebarView === "comments" ? (
-              activeTab.commentThreads.status === "loading" ? (
-                <div className="no-file-selected">Loading review threads...</div>
-              ) : activeTab.commentThreads.status === "error" ? (
-                <div className="no-file-selected" style={{ color: "var(--diff-remove-text)" }}>
-                  {activeTab.commentThreads.message}
-                </div>
-              ) : activeTab.commentThreads.status === "loaded" ? (
-                <CommentsViewer
-                  threads={activeTab.commentThreads.threads}
-                  selectedFile={activeTab.selectedCommentFile}
-                  onReply={handleReply}
-                  onToggleResolved={handleToggleResolved}
-                  onEditComment={handleEditComment}
-                  onToggleReaction={handleToggleReaction}
-                  lang={activeTab.selectedCommentFile ? detectLanguage(activeTab.selectedCommentFile) : undefined}
-                />
-              ) : (
-                <div className="no-file-selected">Switch to Comments tab to load threads</div>
-              )
-            ) : activeTab.selectedFile ? (
+            {activeTab.selectedFile ? (
               (() => {
                 const order = guidedOrder();
                 const idx = order.indexOf(activeTab.selectedFile.path);
@@ -2177,6 +2225,19 @@ function App() {
               onClear={handleChatClear}
               onToggleWholePr={handleChatToggleWholePr}
               onOpenFile={handleChatOpenFile}
+            />
+          )}
+          {activeTab.commentsOpen && (
+            <CommentsPanel
+              commentThreads={activeTab.commentThreads}
+              onRetry={handleRequestComments}
+              onReply={handleReply}
+              onToggleResolved={handleToggleResolved}
+              onEditComment={handleEditComment}
+              onToggleReaction={handleToggleReaction}
+              onClose={() => setCommentsOpen(false)}
+              onOpenFile={handleOpenCommentFile}
+              onJumpToThread={handleJumpToThread}
             />
           )}
         </div>

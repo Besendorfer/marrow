@@ -588,6 +588,36 @@ body {
   flex: 1;
 }
 
+/* ─── Sidebar Footer (Comments toggle) ─────────────────────────────────── */
+.sidebar-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-comments-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: var(--space-2) var(--space-4);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.sidebar-comments-toggle:hover {
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+}
+
+.sidebar-comments-toggle.active {
+  color: var(--accent-strong);
+  background: var(--accent-bg);
+}
+
 .file-group {
   margin-bottom: 4px;
 }
@@ -2774,54 +2804,6 @@ tr.cursor-selected td {
   background: var(--border);
 }
 
-/* ─── Comments Viewer ──────────────────────────────────────────────────── */
-.comments-viewer {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-
-.comments-viewer-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.comments-viewer-path {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.comments-viewer-summary {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-left: auto;
-}
-
-.comments-viewer-threads {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.comments-viewer-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-muted);
-  font-size: 14px;
-}
-
 /* ─── Thread Card ──────────────────────────────────────────────────────── */
 .thread-card {
   border: 1px solid var(--border);
@@ -2850,16 +2832,22 @@ tr.cursor-selected td {
   background: var(--border);
 }
 
+.thread-card-author {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 .thread-card-location {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-primary);
+  cursor: pointer;
 }
 
-.thread-card-comment-count {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-muted);
+.thread-card-location:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .thread-outdated-badge {
@@ -2933,6 +2921,25 @@ tr.cursor-selected td {
 
 .thread-comment:last-child {
   border-bottom: none;
+}
+
+.thread-comments-more {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.thread-comments-more:hover {
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
 }
 
 .comment-header {
@@ -3103,69 +3110,6 @@ tr.cursor-selected td {
 .reply-submit:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-/* ─── Comment File List (sidebar) ──────────────────────────────────────── */
-.comment-file-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.comment-file-list-empty {
-  padding: 16px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.comment-file-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 16px;
-  border: none;
-  background: none;
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 13px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.comment-file-item .file-name {
-  flex: 1;
-  min-width: 0;
-}
-
-.comment-file-item .file-path-hint {
-  margin-left: 0;
-  width: 48px;
-  text-align: right;
-}
-
-.comment-file-item:hover {
-  background: var(--bg-tertiary);
-}
-
-.comment-file-item.selected {
-  background: rgba(88, 166, 255, 0.15);
-}
-
-.comment-count-badge {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  min-width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: var(--bg-tertiary);
-  color: var(--text-muted);
-  margin-left: auto;
-  flex-shrink: 0;
 }
 
 /* ─── Inline Review Threads (Diff View) ────────────────────────────────── */
@@ -3689,21 +3633,6 @@ tr.cursor-selected td {
   user-select: none;
 }
 
-.unresolved-badge {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  min-width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: var(--risk-high-bg);
-  color: var(--risk-high);
-  flex-shrink: 0;
-}
-
 /* ─── Search Bar ────────────────────────────────────────────────────────── */
 .search-bar {
   background: var(--bg-secondary);
@@ -4176,6 +4105,7 @@ mark.search-highlight-current {
   right: 16px;
   /* Clears the next-file bar at the bottom of the diff pane. */
   bottom: 64px;
+  transition: right 0.2s ease;
   width: 340px;
   height: 440px;
   min-width: 210px;
@@ -5665,6 +5595,143 @@ mark.search-highlight-current {
   overflow: hidden;
 }
 
+/* ─── Comments Panel (right dock) ───────────────────────────────────────── */
+.comments-panel {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--chip-border);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.comments-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--chip-border);
+}
+
+.comments-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.comments-panel-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--chip-border);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.comments-panel-count {
+  white-space: nowrap;
+}
+
+.comments-panel-filter {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.comments-panel-filter button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px var(--space-2);
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.comments-panel-filter button:first-child {
+  border-right: 1px solid var(--border);
+}
+
+.comments-panel-filter button.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.comments-panel-filter button:hover:not(.active) {
+  color: var(--text-secondary);
+}
+
+.comments-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.comments-panel-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: var(--space-4) 0;
+}
+
+.comments-panel-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--diff-remove-text);
+  font-size: 12px;
+  border: 1px solid var(--diff-remove-text);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+
+.comments-panel-retry {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--diff-remove-text);
+  border-radius: var(--radius-sm);
+  color: var(--diff-remove-text);
+  padding: 2px var(--space-2);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.comments-panel-retry:hover {
+  background: var(--diff-remove-bg);
+}
+
+.comments-panel-file-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.comments-panel-file-header {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.comments-panel-file-header:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .chat-header {
   display: flex;
   align-items: center;
@@ -5908,3 +5975,19 @@ mark.search-highlight-current {
   color: var(--accent); text-decoration: none;
 }
 .rt-link:hover { text-decoration: underline; }
+
+/* When a right panel (chat/comments, 380px, in-flow at the window's right
+   edge) is open, the fixed-position activity dock/pill steps left of it so
+   it never covers the panel's content. The expanded dock and collapsed pill
+   are separate classes — both need the offset. */
+.app--right-panel .activity-widget--dock,
+.app--right-panel .activity-widget--pill {
+  right: calc(380px + 24px);
+}
+.activity-widget--pill {
+  transition: right 0.2s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-widget--dock,
+  .activity-widget--pill { transition: none; }
+}

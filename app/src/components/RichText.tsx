@@ -65,14 +65,87 @@ function ExternalLink({ label, url }: { label: string; url: string }) {
   );
 }
 
-/** Bold runs within a plain-text span. */
-function renderBold(text: string, keyPrefix: string): React.ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*)/g).flatMap((bp, j) => {
-    if (bp.startsWith("**") && bp.endsWith("**") && bp.length > 4) {
-      return [<strong key={`${keyPrefix}-${j}`}>{bp.slice(2, -2)}</strong>];
+/** Italic runs (single *asterisk*, non-space-adjacent) within a plain span. */
+function renderItalic(text: string, keyPrefix: string): React.ReactElement[] {
+  return text.split(/(\*[^\s*][^*]*\*)/g).flatMap((ip, j) => {
+    if (ip.length > 2 && ip.startsWith("*") && ip.endsWith("*") && !/\s$/.test(ip.slice(1, -1))) {
+      return [<em key={`${keyPrefix}-i${j}`}>{unescapeMd(ip.slice(1, -1))}</em>];
     }
-    return bp ? [<span key={`${keyPrefix}-${j}`}>{bp}</span>] : [];
+    return ip ? [<span key={`${keyPrefix}-i${j}`}>{unescapeMd(ip)}</span>] : [];
   });
+}
+
+/** Escaped `\\` and `\*` must be invisible to the emphasis delimiter regexes
+ * (an escaped asterisk never opens emphasis), so they're sentinel-encoded
+ * before splitting and decoded back at the text leaves in unescapeMd. `\\`
+ * goes first so the backslash in `\\*` isn't misread as escaping the star. */
+const ESC_BS = "\u0000";
+const ESC_STAR = "\u0001";
+function encodeEscapes(s: string): string {
+  return s.replace(/\\\\/g, ESC_BS).replace(/\\\*/g, ESC_STAR);
+}
+
+/** GFM backslash escapes: \` \* \_ etc. render the punctuation literally.
+ * Applied only at plain-text leaves — never inside code spans. `\\` and `\*`
+ * arrive sentinel-encoded (see encodeEscapes). */
+function unescapeMd(s: string): string {
+  return s
+    .replace(/\\([`_{}[\]()#+\-.!<>~|])/g, "$1")
+    .replace(/\u0000/g, "\\")
+    .replace(/\u0001/g, "*");
+}
+
+/** Bold and ***bold-italic*** (then italic) runs within a plain-text span. */
+function renderBold(text: string, keyPrefix: string): React.ReactNode[] {
+  return encodeEscapes(text).split(/(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*)/g).flatMap((bp, j) => {
+    if (bp.startsWith("***") && bp.endsWith("***") && bp.length > 6) {
+      return [<strong key={`${keyPrefix}-${j}`}><em>{unescapeMd(bp.slice(3, -3))}</em></strong>];
+    }
+    if (bp.startsWith("**") && bp.endsWith("**") && bp.length > 4) {
+      return [<strong key={`${keyPrefix}-${j}`}>{unescapeMd(bp.slice(2, -2))}</strong>];
+    }
+    return bp ? renderItalic(bp, `${keyPrefix}-${j}`) : [];
+  });
+}
+
+/** CommonMark-style inline code-span scan: a run of N backticks opens a span
+ * closed only by the next run of exactly N backticks (so `` a`b `` works and
+ * multi-backtick runs don't pair off with random singles). Unclosed runs stay
+ * literal text. */
+function splitCodeSpans(text: string): Array<{ code: string } | { text: string }> {
+  const out: Array<{ code: string } | { text: string }> = [];
+  let plain = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== "`") { plain += text[i]; i++; continue; }
+    let n = 0;
+    while (text[i + n] === "`") n++;
+    // Find a closing run of exactly n backticks.
+    let close = -1;
+    for (let j = i + n; j < text.length; j++) {
+      if (text[j] !== "`") continue;
+      let m = 0;
+      while (text[j + m] === "`") m++;
+      if (m === n) { close = j; break; }
+      j += m - 1;
+    }
+    if (close === -1) {
+      plain += "`".repeat(n);
+      i += n;
+      continue;
+    }
+    if (plain) { out.push({ text: plain }); plain = ""; }
+    let code = text.slice(i + n, close);
+    // CommonMark: strip one leading+trailing space when both present and the
+    // content isn't all spaces (lets you write code that starts with `).
+    if (code.length >= 2 && code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "") {
+      code = code.slice(1, -1);
+    }
+    out.push({ code });
+    i = close + n;
+  }
+  if (plain) out.push({ text: plain });
+  return out;
 }
 
 /** Render inline `code` spans (recognizing in-scope file:line mentions as
@@ -80,10 +153,10 @@ function renderBold(text: string, keyPrefix: string): React.ReactNode[] {
 export function renderInline(text: string, filePaths: string[], onOpenFile?: (path: string, line?: number) => void): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   // Code spans first — nothing inside them is markdown.
-  const parts = text.split(/(`[^`]+`)/g);
-  parts.forEach((part, i) => {
-    if (part.startsWith("`") && part.endsWith("`") && part.length > 1) {
-      const inner = part.slice(1, -1);
+  const parts = splitCodeSpans(text);
+  parts.forEach((tok, i) => {
+    if ("code" in tok) {
+      const inner = tok.code;
       const ref = filePaths.length > 0 ? parseFileRef(inner, filePaths) : null;
       if (ref && onOpenFile) {
         nodes.push(
@@ -104,7 +177,7 @@ export function renderInline(text: string, filePaths: string[], onOpenFile?: (pa
     }
     // Then links (and image syntax, rendered as a labeled link — no remote
     // image loading), then bold in the remaining plain runs.
-    const linkParts = part.split(/(!?\[[^\]]*\]\([^\s)]+\))/g);
+    const linkParts = tok.text.split(/(!?\[[^\]]*\]\([^\s)]+\))/g);
     linkParts.forEach((lp, k) => {
       const m = lp.match(/^(!?)\[([^\]]*)\]\(([^\s)]+)\)$/);
       if (m) {
@@ -123,6 +196,7 @@ type Block =
   | { kind: "quote"; lines: string[] }
   | { kind: "list"; ordered: boolean; items: { text: string; task?: "done" | "todo" }[] }
   | { kind: "hr" }
+  | { kind: "fence"; lang?: string; code: string }
   | { kind: "para"; lines: string[] };
 
 const HEADING_RE = /^(#{1,4})\s+(.*)$/;
@@ -139,6 +213,21 @@ function parseBlocks(segment: string): Block[] {
   while (i < lines.length) {
     const line = lines[i];
     if (line.trim() === "") { i++; continue; }
+    // Fenced code: only a line STARTING with ``` opens a fence (GitHub
+    // semantics) — inline ``` inside a sentence stays literal text.
+    const f = line.match(/^```([\w+-]*)\s*$/);
+    if (f) {
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        code.push(lines[i]);
+        i++;
+      }
+      i++; // consume the closing fence (or run off the end — unterminated
+      // fences render as code anyway, which also suits streaming chat text).
+      blocks.push({ kind: "fence", lang: f[1] || undefined, code: code.join("\n") });
+      continue;
+    }
     const h = line.match(HEADING_RE);
     if (h) { blocks.push({ kind: "heading", level: h[1].length, text: h[2] }); i++; continue; }
     if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { blocks.push({ kind: "hr" }); i++; continue; }
@@ -174,7 +263,7 @@ function parseBlocks(segment: string): Block[] {
       continue;
     }
     const p: string[] = [];
-    while (i < lines.length && lines[i].trim() !== "" && !HEADING_RE.test(lines[i]) && !LIST_RE.test(lines[i]) && !lines[i].startsWith(">")) {
+    while (i < lines.length && lines[i].trim() !== "" && !HEADING_RE.test(lines[i]) && !LIST_RE.test(lines[i]) && !lines[i].startsWith(">") && !/^```/.test(lines[i])) {
       p.push(lines[i]);
       i++;
     }
@@ -199,17 +288,14 @@ export function RichText({ content, filePaths = [], onOpenFile }: { content: str
   // PR templates are full of HTML comments — never render them.
   const cleaned = content.replace(/<!--[\s\S]*?-->/g, "");
   // Split on fenced code blocks, keeping the fences as delimiters.
-  const segments = cleaned.split(/(```[\s\S]*?```)/g);
   return (
     <>
-      {segments.map((seg, i) => {
-        const fence = seg.match(/^```([\w+-]*)\n?([\s\S]*?)```$/);
-        if (fence) {
-          return <CodeBlock key={i} lang={fence[1] || undefined} code={fence[2].replace(/\n$/, "")} />;
-        }
-        return parseBlocks(seg).map((b, j) => {
-          const key = `${i}-${j}`;
+      {(() => {
+        return parseBlocks(cleaned).map((b, j) => {
+          const key = `b-${j}`;
           switch (b.kind) {
+            case "fence":
+              return <CodeBlock key={key} lang={b.lang} code={b.code} />;
             case "heading":
               return <div key={key} className={`rt-h rt-h--${b.level}`}>{renderInline(b.text, filePaths, onOpenFile)}</div>;
             case "hr":
@@ -241,7 +327,7 @@ export function RichText({ content, filePaths = [], onOpenFile }: { content: str
               );
           }
         });
-      })}
+      })()}
     </>
   );
 }

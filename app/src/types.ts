@@ -146,7 +146,7 @@ export interface NoteResolution {
   at?: string;
 }
 
-export type SidebarView = "groups" | "comments" | "category" | "tree";
+export type SidebarView = "groups" | "category" | "tree";
 
 export type DiffViewMode = "split" | "unified";
 
@@ -186,7 +186,8 @@ export interface Tab {
   /** Conversational diff Q&A state for this PR. */
   chat: ChatState;
   commentThreads: CommentThreadsState;
-  selectedCommentFile: string | null;
+  /** Whether the right-dock comments panel is open (mutually exclusive with `chat.open`). */
+  commentsOpen?: boolean;
   sidebarView: SidebarView;
   isRefreshing?: boolean;
   lastCommentCount?: number;
