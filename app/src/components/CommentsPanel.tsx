@@ -1,16 +1,22 @@
-import { useState, useMemo } from "react";
-import type { ReviewThread, ReviewComment } from "../types";
-import { timeAgo } from "../utils";
-import { CommentBodyRendered, ReactionBar } from "./DiffViewer";
+import { useEffect, useMemo, useState } from "react";
+import type { CommentThreadsState, ReviewComment, ReviewThread } from "../types";
+import { getFileName, timeAgo } from "../utils";
+import { CommentBodyRendered, ReactionBar, detectLanguage } from "./DiffViewer";
 
-interface CommentsViewerProps {
-  threads: ReviewThread[];
-  selectedFile: string | null;
+type CommentsFilter = "unresolved" | "all";
+
+interface CommentsPanelProps {
+  commentThreads: CommentThreadsState;
+  onRetry: () => void;
   onReply: (threadId: string, commentId: string, body: string) => void;
   onToggleResolved: (threadId: string, resolve: boolean) => void;
   onEditComment?: (commentId: string, body: string) => void;
   onToggleReaction?: (commentId: string, content: string) => void;
-  lang?: string;
+  onClose: () => void;
+  /** Jump straight to a file (from a file-group header) — no thread scroll. */
+  onOpenFile: (path: string) => void;
+  /** Select the thread's file (if needed) and scroll/flash it into view. */
+  onJumpToThread: (thread: ReviewThread) => void;
 }
 
 function CommentCard({
@@ -85,6 +91,7 @@ function ThreadCard({
   onToggleResolved,
   onEdit,
   onToggleReaction,
+  onJumpToThread,
   lang,
 }: {
   thread: ReviewThread;
@@ -92,15 +99,20 @@ function ThreadCard({
   onToggleResolved: (threadId: string, resolve: boolean) => void;
   onEdit?: (commentId: string, body: string) => void;
   onToggleReaction?: (commentId: string, content: string) => void;
+  onJumpToThread: (thread: ReviewThread) => void;
   lang?: string;
 }) {
+  const [threadCollapsed, setThreadCollapsed] = useState(thread.is_resolved);
   const [hunkExpanded, setHunkExpanded] = useState(!thread.is_resolved);
+  const [commentsExpanded, setCommentsExpanded] = useState(thread.comments.length <= 2);
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyText, setReplyText] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [threadCollapsed, setThreadCollapsed] = useState(thread.is_resolved);
 
+  const first = thread.comments[0];
   const lastComment = thread.comments[thread.comments.length - 1];
+  const extraCount = thread.comments.length - 1;
+  const visibleComments = commentsExpanded ? thread.comments : thread.comments.slice(0, 1);
 
   function handleSubmitReply() {
     if (!replyText.trim() || submitting) return;
@@ -121,12 +133,18 @@ function ThreadCard({
     <div className={`thread-card ${thread.is_resolved ? "thread-card-resolved" : ""}`}>
       <div className="thread-card-header" onClick={() => setThreadCollapsed((v) => !v)}>
         <span className={`collapse-chevron ${threadCollapsed ? "collapsed" : ""}`}>&#9662;</span>
-        <span className="thread-card-location">
+        {first?.author.avatar_url && (
+          <img className="comment-avatar" src={first.author.avatar_url} alt={first.author.login} width={18} height={18} />
+        )}
+        <span className="thread-card-author">@{first?.author.login}</span>
+        <span className="comment-time">{timeAgo(first?.created_at)}</span>
+        <span
+          className="thread-card-location"
+          onClick={(e) => { e.stopPropagation(); onJumpToThread(thread); }}
+          title="Jump to this comment in the diff"
+        >
           {lineLabel}
           {thread.is_outdated && <span className="thread-outdated-badge">outdated</span>}
-        </span>
-        <span className="thread-card-comment-count">
-          {thread.comments.length} comment{thread.comments.length !== 1 ? "s" : ""}
         </span>
         {thread.is_resolved && <span className="thread-resolved-badge">Resolved</span>}
       </div>
@@ -149,10 +167,16 @@ function ThreadCard({
           )}
 
           <div className="thread-comments">
-            {thread.comments.map((comment) => (
+            {visibleComments.map((comment) => (
               <CommentCard key={comment.id} comment={comment} onEdit={onEdit} onToggleReaction={onToggleReaction} lang={lang} />
             ))}
           </div>
+
+          {!commentsExpanded && extraCount > 1 && (
+            <button className="thread-comments-more" onClick={() => setCommentsExpanded(true)}>
+              {extraCount} more comment{extraCount === 1 ? "" : "s"}
+            </button>
+          )}
 
           <div className="thread-actions">
             {replyOpen ? (
@@ -207,72 +231,120 @@ function ThreadCard({
   );
 }
 
-export function CommentsViewer({
-  threads,
-  selectedFile,
+/** Sort key: unresolved threads first, then by line number. */
+function threadSortKey(t: ReviewThread): number {
+  return (t.is_resolved ? 1_000_000 : 0) + (t.line ?? t.original_line ?? 0);
+}
+
+export function CommentsPanel({
+  commentThreads,
+  onRetry,
   onReply,
   onToggleResolved,
   onEditComment,
   onToggleReaction,
-  lang,
-}: CommentsViewerProps) {
-  if (!selectedFile) {
-    return (
-      <div className="comments-viewer-empty">
-        Select a file from the Comments sidebar to view review threads
-      </div>
-    );
-  }
+  onClose,
+  onOpenFile,
+  onJumpToThread,
+}: CommentsPanelProps) {
+  // null until the first load resolves, so the default (Unresolved, unless
+  // there are none) is applied exactly once — after that, the user's choice sticks.
+  const [filter, setFilter] = useState<CommentsFilter | null>(null);
 
-  const { fileThreads, unresolvedThreads, resolvedThreads } = useMemo(() => {
-    const fileThreads = threads.filter((t) => t.path === selectedFile);
-    return {
-      fileThreads,
-      unresolvedThreads: fileThreads.filter((t) => !t.is_resolved),
-      resolvedThreads: fileThreads.filter((t) => t.is_resolved),
-    };
-  }, [threads, selectedFile]);
+  const allThreads = commentThreads.status === "loaded" ? commentThreads.threads : [];
+  const unresolvedCount = useMemo(() => allThreads.filter((t) => !t.is_resolved).length, [allThreads]);
+  const totalCount = allThreads.length;
 
-  if (fileThreads.length === 0) {
-    return (
-      <div className="comments-viewer-empty">
-        No review threads for this file
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (filter !== null) return;
+    if (commentThreads.status !== "loaded") return;
+    setFilter(unresolvedCount > 0 ? "unresolved" : "all");
+  }, [commentThreads.status, unresolvedCount, filter]);
+
+  const effectiveFilter = filter ?? "unresolved";
+
+  const groups = useMemo(() => {
+    const filtered = allThreads.filter((t) => effectiveFilter === "all" || !t.is_resolved);
+    const byPath = new Map<string, ReviewThread[]>();
+    for (const t of filtered) {
+      const arr = byPath.get(t.path) ?? [];
+      arr.push(t);
+      byPath.set(t.path, arr);
+    }
+    return [...byPath.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([path, threads]) => ({
+        path,
+        threads: threads.slice().sort((a, b) => threadSortKey(a) - threadSortKey(b)),
+      }));
+  }, [allThreads, effectiveFilter]);
 
   return (
-    <div className="comments-viewer">
-      <div className="comments-viewer-header">
-        <span className="comments-viewer-path">{selectedFile}</span>
-        <span className="comments-viewer-summary">
-          {unresolvedThreads.length} unresolved
-          {resolvedThreads.length > 0 && `, ${resolvedThreads.length} resolved`}
-        </span>
+    <div className="comments-panel">
+      <div className="comments-panel-header">
+        <span className="comments-panel-title">Comments</span>
+        <button className="chat-icon-btn" onClick={onClose} title="Close comments panel">
+          ✕
+        </button>
       </div>
-      <div className="comments-viewer-threads">
-        {unresolvedThreads.map((thread) => (
-          <ThreadCard
-            key={thread.id}
-            thread={thread}
-            onReply={onReply}
-            onToggleResolved={onToggleResolved}
-            onEdit={onEditComment}
-            onToggleReaction={onToggleReaction}
-            lang={lang}
-          />
-        ))}
-        {resolvedThreads.map((thread) => (
-          <ThreadCard
-            key={thread.id}
-            thread={thread}
-            onReply={onReply}
-            onToggleResolved={onToggleResolved}
-            onEdit={onEditComment}
-            onToggleReaction={onToggleReaction}
-            lang={lang}
-          />
-        ))}
+
+      <div className="comments-panel-meta">
+        <span className="comments-panel-count">
+          {unresolvedCount} unresolved · {totalCount} total
+        </span>
+        <div className="comments-panel-filter">
+          <button
+            className={effectiveFilter === "unresolved" ? "active" : ""}
+            onClick={() => setFilter("unresolved")}
+          >
+            Unresolved
+          </button>
+          <button
+            className={effectiveFilter === "all" ? "active" : ""}
+            onClick={() => setFilter("all")}
+          >
+            All
+          </button>
+        </div>
+      </div>
+
+      <div className="comments-panel-body">
+        {commentThreads.status === "error" ? (
+          <div className="comments-panel-error" role="alert">
+            {commentThreads.message}
+            <button className="comments-panel-retry" onClick={onRetry}>Retry</button>
+          </div>
+        ) : commentThreads.status === "loading" || commentThreads.status === "idle" ? (
+          <div className="comments-panel-empty">Loading comments…</div>
+        ) : totalCount === 0 ? (
+          <div className="comments-panel-empty">No review threads on this PR</div>
+        ) : groups.length === 0 ? (
+          <div className="comments-panel-empty">No unresolved threads — nice work</div>
+        ) : (
+          groups.map(({ path, threads }) => (
+            <div key={path} className="comments-panel-file-group">
+              <button
+                className="comments-panel-file-header"
+                onClick={() => onOpenFile(path)}
+                title={path}
+              >
+                {getFileName(path)}
+              </button>
+              {threads.map((thread) => (
+                <ThreadCard
+                  key={thread.id}
+                  thread={thread}
+                  onReply={onReply}
+                  onToggleResolved={onToggleResolved}
+                  onEdit={onEditComment}
+                  onToggleReaction={onToggleReaction}
+                  onJumpToThread={onJumpToThread}
+                  lang={detectLanguage(path)}
+                />
+              ))}
+            </div>
+          ))
+        )}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
 use std::collections::HashMap;
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -167,6 +167,44 @@ fn resolve_user_review_status(reviews: &[serde_json::Value], username: &str) -> 
     status
 }
 
+/// Compute the set of reviewers whose latest opinionated review is APPROVED,
+/// mirroring GitHub's "latest review per reviewer" semantics used by
+/// `resolve_user_review_status`: per-author (case-insensitive identity, but
+/// original casing preserved for display), track the latest state among
+/// APPROVED / CHANGES_REQUESTED / DISMISSED (COMMENTED never clears a prior
+/// approval; DISMISSED does). Returns authors with a final APPROVED state, in
+/// first-review order.
+fn resolve_approvers(reviews: &[serde_json::Value]) -> Vec<String> {
+    let mut order: Vec<String> = Vec::new();
+    let mut latest: HashMap<String, (String, String)> = HashMap::new(); // key(lower) -> (display, state)
+
+    for review in reviews {
+        let author = match review.pointer("/author/login").and_then(|l| l.as_str()) {
+            Some(a) => a,
+            None => continue,
+        };
+        let state = match review.get("state").and_then(|s| s.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !matches!(state, "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED") {
+            continue;
+        }
+        let key = author.to_lowercase();
+        if !latest.contains_key(&key) {
+            order.push(key.clone());
+        }
+        latest.insert(key, (author.to_string(), state.to_string()));
+    }
+
+    order
+        .into_iter()
+        .filter_map(|key| latest.get(&key))
+        .filter(|(_, state)| state == "APPROVED")
+        .map(|(display, _)| display.clone())
+        .collect()
+}
+
 /// Parse the viewer's `(review_status, is_re_requested)` from a `pullRequest`
 /// GraphQL node carrying `reviews { nodes { author{login} state } }` and
 /// `reviewRequests { nodes { requestedReviewer { ... on User { login } } } }`.
@@ -184,6 +222,20 @@ fn resolve_review_state(pr: &serde_json::Value, viewer: &str) -> (String, bool) 
         .map(|reviews| resolve_user_review_status(reviews, viewer))
         .unwrap_or_else(|| "pending".to_string());
     (status, is_re_requested)
+}
+
+/// Lowercase a `statusCheckRollup.state` GraphQL enum
+/// (`SUCCESS`/`FAILURE`/`ERROR`/`PENDING`/`EXPECTED`) to the activity feed's
+/// `ci_state` convention. `EXPECTED` (checks queued but not yet reported)
+/// reads the same as `PENDING` to callers — both mean "not settled yet".
+fn normalize_ci_state(state: &str) -> String {
+    match state {
+        "SUCCESS" => "success".to_string(),
+        "FAILURE" => "failure".to_string(),
+        "ERROR" => "error".to_string(),
+        "PENDING" | "EXPECTED" => "pending".to_string(),
+        other => other.to_lowercase(),
+    }
 }
 
 impl GithubClient {
@@ -528,15 +580,15 @@ impl GithubClient {
         // Search for PRs where user is a requested reviewer, has reviewed, or has commented
         // This covers: pending requests, submitted reviews, and pending reviews with comments
         let requested_query = format!(
-            "is:pr is:open review-requested:{} -is:draft {}",
+            "is:pr is:open review-requested:{} {}",
             username, date_filter
         );
         let reviewed_query = format!(
-            "is:pr is:open reviewed-by:{} -author:{} -is:draft {}",
+            "is:pr is:open reviewed-by:{} -author:{} {}",
             username, username, date_filter
         );
         let commented_query = format!(
-            "is:pr is:open commenter:{} -author:{} -is:draft {}",
+            "is:pr is:open commenter:{} -author:{} {}",
             username, username, date_filter
         );
 
@@ -580,6 +632,7 @@ impl GithubClient {
                 direct_request: false,
                 my_review_status: "pending".to_string(),
                 unresolved_thread_count: 0,
+                approval_count: 0,
             });
         }
 
@@ -654,6 +707,7 @@ impl GithubClient {
 
             if let Some(reviews) = pr.pointer("/reviews/nodes").and_then(|v| v.as_array()) {
                 item.my_review_status = resolve_user_review_status(reviews, username);
+                item.approval_count = resolve_approvers(reviews).len() as u32;
             }
 
             // Unresolved thread count
@@ -1398,6 +1452,12 @@ impl GithubClient {
                 repository(owner: "{}", name: "{}") {{
                     pullRequest(number: {}) {{
                         merged
+                        isDraft
+                        mergeable
+                        author {{ login }}
+                        labels(first: 10) {{
+                            nodes {{ name color }}
+                        }}
                         reviewRequests(first: 20) {{
                             nodes {{
                                 requestedReviewer {{
@@ -1435,12 +1495,59 @@ impl GithubClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let author = pr
+            .pointer("/author/login")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let draft = pr
+            .get("isDraft")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let (status, is_re_requested) = resolve_review_state(pr, viewer_login);
+
+        let approved_by = pr
+            .pointer("/reviews/nodes")
+            .and_then(|v| v.as_array())
+            .map(|reviews| resolve_approvers(reviews))
+            .unwrap_or_default();
+
+        let mergeable = pr
+            .get("mergeable")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+
+        let labels = pr
+            .pointer("/labels/nodes")
+            .and_then(|v| v.as_array())
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|n| {
+                        let name = n.get("name").and_then(|v| v.as_str())?.to_string();
+                        let color = n
+                            .get("color")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        Some(PrLabel { name, color })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Ok(MyReviewState {
             status,
             is_re_requested,
             is_merged,
+            author,
+            draft,
+            approved_by,
+            mergeable,
+            labels,
         })
     }
 }
@@ -1702,6 +1809,7 @@ impl GithubClient {
             reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }
             reviews(last: 100) { nodes { author { login } state } }
             comments(last: 1) { nodes { author { login } } }
+            commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
         "#;
 
         // Build one query per chunk from immutable reads, then fire them all at once.
@@ -1753,6 +1861,12 @@ impl GithubClient {
                     .and_then(|v| v.as_str())
                 {
                     o.last_actor = Some(login.to_string());
+                }
+                if let Some(state) = pr
+                    .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
+                    .and_then(|v| v.as_str())
+                {
+                    o.observed.ci_state = Some(normalize_ci_state(state));
                 }
             }
         }

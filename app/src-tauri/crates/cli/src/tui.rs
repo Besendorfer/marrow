@@ -1186,6 +1186,26 @@ impl<'a> App<'a> {
             ),
             Span::raw(format!(" {} #{}", self.manifest.pr_title, self.manifest.pr_number)),
         ];
+        if !self.manifest.author.is_empty() {
+            header.push(Span::styled(
+                format!(" by {}", self.manifest.author),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        let is_draft = self
+            .my_review_state
+            .as_ref()
+            .map(|s| s.draft)
+            .unwrap_or(self.manifest.draft);
+        if is_draft {
+            header.push(Span::styled(
+                " DRAFT ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Gray)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         if let Some(state) = &self.my_review_state {
             if state.is_merged {
                 header.push(Span::styled(
@@ -1203,6 +1223,11 @@ impl<'a> App<'a> {
                         .fg(Color::Black)
                         .bg(Color::Green)
                         .add_modifier(Modifier::BOLD),
+                ));
+            } else if !state.approved_by.is_empty() {
+                header.push(Span::styled(
+                    format!(" ✓ {} approved ", state.approved_by.len()),
+                    Style::default().fg(Color::Green),
                 ));
             }
         }
@@ -2231,8 +2256,11 @@ mod tests {
             head_ref: "feature".to_string(),
             base_sha: "aaa".to_string(),
             head_sha: "bbb".to_string(),
+            author: String::new(),
+            draft: false,
             summary: String::new(),
             change_groups: Vec::new(),
+            body: String::new(),
             files: vec![
                 file("pkg/low.go", "low", "@@ -1,1 +1,1 @@\n-a\n+b\n"),
                 file("pkg/high.go", "high", "@@ -1,1 +1,2 @@\n a\n+b\n"),

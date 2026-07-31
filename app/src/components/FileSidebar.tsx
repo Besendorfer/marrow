@@ -15,11 +15,13 @@ interface FileSidebarProps {
   onHunkFilterChange: (filter: HunkSignificanceFilter) => void;
   sidebarView: SidebarView;
   onViewChange: (view: SidebarView) => void;
+  /** Review threads for the whole PR, used only to size the "Comments (N)" toggle. */
   commentThreads: ReviewThread[];
-  selectedCommentFile: string | null;
-  onSelectCommentFile: (path: string) => void;
+  commentsOpen: boolean;
+  onToggleComments: () => void;
   /** Emits the visible file paths in manifest order, for keyboard file navigation. */
   onVisibleFilesChange?: (paths: string[]) => void;
+  onShowOverview?: () => void;
 }
 
 function getMaxHunkSignificance(file: FileDiff): string {
@@ -215,10 +217,16 @@ function FileItem({
           <span className="stale-indicator" title="Changed since you last reviewed">&#x26A0;</span>
         )}
         <span
-          className={`diff-type-badge ${getDiffTypeClass(file.diff_type)}`}
-        >
-          {getDiffTypeIcon(file.diff_type)}
-        </span>
+          className={`risk-dot risk-dot--${file.risk_level}`}
+          title={`${file.risk_level} risk`}
+        />
+        {file.diff_type !== "modified" && (
+          <span
+            className={`diff-type-badge ${getDiffTypeClass(file.diff_type)}`}
+          >
+            {getDiffTypeIcon(file.diff_type)}
+          </span>
+        )}
         <span className="file-name">{getFileName(file.path)}</span>
         <span className="line-stats">
           <span className="line-stat-add">+{file.additions}</span>
@@ -321,72 +329,6 @@ function TreeFolder({
   );
 }
 
-/* ─── Comment file list ──────────────────────────────────────────────────── */
-
-function CommentFileList({
-  threads,
-  selectedFile,
-  onSelectFile,
-}: {
-  threads: ReviewThread[];
-  selectedFile: string | null;
-  onSelectFile: (path: string) => void;
-}) {
-  const fileMap = useMemo(() => {
-    const map = new Map<string, { total: number; unresolved: number }>();
-    for (const t of threads) {
-      const entry = map.get(t.path) ?? { total: 0, unresolved: 0 };
-      entry.total++;
-      if (!t.is_resolved) entry.unresolved++;
-      map.set(t.path, entry);
-    }
-    // Sort: files with unresolved threads first, then alphabetical
-    const sorted = [...map.entries()].sort((a, b) => {
-      if (a[1].unresolved > 0 && b[1].unresolved === 0) return -1;
-      if (a[1].unresolved === 0 && b[1].unresolved > 0) return 1;
-      return a[0].localeCompare(b[0]);
-    });
-    return sorted;
-  }, [threads]);
-
-  if (threads.length === 0) {
-    return (
-      <div className="comment-file-list-empty">
-        No review threads on this PR
-      </div>
-    );
-  }
-
-  return (
-    <div className="comment-file-list">
-      {fileMap.map(([path, counts]) => {
-        const fileName = getFileName(path);
-        const dirHint = path.split("/").slice(-2, -1)[0] || "";
-        return (
-          <button
-            key={path}
-            className={`comment-file-item ${selectedFile === path ? "selected" : ""}`}
-            onClick={() => onSelectFile(path)}
-            title={path}
-          >
-            <span className="file-name">{fileName}</span>
-            <span className="file-path-hint">{dirHint}</span>
-            {counts.unresolved > 0 ? (
-              <span className="unresolved-badge">
-                {counts.unresolved}
-              </span>
-            ) : (
-              <span className="comment-count-badge">
-                {counts.total}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 /* ─── Main component ────────────────────────────────────────────────────── */
 
 export function FileSidebar({
@@ -403,9 +345,10 @@ export function FileSidebar({
   sidebarView: view,
   onViewChange: setView,
   commentThreads,
-  selectedCommentFile,
-  onSelectCommentFile,
+  commentsOpen,
+  onToggleComments,
   onVisibleFilesChange,
+  onShowOverview,
 }: FileSidebarProps) {
   const hasGroups = changeGroups.length > 0;
   const prevHasGroups = useRef(hasGroups);
@@ -555,7 +498,6 @@ export function FileSidebar({
     } else if (view === "tree") {
       flattenTreePaths(visibleFileTree, 0, collapsed, out);
     }
-    // "comments" view drives a separate selection model — emit nothing.
     return out;
   }, [view, changeGroups, collapsed, filesByPath, visiblePaths, ungroupedFiles, visibleCriticalFiles, visibleCategories, visibleGrouped, visibleFileTree]);
 
@@ -566,9 +508,22 @@ export function FileSidebar({
   const viewedCount = viewedFiles.size;
   const staleCount = staleViewedFiles.size;
   const totalCount = files.length;
+  const unresolvedCommentCount = useMemo(
+    () => commentThreads.filter((t) => !t.is_resolved).length,
+    [commentThreads],
+  );
 
   return (
     <aside className="file-sidebar">
+      {onShowOverview && (
+        <button
+          className={`sidebar-overview-link${selectedFile === null ? " active" : ""}`}
+          onClick={onShowOverview}
+          title="Back to the PR summary and change groups"
+        >
+          ← Overview
+        </button>
+      )}
       <div className="sidebar-header">
         <div className="sidebar-header-top">
           <span className="sidebar-title">Files</span>
@@ -582,13 +537,6 @@ export function FileSidebar({
                 Groups
               </button>
             )}
-            <button
-              className={view === "comments" ? "active" : ""}
-              onClick={() => setView("comments")}
-              title="Review comments"
-            >
-              Comments
-            </button>
             <button
               className={view === "category" ? "active" : ""}
               onClick={() => setView("category")}
@@ -604,6 +552,12 @@ export function FileSidebar({
               Tree
             </button>
           </div>
+        </div>
+        <div className="sidebar-progress">
+          <div
+            className="sidebar-progress-fill"
+            style={{ width: totalCount > 0 ? `${(viewedCount / totalCount) * 100}%` : 0 }}
+          />
         </div>
         <span className="sidebar-file-count">
           {viewedCount}/{totalCount} viewed
@@ -635,7 +589,7 @@ export function FileSidebar({
       )}
       {showHunkSignificance && (
         <div className="sidebar-filter-bar">
-          <span className="sidebar-filter-label">Significance hunks:</span>
+          <span className="sidebar-filter-label">Show hunks:</span>
           <div className="sidebar-filter-toggle">
             {(["all", "high", "medium"] as HunkSignificanceFilter[]).map((level) => (
               <button
@@ -650,13 +604,7 @@ export function FileSidebar({
         </div>
       )}
       <nav className="file-list">
-        {view === "comments" ? (
-          <CommentFileList
-            threads={commentThreads}
-            selectedFile={selectedCommentFile}
-            onSelectFile={onSelectCommentFile}
-          />
-        ) : view === "groups" ? (
+        {view === "groups" ? (
           <>
             {changeGroups.map((group, idx) => {
               const groupKey = `group:${idx}`;
@@ -790,6 +738,15 @@ export function FileSidebar({
           </div>
         )}
       </nav>
+      <div className="sidebar-footer">
+        <button
+          className={`sidebar-comments-toggle ${commentsOpen ? "active" : ""}`}
+          onClick={onToggleComments}
+          title="Review comments (T)"
+        >
+          Comments{unresolvedCommentCount > 0 && ` (${unresolvedCommentCount})`}
+        </button>
+      </div>
     </aside>
   );
 }

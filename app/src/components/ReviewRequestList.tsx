@@ -1,24 +1,55 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ReviewRequestItem, ReviewStatus, Settings, CachedPrInfo } from "../types";
+import { timeAgo } from "../utils";
 
 interface ReviewRequestListProps {
   onSelectPr: (prRef: string) => void;
+  /** Cached rows pass their cache info so the app can warn before an
+   *  unexpected AI re-analysis when the PR has moved on. */
+  onSelectCachedPr?: (prRef: string, info: CachedPrInfo) => void;
   openPrUrls: Set<string>;
+  /** Text filter from the omnibox — matches repo, title, and author. */
+  filter?: string;
+  /** Opens Settings — offered from the error card when the failure looks
+   * auth-shaped (bad/missing token). */
+  onOpenSettings?: () => void;
 }
 
-function formatTimeAgo(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+/** Matches error strings that look like a bad/missing GitHub token, so the
+ * error card can offer a direct path to Settings instead of just Retry. */
+const AUTH_ERROR_RE = /401|bad credentials|unauthoriz/i;
 
-  if (diffDays === 0) return "today";
-  if (diffDays === 1) return "1 day ago";
-  if (diffDays < 30) return `${diffDays} days ago`;
-  const diffMonths = Math.floor(diffDays / 30);
-  if (diffMonths === 1) return "1 month ago";
-  return `${diffMonths} months ago`;
+export function initials(login: string): string {
+  return login.slice(0, 2).toUpperCase();
+}
+
+/** A real GitHub avatar, falling back to the existing initials circle if the
+ * image fails to load (private/unreachable avatar, offline, etc). `size` picks
+ * between the two existing queue-avatar footprints (30px default, 16px `--sm`). */
+export function Avatar({ login, size = 30 }: { login: string; size?: 16 | 30 }) {
+  // Keyed to the login so a recycled instance (same list slot, new user)
+  // retries the image instead of inheriting the previous user's failure.
+  const [failedLogin, setFailedLogin] = useState<string | null>(null);
+  const failed = failedLogin === login;
+  const sizeClass = size === 16 ? " queue-avatar--sm" : "";
+  if (failed || !login) {
+    return (
+      <span className={`queue-avatar${sizeClass}`} aria-hidden="true">
+        {initials(login)}
+      </span>
+    );
+  }
+  return (
+    <img
+      className={`queue-avatar-img${sizeClass}`}
+      src={`https://github.com/${login}.png?size=64`}
+      alt=""
+      width={size}
+      height={size}
+      onError={() => setFailedLogin(login)}
+    />
+  );
 }
 
 function cutoffDateStr(): string {
@@ -43,7 +74,7 @@ const STATUS_CLASSES: Record<ReviewStatus, string> = {
   pending: "",
 };
 
-export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListProps) {
+export function ReviewRequestList({ onSelectPr, onSelectCachedPr, openPrUrls, filter, onOpenSettings }: ReviewRequestListProps) {
   const [cachedPrs, setCachedPrs] = useState<CachedPrInfo[]>([]);
   const [recentItems, setRecentItems] = useState<ReviewRequestItem[]>([]);
   const [olderItems, setOlderItems] = useState<ReviewRequestItem[]>([]);
@@ -55,6 +86,7 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
 
   const [showOlder, setShowOlder] = useState(true);
   const [showTeam, setShowTeam] = useState(true);
+  const [showDrafts, setShowDrafts] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   const settingsRef = useRef<Settings | null>(null);
@@ -69,6 +101,7 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
       settingsRef.current = s;
       setShowOlder(s.filter_older);
       setShowTeam(s.filter_team);
+      setShowDrafts(s.show_draft_prs);
       setSettingsLoaded(true);
 
       fetchRecent();
@@ -129,9 +162,9 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
   }
 
   const saveFilters = useCallback(
-    (older: boolean, team: boolean) => {
+    (older: boolean, team: boolean, drafts: boolean) => {
       if (settingsRef.current) {
-        const updated = { ...settingsRef.current, filter_older: older, filter_team: team };
+        const updated = { ...settingsRef.current, filter_older: older, filter_team: team, show_draft_prs: drafts };
         settingsRef.current = updated;
         invoke("save_settings", { settings: updated });
       }
@@ -142,36 +175,68 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
   function toggleOlder() {
     setShowOlder((v) => {
       const next = !v;
-      setShowTeam((team) => { saveFilters(next, team); return team; });
+      setShowTeam((team) => {
+        setShowDrafts((drafts) => { saveFilters(next, team, drafts); return drafts; });
+        return team;
+      });
       return next;
     });
   }
   function toggleTeam() {
     setShowTeam((v) => {
       const next = !v;
-      setShowOlder((older) => { saveFilters(older, next); return older; });
+      setShowOlder((older) => {
+        setShowDrafts((drafts) => { saveFilters(older, next, drafts); return drafts; });
+        return older;
+      });
+      return next;
+    });
+  }
+  function toggleDrafts() {
+    setShowDrafts((v) => {
+      const next = !v;
+      setShowOlder((older) => {
+        setShowTeam((team) => { saveFilters(older, team, next); return team; });
+        return older;
+      });
       return next;
     });
   }
 
+  const needle = (filter ?? "").trim().toLowerCase();
+  const matchesFilter = useCallback(
+    (repo: string, title: string, author: string) =>
+      needle === "" ||
+      repo.toLowerCase().includes(needle) ||
+      title.toLowerCase().includes(needle) ||
+      author.toLowerCase().includes(needle),
+    [needle]
+  );
+
   const filteredRecent = useMemo(() => {
     return recentItems.filter((item) => {
       if (!item.direct_request && !showTeam) return false;
-      return true;
+      if (item.draft && !showDrafts) return false;
+      return matchesFilter(`${item.owner}/${item.repo}`, item.title, item.author);
     });
-  }, [recentItems, showTeam]);
+  }, [recentItems, showTeam, showDrafts, matchesFilter]);
 
   const filteredOlder = useMemo(() => {
     if (!showOlder) return [];
     return olderItems.filter((item) => {
       if (!item.direct_request && !showTeam) return false;
-      return true;
+      if (item.draft && !showDrafts) return false;
+      return matchesFilter(`${item.owner}/${item.repo}`, item.title, item.author);
     });
-  }, [olderItems, showOlder, showTeam]);
+  }, [olderItems, showOlder, showTeam, showDrafts, matchesFilter]);
 
   const filteredCached = useMemo(() => {
-    return cachedPrs.filter((pr) => !openPrUrls.has(pr.pr_url));
-  }, [cachedPrs, openPrUrls]);
+    return cachedPrs.filter(
+      (pr) =>
+        !openPrUrls.has(pr.pr_url) &&
+        matchesFilter(`${pr.owner}/${pr.repo}`, pr.pr_title, "")
+    );
+  }, [cachedPrs, openPrUrls, matchesFilter]);
 
   const hasRecent = recentItems.length > 0;
   const hasOlder = olderItems.length > 0;
@@ -184,6 +249,10 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
       <label className="review-requests-filter">
         <input type="checkbox" checked={showOlder} onChange={toggleOlder} />
         Older
+      </label>
+      <label className="review-requests-filter">
+        <input type="checkbox" checked={showDrafts} onChange={toggleDrafts} />
+        Drafts
       </label>
       {hasTeam && (
         <>
@@ -201,7 +270,7 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
     return (
       <div className="review-requests">
         <div className="review-requests-header">
-          <span className="review-requests-title">Review Requests</span>
+          <span className="review-requests-title">Review queue</span>
         </div>
         <div className="review-requests-loading">
           <div className="loading-view-spinner" />
@@ -215,13 +284,18 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
     return (
       <div className="review-requests">
         <div className="review-requests-header">
-          <span className="review-requests-title">Review Requests</span>
+          <span className="review-requests-title">Review queue</span>
         </div>
         <div className="review-requests-error">
           <span>{error}</span>
           <button className="review-requests-retry" onClick={refreshAll}>
             Retry
           </button>
+          {onOpenSettings && AUTH_ERROR_RE.test(error) && (
+            <button className="review-requests-retry" onClick={onOpenSettings}>
+              Open Settings
+            </button>
+          )}
         </div>
       </div>
     );
@@ -231,10 +305,10 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
     return (
       <div className="review-requests">
         <div className="review-requests-header">
-          <span className="review-requests-title">Review Requests</span>
+          <span className="review-requests-title">Review queue</span>
           <button className="review-requests-refresh" onClick={refreshAll}>Refresh</button>
         </div>
-        <div className="review-requests-empty">No pending review requests</div>
+        <div className="review-requests-empty">You're all caught up — no PRs are waiting on your review.</div>
       </div>
     );
   }
@@ -246,21 +320,21 @@ export function ReviewRequestList({ onSelectPr, openPrUrls }: ReviewRequestListP
   return (
     <div className="review-requests">
       <div className="review-requests-header">
-        <span className="review-requests-title">Review Requests</span>
+        <span className="review-requests-title">Review queue</span>
         {filterBar}
         <button className="review-requests-refresh" onClick={refreshAll}>Refresh</button>
       </div>
       <div className="review-requests-list">
         {filteredCached.length > 0 && (
-          <CachedPrSection items={filteredCached} onSelectPr={onSelectPr} />
+          <CachedPrSection items={filteredCached} onSelectPr={onSelectPr} onSelectCachedPr={onSelectCachedPr} />
         )}
         {noFilterResults ? (
-          <div className="review-requests-empty">No results match current filters</div>
+          <div className="review-requests-empty">Nothing in the queue matches.</div>
         ) : (
           <>
             {filteredRecent.length > 0 && (
               <ReviewRequestSection
-                label="Last 30 days"
+                label="Needs your review"
                 items={filteredRecent}
                 onSelectPr={onSelectPr}
                 showGroupHeaders={showTeam && filteredRecent.some((i) => i.direct_request) && filteredRecent.some((i) => !i.direct_request)}
@@ -355,27 +429,35 @@ function ReviewRequestRow({
   const statusClass = STATUS_CLASSES[item.my_review_status];
 
   return (
-    <button
-      className="review-request-item"
-      onClick={() => onSelect(prRef)}
-    >
-      <div className="review-request-item-top">
-        <span className="review-request-repo">{item.owner}/{item.repo}</span>
-        <span className="review-request-number">#{item.number}</span>
-        {statusLabel && (
-          <span className={`review-status-badge ${statusClass}`}>{statusLabel}</span>
-        )}
-        {item.unresolved_thread_count > 0 && (
-          <span className="review-threads-badge">
-            {item.unresolved_thread_count} unresolved
+    <button className={`queue-row${item.draft ? " queue-row--draft" : ""}`} onClick={() => onSelect(prRef)}>
+      <Avatar login={item.author} size={30} />
+      <span className="queue-main">
+        <span className="queue-title">
+          <span className="queue-repo">{item.owner}/{item.repo}#{item.number}</span>
+          {item.title}
+        </span>
+        <span className="queue-meta">
+          <span className="queue-why">
+            {item.direct_request ? "Review requested" : "Team review request"} by {item.author}
           </span>
-        )}
-      </div>
-      <div className="review-request-title">{item.title}</div>
-      <div className="review-request-meta">
-        <span className="review-request-author">{item.author}</span>
-        <span className="review-request-time">{formatTimeAgo(item.created_at)}</span>
-      </div>
+          {item.draft && <span className="queue-draft-chip">Draft</span>}
+          {statusLabel && (
+            <span className={`review-status-badge ${statusClass}`}>{statusLabel}</span>
+          )}
+          {item.approval_count > 0 && (
+            <span className="queue-approval-chip">
+              <span className="risk-dot risk-dot--ok" /> {item.approval_count} approval{item.approval_count === 1 ? "" : "s"}
+            </span>
+          )}
+          {item.unresolved_thread_count > 0 && (
+            <span className="review-threads-badge">
+              {item.unresolved_thread_count} unresolved
+            </span>
+          )}
+        </span>
+      </span>
+      <span className="queue-time">{timeAgo(item.created_at, true)}</span>
+      <span className="queue-review-btn">Review</span>
     </button>
   );
 }
@@ -383,9 +465,11 @@ function ReviewRequestRow({
 function CachedPrSection({
   items,
   onSelectPr,
+  onSelectCachedPr,
 }: {
   items: CachedPrInfo[];
   onSelectPr: (prRef: string) => void;
+  onSelectCachedPr?: (prRef: string, info: CachedPrInfo) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -396,7 +480,7 @@ function CachedPrSection({
         onClick={() => setCollapsed((v) => !v)}
       >
         <span className={`collapse-chevron ${collapsed ? "collapsed" : ""}`}>&#9662;</span>
-        <span className="review-requests-section-label">Recently Analyzed</span>
+        <span className="review-requests-section-label">Recently analyzed</span>
         <span className="review-requests-group-count">{items.length}</span>
       </button>
       {!collapsed && (
@@ -406,19 +490,23 @@ function CachedPrSection({
             return (
               <button
                 key={pr.pr_url}
-                className="review-request-item cached-pr-item"
-                onClick={() => onSelectPr(prRef)}
+                className="queue-row queue-row--dim"
+                onClick={() => (onSelectCachedPr ? onSelectCachedPr(prRef, pr) : onSelectPr(prRef))}
               >
-                <div className="review-request-item-top">
-                  <span className="review-request-repo">{pr.owner}/{pr.repo}</span>
-                  <span className="review-request-number">#{pr.pr_number}</span>
-                  <span className="cached-badge" title="Loads instantly from cache">&#9889;</span>
-                </div>
-                <div className="review-request-title">{pr.pr_title}</div>
-                <div className="review-request-meta">
-                  <span className="review-request-author">{pr.file_count} file{pr.file_count !== 1 ? "s" : ""}</span>
-                  <span className="review-request-time">{formatTimeAgo(pr.cached_at)}</span>
-                </div>
+                <span className="queue-avatar" aria-hidden="true">{initials(pr.repo)}</span>
+                <span className="queue-main">
+                  <span className="queue-title">
+                    <span className="queue-repo">{pr.owner}/{pr.repo}#{pr.pr_number}</span>
+                    {pr.pr_title}
+                  </span>
+                  <span className="queue-meta">
+                    <span className="queue-why">
+                      Analyzed · {pr.file_count} file{pr.file_count !== 1 ? "s" : ""} · opens instantly
+                    </span>
+                  </span>
+                </span>
+                <span className="queue-time">{timeAgo(pr.cached_at, true)}</span>
+                <span className="queue-review-btn">Open</span>
               </button>
             );
           })}

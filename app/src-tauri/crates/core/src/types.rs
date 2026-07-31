@@ -74,9 +74,17 @@ pub struct ReviewManifest {
     pub base_sha: String,
     pub head_sha: String,
     #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
     pub summary: String,
     #[serde(default)]
     pub change_groups: Vec<ChangeGroup>,
+    /// The PR description, truncated char-safely to bound cache size. Empty
+    /// when the PR has no body or on manifests fetched before this field existed.
+    #[serde(default)]
+    pub body: String,
     pub files: Vec<FileDiff>,
 }
 
@@ -130,6 +138,14 @@ pub struct Settings {
     /// once you approve a PR, it drops out of the feed.
     #[serde(default)]
     pub show_approved_prs: bool,
+    /// Whether the review queue shows draft PRs. On by default (current
+    /// behavior); the frontend filters draft rows out when this is off.
+    #[serde(default = "default_true")]
+    pub show_draft_prs: bool,
+    /// True once the first-run welcome has been completed or skipped, so it
+    /// never auto-shows again (config via env vars alone also suppresses it).
+    #[serde(default)]
+    pub setup_done: bool,
 }
 
 fn default_true() -> bool {
@@ -182,6 +198,17 @@ pub struct PrMetadata {
     pub number: u64,
     pub base: PrRef,
     pub head: PrRef,
+    #[serde(default)]
+    pub user: Option<PrUser>,
+    #[serde(default)]
+    pub draft: Option<bool>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PrUser {
+    pub login: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,6 +282,26 @@ pub struct MyReviewState {
     pub status: String,
     pub is_re_requested: bool,
     pub is_merged: bool,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub approved_by: Vec<String>,
+    /// Lowercased GitHub `mergeable` enum: "mergeable" | "conflicting" |
+    /// "unknown". Empty when GitHub hasn't computed it or the field is absent.
+    #[serde(default)]
+    pub mergeable: String,
+    #[serde(default)]
+    pub labels: Vec<PrLabel>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PrLabel {
+    pub name: String,
+    /// Hex color without the leading '#', as GitHub returns it.
+    #[serde(default)]
+    pub color: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -285,4 +332,6 @@ pub struct ReviewRequestItem {
     pub direct_request: bool,
     pub my_review_status: String,
     pub unresolved_thread_count: u32,
+    #[serde(default)]
+    pub approval_count: u32,
 }

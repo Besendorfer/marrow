@@ -1,8 +1,9 @@
-import { Fragment, forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, forwardRef, memo, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
-import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch } from "../types";
+import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch, NoteResolution } from "../types";
 import { timeAgo, highlightKey } from "../utils";
+import { RichText } from "./RichText";
 
 const extToLang: Record<string, string> = {
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
@@ -98,11 +99,20 @@ interface CommentingOn {
 interface DiffViewerProps {
   file: FileDiff;
   viewMode: DiffViewMode;
+  onViewModeChange?: (mode: DiffViewMode) => void;
   showHunkSignificance: boolean;
   showAiNotes: boolean;
   /** Keys (highlightKey) of AI highlights dismissed for this PR — hidden from the diff. */
   dismissedHighlights?: Set<string>;
-  onToggleHighlightDismissed?: (key: string) => void;
+  /** Resolution metadata (state + reason) for dismissed highlights, keyed by highlightKey. */
+  noteResolutions?: Map<string, NoteResolution>;
+  /** Keys (highlightKey) of AI highlights introduced by the most recent
+   * refresh's re-analysis — rendered with a "new" accent treatment. */
+  newHighlightKeys?: Set<string>;
+  /** Dismiss a note, optionally recording how/why (null = plain dismiss, no resolution recorded). */
+  onResolveHighlight?: (key: string, resolution: NoteResolution | null) => void;
+  /** Restore a previously-dismissed note, clearing any recorded resolution. */
+  onRestoreHighlight?: (key: string) => void;
   onCreateComment?: (path: string, endLine: number, side: "LEFT" | "RIGHT", body: string, startLine?: number, startSide?: "LEFT" | "RIGHT") => Promise<void>;
   onEditComment?: (commentId: string, body: string) => void;
   onReply?: (threadId: string, commentId: string, body: string) => void;
@@ -140,6 +150,10 @@ export interface DiffViewerHandle {
   replyAtCursor: () => void;
   /** Resolve/reopen the review thread on the cursor line, if any. */
   resolveAtCursor: () => void;
+  /** Scroll the given review thread into view and flash it. Returns false
+   * when the thread isn't rendered in this file (e.g. the diff hasn't
+   * mounted it yet) so the caller can retry. */
+  scrollToThread: (threadId: string, expandIfHidden?: boolean) => boolean;
 }
 
 /** Small keyboard-driven reply box, shown when `r` is pressed on a thread line. */
@@ -172,8 +186,8 @@ export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lan
   const parts = body.split(/(```suggestion\n[\s\S]*?\n```)/g);
 
   if (parts.length === 1) {
-    // No suggestion blocks — render as plain pre-wrapped text
-    return <div className="comment-body">{body}</div>;
+    // No suggestion blocks — render as Markdown
+    return <div className="comment-body"><RichText content={body} /></div>;
   }
 
   return (
@@ -193,7 +207,7 @@ export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lan
           );
         }
         if (!part.trim()) return null;
-        return <span key={i}>{part}</span>;
+        return <RichText key={i} content={part} />;
       })}
     </div>
   );
@@ -495,7 +509,7 @@ function InlineThreadMarker({
   const showActions = onReply || onToggleResolved;
 
   return (
-    <tr className={`inline-thread-row ${thread.is_resolved ? "inline-thread-resolved" : ""}`}>
+    <tr className={`inline-thread-row ${thread.is_resolved ? "inline-thread-resolved" : ""}`} data-thread-id={thread.id}>
       <td colSpan={colSpan}>
         <div className="inline-thread">
           {isSingle ? (
@@ -836,17 +850,44 @@ function formatLineRange(start: number, end: number): string {
   return `L${start}${end !== start ? `\u2013${end}` : ""}`;
 }
 
-const severityIcon: Record<string, string> = {
-  critical: "!!",
-  warning: "!",
-  info: "i",
+const severityLabel: Record<string, string> = {
+  critical: "Critical",
+  warning: "Warning",
+  info: "Info",
 };
 
-function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight; onPostAsComment?: (h: Highlight) => void }) {
+// Dismissal used to live on the top-of-file banner list; now that notes render
+// only inline, the action reaches HighlightMarker via context rather than
+// threading a prop through every hunk-rendering layer.
+const HighlightDismissContext = createContext<{ resolve: (h: Highlight, resolution: NoteResolution | null) => void } | null>(null);
+
+function HighlightMarker({ highlight, isNew, onPostAsComment }: { highlight: Highlight; isNew?: boolean; onPostAsComment?: (h: Highlight) => void }) {
+  const ctx = useContext(HighlightDismissContext);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [resolveState, setResolveState] = useState<"fixed" | "intentional">("fixed");
+  const [reason, setReason] = useState("");
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!popoverOpen) return;
+    function onOutside(e: MouseEvent) {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) setPopoverOpen(false);
+    }
+    document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
+  }, [popoverOpen]);
+
+  function confirmResolve(state: "fixed" | "intentional") {
+    ctx?.resolve(highlight, { state, reason: reason.trim() || undefined });
+    setPopoverOpen(false);
+    setReason("");
+  }
+
   return (
-    <div className={`highlight-marker highlight-${highlight.severity}`}>
+    <div className={`highlight-marker highlight-${highlight.severity}${isNew ? " highlight-marker--new" : ""}`}>
+      {isNew && <span className="highlight-new-dot" title="New since your last refresh" />}
       <span className="highlight-icon">
-        {severityIcon[highlight.severity] || "i"}
+        {severityLabel[highlight.severity] || "Info"}
       </span>
       <span className="highlight-lines">{formatLineRange(highlight.start_line, highlight.end_line)}</span>
       <span className="highlight-comment">{highlight.comment}</span>
@@ -857,6 +898,66 @@ function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight;
           title="Draft a review comment from this AI note (you can edit before posting)"
         >
           Comment…
+        </button>
+      )}
+      {ctx && (
+        <div className="note-resolve-wrap">
+          <button
+            className="note-resolve-btn"
+            onClick={(e) => { e.stopPropagation(); setPopoverOpen((v) => !v); }}
+            title="Mark this note as fixed or intentional"
+          >
+            Resolve…
+          </button>
+          {popoverOpen && (
+            <div
+              ref={popoverRef}
+              className="note-resolve-popover"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { e.preventDefault(); setPopoverOpen(false); }
+                if (e.key === "Enter") { e.preventDefault(); confirmResolve(resolveState); }
+              }}
+            >
+              <div className="note-resolve-popover-states">
+                <button
+                  type="button"
+                  className={resolveState === "fixed" ? "active" : ""}
+                  onClick={() => setResolveState("fixed")}
+                >
+                  Fixed
+                </button>
+                <button
+                  type="button"
+                  className={resolveState === "intentional" ? "active" : ""}
+                  onClick={() => setResolveState("intentional")}
+                >
+                  Intentional
+                </button>
+              </div>
+              <input
+                type="text"
+                className="note-resolve-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Why? (optional — feeds future AI runs)"
+                autoFocus
+              />
+              <button type="button" className="note-resolve-confirm" onClick={() => confirmResolve(resolveState)}>
+                Confirm
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {ctx && (
+        <button
+          className="highlight-dismiss"
+          onClick={(e) => { e.stopPropagation(); ctx.resolve(highlight, null); }}
+          title="Dismiss this AI note"
+          aria-label="Dismiss AI note"
+        >
+          ×
         </button>
       )}
     </div>
@@ -933,6 +1034,7 @@ function buildThreadsByLine(threads: ReviewThread[] | undefined): Map<number, Re
 function UnifiedHunkLines({
   lines,
   highlights,
+  newHighlights,
   commentingOn,
   dragging,
   onLineMouseDown,
@@ -950,6 +1052,8 @@ function UnifiedHunkLines({
 }: {
   lines: DiffLine[];
   highlights: Highlight[];
+  /** Highlights (by reference into `highlights`) new since the last refresh. */
+  newHighlights?: Set<Highlight> | null;
   commentingOn?: CommentingOn | null;
   dragging?: { anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null;
   onLineMouseDown?: (line: number, side: "LEFT" | "RIGHT") => void;
@@ -1011,7 +1115,7 @@ function UnifiedHunkLines({
             {hlStart && (
               <tr className="highlight-row">
                 <td colSpan={4}>
-                  <HighlightMarker highlight={hlStart} onPostAsComment={onPostHighlightAsComment} />
+                  <HighlightMarker highlight={hlStart} isNew={newHighlights?.has(hlStart)} onPostAsComment={onPostHighlightAsComment} />
                 </td>
               </tr>
             )}
@@ -1074,6 +1178,7 @@ function UnifiedHunkLines({
 function UnifiedView({
   hunks,
   highlights,
+  newHighlights,
   collapsedHunks,
   onToggleHunk,
   showSignificance,
@@ -1094,6 +1199,7 @@ function UnifiedView({
 }: {
   hunks: Hunk[];
   highlights: Highlight[];
+  newHighlights?: Set<Highlight> | null;
   collapsedHunks: Set<number>;
   onToggleHunk: (index: number) => void;
   showSignificance: boolean;
@@ -1142,7 +1248,7 @@ function UnifiedView({
                   <td className="line-prefix">@@</td>
                   <td className="line-content">
                     <pre dangerouslySetInnerHTML={{ __html: escapeHtml(hunk.headerLine.content) }} />
-                    {isHigh && <span className="hunk-significance-badge hunk-badge-high">HIGH</span>}
+                    {isHigh && <span className="hunk-significance-badge hunk-badge-high">High</span>}
                     {isCollapsed && <span className="hunk-collapsed-indicator">{hunk.lineCount} lines</span>}
                   </td>
                 </tr>
@@ -1173,13 +1279,13 @@ function UnifiedView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -1194,6 +1300,7 @@ function UnifiedView({
 function SplitHunkLines({
   splitLines,
   highlights,
+  newHighlights,
   commentingOn,
   dragging,
   onLineMouseDown,
@@ -1211,6 +1318,8 @@ function SplitHunkLines({
 }: {
   splitLines: SplitLine[];
   highlights: Highlight[];
+  /** Highlights (by reference into `highlights`) new since the last refresh. */
+  newHighlights?: Set<Highlight> | null;
   commentingOn?: CommentingOn | null;
   dragging?: { anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null;
   onLineMouseDown?: (line: number, side: "LEFT" | "RIGHT") => void;
@@ -1285,7 +1394,7 @@ function SplitHunkLines({
             {hlStart && (
               <tr className="highlight-row">
                 <td colSpan={4}>
-                  <HighlightMarker highlight={hlStart} onPostAsComment={onPostHighlightAsComment} />
+                  <HighlightMarker highlight={hlStart} isNew={newHighlights?.has(hlStart)} onPostAsComment={onPostHighlightAsComment} />
                 </td>
               </tr>
             )}
@@ -1350,6 +1459,7 @@ function SplitHunkLines({
 function SplitView({
   hunks,
   highlights,
+  newHighlights,
   collapsedHunks,
   onToggleHunk,
   showSignificance,
@@ -1370,6 +1480,7 @@ function SplitView({
 }: {
   hunks: Hunk[];
   highlights: Highlight[];
+  newHighlights?: Set<Highlight> | null;
   collapsedHunks: Set<number>;
   onToggleHunk: (index: number) => void;
   showSignificance: boolean;
@@ -1421,7 +1532,7 @@ function SplitView({
                   <td className="line-num right-num"></td>
                   <td className="line-content right-content diff-line-header">
                     <pre dangerouslySetInnerHTML={{ __html: escapeHtml(hunk.headerLine.content) }} />
-                    {isHigh && <span className="hunk-significance-badge hunk-badge-high">HIGH</span>}
+                    {isHigh && <span className="hunk-significance-badge hunk-badge-high">High</span>}
                     {isCollapsed && <span className="hunk-collapsed-indicator">{hunk.lineCount} lines</span>}
                   </td>
                 </tr>
@@ -1452,13 +1563,13 @@ function SplitView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                        <SplitHunkLines splitLines={splitLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                <SplitHunkLines splitLines={splitLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -1470,7 +1581,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, dismissedHighlights, onToggleHighlightDismissed, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, dismissedHighlights, noteResolutions, newHighlightKeys, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1651,10 +1762,25 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const dismissed = dismissedHighlights ?? new Set<string>();
   const highlights = allNotes.filter((h) => !dismissed.has(keyFor(h)));
   const dismissedNotes = allNotes.filter((h) => dismissed.has(keyFor(h)));
+  // Highlight objects (by reference into `highlights`) new since the last
+  // refresh — HighlightMarker renders these with a "new" accent treatment.
+  const newHighlights = useMemo(() => {
+    if (!newHighlightKeys || newHighlightKeys.size === 0) return null;
+    const s = new Set<Highlight>();
+    for (const h of highlights) {
+      if (newHighlightKeys.has(keyFor(h))) s.add(h);
+    }
+    return s;
+  }, [highlights, newHighlightKeys, file.path]);
   const [showDismissed, setShowDismissed] = useState(false);
-  const isCritical =
-    file.risk_level === "critical" || file.risk_level === "high";
-
+  const resolutions = noteResolutions ?? new Map<string, NoteResolution>();
+  const dismissHighlight = useMemo(
+    () =>
+      onResolveHighlight
+        ? { resolve: (h: Highlight, resolution: NoteResolution | null) => onResolveHighlight(highlightKey(file.path, h), resolution) }
+        : null,
+    [onResolveHighlight, file.path]
+  );
   // Track original collapsed state so we can restore it when search ends
   const preSearchCollapsed = useRef<Set<number> | null>(null);
   const collapsedHunksRef = useRef(collapsedHunks);
@@ -2098,6 +2224,23 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const nextFinding = () => stepFinding(1);
   const prevFinding = () => stepFinding(-1);
 
+  const scrollToThread = (threadId: string, expandIfHidden = false): boolean => {
+    const c = diffContentRef.current;
+    if (!c) return false;
+    const el = c.querySelector<HTMLElement>(`[data-thread-id="${threadId}"]`);
+    if (!el) {
+      // The thread may live inside a default-collapsed low-significance hunk,
+      // which renders no rows at all. Expand and let the caller's retry loop
+      // find it on a later frame.
+      if (expandIfHidden) expandAll();
+      return false;
+    }
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("finding-flash");
+    setTimeout(() => el.classList.remove("finding-flash"), 1200);
+    return true;
+  };
+
   // Scroll to + paint the cursor on the pending row once it has (re-)rendered.
   useEffect(() => {
     if (pendingScroll == null) return;
@@ -2121,11 +2264,12 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   useImperativeHandle(ref, () => ({
     nextHunk, prevHunk, foldAll,
     cursorMove, cursorEdge, cursorPage, nextFinding, prevFinding, foldAtCursor,
-    commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor,
+    commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor, scrollToThread,
   }));
 
   return (
-    <div className={`diff-viewer ${isCritical ? "diff-viewer-critical" : ""}`}>
+    <HighlightDismissContext.Provider value={dismissHighlight}>
+    <div className="diff-viewer">
       {replyTarget && (
         <KeyboardReplyOverlay
           onClose={() => setReplyTarget(null)}
@@ -2133,14 +2277,17 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         />
       )}
       <div className="diff-header">
-        <span className={`diff-badge diff-badge-${file.diff_type}`}>
-          {file.diff_type.toUpperCase()}
-        </span>
-        <span className={`risk-badge risk-${file.risk_level}`}>
-          {file.risk_level.toUpperCase()}
-        </span>
-        <span className="diff-file-path">{file.path}</span>
-        <span className="diff-reason">{file.reason}</span>
+        {file.diff_type !== "modified" && (
+          <span className={`diff-badge diff-badge-${file.diff_type}`}>
+            {file.diff_type.charAt(0).toUpperCase() + file.diff_type.slice(1)}
+          </span>
+        )}
+        {(file.risk_level === "critical" || file.risk_level === "high") && (
+          <span className={`risk-badge risk-${file.risk_level}`}>
+            {file.risk_level.charAt(0).toUpperCase() + file.risk_level.slice(1)}
+          </span>
+        )}
+        <span className="diff-file-path" title={file.reason}>{file.path}</span>
         {highlights.length > 0 && (
           <span className="highlight-count">
             {highlights.length} AI {highlights.length === 1 ? "note" : "notes"}
@@ -2157,7 +2304,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         )}
         {showHunkSignificance && highHunkCount > 0 && (
           <span className="hunk-high-summary">
-            {highHunkCount} high-significance {highHunkCount === 1 ? "hunk" : "hunks"}
+            {highHunkCount} key {highHunkCount === 1 ? "hunk" : "hunks"}
           </span>
         )}
         {!fullFile && collapsedCount > 0 && (
@@ -2166,83 +2313,73 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
               {collapsedCount} {collapsedCount === 1 ? "hunk" : "hunks"} collapsed
             </span>
             <button className="hunk-toggle-all" onClick={expandAll}>
-              Expand All
+              Expand all
             </button>
           </>
         )}
         {!fullFile && showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && (
           <button className="hunk-toggle-all" onClick={collapseAll}>
-            Collapse All
+            Collapse all
           </button>
         )}
-      </div>
-      {(highlights.length > 0 || dismissedNotes.length > 0) && (
-        <div className="highlights-summary">
-          {highlights.map((h, i) => (
-            <div
-              key={i}
-              className={`highlights-summary-item highlight-${h.severity}`}
-              style={{ cursor: "pointer" }}
-              onClick={() => {
-                const el = document.getElementById(`diff-line-${h.start_line}`);
-                el?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-              title="Jump to code"
+        {onViewModeChange && (
+          <div className="view-toggle">
+            <button
+              className={viewMode === "split" ? "active" : ""}
+              onClick={() => onViewModeChange("split")}
+              title="Side-by-side diff"
             >
-              <span className="highlight-severity-badge">{h.severity.toUpperCase()}</span>
-              <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
-              <span className="highlight-summary-text">{h.comment}</span>
-              {onCreateComment && (
-                <button
-                  className="highlight-post-comment"
-                  onClick={(e) => { e.stopPropagation(); handlePostHighlightAsComment(h); }}
-                  title="Draft a review comment from this AI note (you can edit before posting)"
-                >
-                  Comment…
-                </button>
-              )}
-              {onToggleHighlightDismissed && (
-                <button
-                  className="highlight-dismiss"
-                  onClick={(e) => { e.stopPropagation(); onToggleHighlightDismissed(keyFor(h)); }}
-                  title="Dismiss this AI note"
-                  aria-label="Dismiss AI note"
-                >
-                  ×
-                </button>
-              )}
-            </div>
-          ))}
-          {dismissedNotes.length > 0 && (
-            <button className="highlights-show-dismissed" onClick={() => setShowDismissed((v) => !v)}>
-              {showDismissed ? "Hide" : "Show"} {dismissedNotes.length} dismissed
+              Split
             </button>
-          )}
-          {showDismissed && dismissedNotes.map((h, i) => (
-            <div
-              key={`dismissed-${i}`}
-              className={`highlights-summary-item highlight-${h.severity} highlight-dismissed`}
-              style={{ cursor: "pointer" }}
-              onClick={() => {
-                const el = document.getElementById(`diff-line-${h.start_line}`);
-                el?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-              title="Jump to code"
+            <button
+              className={viewMode === "unified" ? "active" : ""}
+              onClick={() => onViewModeChange("unified")}
+              title="Single-column diff"
             >
-              <span className="highlight-severity-badge">{h.severity.toUpperCase()}</span>
-              <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
-              <span className="highlight-summary-text">{h.comment}</span>
-              {onToggleHighlightDismissed && (
-                <button
-                  className="highlight-post-comment"
-                  onClick={(e) => { e.stopPropagation(); onToggleHighlightDismissed(keyFor(h)); }}
-                  title="Restore this AI note"
-                >
-                  Restore
-                </button>
-              )}
-            </div>
-          ))}
+              Unified
+            </button>
+          </div>
+        )}
+      </div>
+      {dismissedNotes.length > 0 && (
+        <div className="highlights-summary">
+          <button className="highlights-show-dismissed" onClick={() => setShowDismissed((v) => !v)}>
+            {showDismissed ? "Hide" : "Show"} {dismissedNotes.length} dismissed {dismissedNotes.length === 1 ? "note" : "notes"}
+          </button>
+          {showDismissed && dismissedNotes.map((h, i) => {
+            const resolution = resolutions.get(keyFor(h));
+            const chipLabel = resolution?.state === "fixed" ? "Fixed" : resolution?.state === "intentional" ? "Intentional" : "Dismissed";
+            const chipModifier = resolution?.state === "fixed" ? "note-res-chip--fixed" : resolution?.state === "intentional" ? "note-res-chip--intentional" : "";
+            return (
+              <div
+                key={`dismissed-${i}`}
+                className={`highlights-summary-item highlight-${h.severity} highlight-dismissed`}
+                style={{ cursor: "pointer" }}
+                onClick={() => {
+                  const el = document.getElementById(`diff-line-${h.start_line}`);
+                  el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+                title="Jump to code"
+              >
+                <span className="highlight-severity-badge">{severityLabel[h.severity] || "Info"}</span>
+                <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
+                <span className={`note-res-chip ${chipModifier}`}>{chipLabel}</span>
+                <span className="highlight-summary-text">{h.comment}</span>
+                {resolution?.reason && (
+                  <span className="note-res-reason" title={resolution.reason}>{resolution.reason}</span>
+                )}
+                {onRestoreHighlight && (
+                  <button
+                    className="highlight-post-comment"
+                    onClick={(e) => { e.stopPropagation(); onRestoreHighlight(keyFor(h)); }}
+                    title="Restore this AI note"
+                  >
+                    Restore
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       <div className="diff-content" ref={diffContentRef}>
@@ -2251,6 +2388,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
             <UnifiedView
               hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
+              newHighlights={newHighlights}
               collapsedHunks={fullFile ? NO_COLLAPSED : collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
@@ -2273,6 +2411,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
             <SplitView
               hunks={fullFile ? fullFileHunks : hunks}
               highlights={highlights}
+              newHighlights={newHighlights}
               collapsedHunks={fullFile ? NO_COLLAPSED : collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
@@ -2301,11 +2440,12 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
               <col />
             </colgroup>
             <tbody>
-              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
+              <UnifiedHunkLines lines={diffLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
             </tbody>
           </table>
         )}
       </div>
     </div>
+    </HighlightDismissContext.Provider>
   );
 });

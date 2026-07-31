@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PrActivityItem, Settings, Watch } from "../types";
-import { useActivityFeed, prRefOf } from "../hooks/useActivityFeed";
+import { useActivityFeed, useReviewSession, prRefOf, type ReviewSession } from "../hooks/useActivityFeed";
 import { timeAgo } from "../utils";
 
 interface ActivityWidgetProps {
@@ -14,16 +16,6 @@ interface ActivityWidgetProps {
    */
   variant?: "dock" | "window";
 }
-
-const DELTA_LABELS: Record<string, string> = {
-  new: "new",
-  updated: "updated",
-  "new-commits": "new commits",
-  "new-comments": "new comments",
-  "review-state-changed": "review changed",
-  "new-threads": "new threads",
-  "ci-changed": "CI changed",
-};
 
 /** Strip the `watching:`/`notification:` prefix for a compact chip label. */
 function reasonLabel(reason: string): string {
@@ -58,61 +50,290 @@ function Equalizer() {
   );
 }
 
+type StoryTone = "urgent" | "bad" | "good" | "neutral";
+
+interface Story {
+  text: string;
+  tone: StoryTone;
+}
+
+/**
+ * Compose the row's one-line "story" sentence, priority-ordered. Replaces the
+ * old deltas/reasons chip row with a single sentence built from item fields.
+ *
+ * Note: `is_re_requested` (which the backend uses for `tier`/`urgency`) isn't
+ * part of `PrActivityItem`'s wire shape — the frontend only ever sees its
+ * *effect* (tier === "needs_you", high urgency), not the flag itself. There's
+ * no delta/reason string that distinguishes "re-requested after changes" from
+ * an ordinary review request either, so that branch is intentionally skipped.
+ */
+function storyFor(item: PrActivityItem): Story {
+  const hasDelta = (d: string) => item.deltas.includes(d);
+  const isOwn = item.tier === "yours";
+
+  if (isOwn && (item.ciState === "failure" || item.ciState === "error")) {
+    return {
+      text: hasDelta("new-commits") ? "CI went red after new commits" : "CI went red",
+      tone: "bad",
+    };
+  }
+  if (isOwn && item.reviewState === "approved" && item.ciState === "success") {
+    return { text: "Approved · CI green — ready to merge", tone: "good" };
+  }
+  if (hasDelta("new-comments")) {
+    const n = item.unresolvedThreads;
+    return {
+      text: n && n > 0 ? `New comments · ${n} unresolved thread${n === 1 ? "" : "s"}` : "New comments",
+      tone: "neutral",
+    };
+  }
+  if (item.reasons.includes("review-requested")) {
+    const n = item.unresolvedThreads;
+    return {
+      text:
+        n && n > 0
+          ? `Review requested by ${item.author} · ${n} unresolved thread${n === 1 ? "" : "s"}`
+          : `Review requested by ${item.author}`,
+      tone: "urgent",
+    };
+  }
+  // needs_you via a notification (mention / team review request) — cover the
+  // same reasons core's is_review_ish_reason grants the tier for, so these
+  // rows don't fall through to the generic "Updated Xm" fallback.
+  if (item.tier === "needs_you") {
+    const mention = item.reasons.some((r) => r.startsWith("notification:") && r.includes("mention"));
+    return {
+      text: mention ? `You were mentioned by ${item.author}` : `Your review was requested`,
+      tone: "urgent",
+    };
+  }
+  if (hasDelta("new-commits")) return { text: "New commits", tone: "neutral" };
+  if (hasDelta("ci-changed")) return { text: `CI ${item.ciState ?? "changed"}`, tone: "neutral" };
+  // The watch-label fallback only makes sense in the watching tier — under
+  // YOUR PRS / NEEDS YOU a "watching: X" line reads like a mis-filed row.
+  const watching = item.tier === "watching" ? item.reasons.find((r) => r.startsWith("watching:")) : undefined;
+  if (watching) {
+    return {
+      text: `watching: ${watching.slice("watching:".length)} · updated ${timeAgo(item.updatedAt, true)}`,
+      tone: "neutral",
+    };
+  }
+  return { text: `Updated ${timeAgo(item.updatedAt, true)}`, tone: "neutral" };
+}
+
+/** Fallback glyph for the pill ticker when the item has no CI status to show. */
+function toneGlyph(tone: StoryTone): string {
+  switch (tone) {
+    case "bad":
+      return "✗";
+    case "good":
+      return "✓";
+    default:
+      return "●";
+  }
+}
+
+function tickerTextFor(item: PrActivityItem, needsYouCount: number): string {
+  const story = storyFor(item);
+  const ci = ciGlyph(item.ciState);
+  const glyph = ci?.glyph ?? toneGlyph(story.tone);
+  return `${glyph} ${story.text} on ${item.repo}#${item.number} · ${needsYouCount} need you`;
+}
+
+/**
+ * Open a PR's GitHub URL in the user's browser. The dock renders inside the
+ * main window, which has the `shell:default` capability, so it can call the
+ * shell plugin directly (same pattern as Header.tsx/App.tsx). The floating
+ * window's own webview has no shell capability (see
+ * `app-tauri/capabilities/mini-player.json`) and none can be added here, so it
+ * routes through a plain frontend event instead — App.tsx listens for
+ * `aw-open-external` and opens the URL on the main window's behalf.
+ */
+function openOnGithub(url: string, variant: "dock" | "window") {
+  if (variant === "dock") {
+    openUrl(url).catch(() => {});
+  } else {
+    emit("aw-open-external", url).catch(() => {});
+  }
+}
+
+const TIER_ORDER = ["needs_you", "yours", "watching"] as const;
+const TIER_LABELS: Record<string, string> = {
+  needs_you: "Needs you",
+  yours: "Your PRs",
+  watching: "Watching",
+};
+
+/** Urgency desc, then unread desc, then most-recently-updated first. */
+function sortSection(items: PrActivityItem[]): PrActivityItem[] {
+  return [...items].sort((a, b) => {
+    if (b.urgency !== a.urgency) return b.urgency - a.urgency;
+    if (a.unread !== b.unread) return a.unread ? -1 : 1;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+}
+
 function ActivityRow({
   item,
+  variant,
   onActivate,
+  onMarkSeen,
+  onSnooze,
+  onUnsnooze,
+  snoozedMode = false,
 }: {
   item: PrActivityItem;
+  variant: "dock" | "window";
   onActivate: (item: PrActivityItem) => void;
+  onMarkSeen: (item: PrActivityItem) => void;
+  onSnooze: (item: PrActivityItem) => void;
+  onUnsnooze: (item: PrActivityItem) => void;
+  snoozedMode?: boolean;
 }) {
   const ci = ciGlyph(item.ciState);
+  const story = storyFor(item);
   return (
-    <button
-      className={`aw-row ${item.unread ? "aw-row--unread" : ""}`}
-      onClick={() => onActivate(item)}
-      title={`${item.repo}#${item.number} — ${item.title}`}
+    <div
+      className={`aw-row ${item.unread ? "aw-row--unread" : ""} ${snoozedMode ? "aw-row--snoozed" : ""}`}
     >
-      <span className="aw-row__dot" aria-hidden />
-      {item.avatarUrl ? (
-        <img className="aw-row__avatar" src={item.avatarUrl} alt="" loading="lazy" />
-      ) : (
-        <span className="aw-row__avatar aw-row__avatar--blank" aria-hidden />
-      )}
-      <span className="aw-row__main">
-        <span className="aw-row__title">{item.title}</span>
-        <span className="aw-row__meta">
-          <span className="aw-row__repo">
-            {item.repo}#{item.number}
-          </span>
-          {item.deltas.slice(0, 2).map((d) => (
-            <span key={d} className="aw-chip aw-chip--delta">
-              {DELTA_LABELS[d] ?? d}
-            </span>
-          ))}
-          {item.reasons.slice(0, 1).map((r) => (
-            <span key={r} className="aw-chip aw-chip--reason">
-              {reasonLabel(r)}
-            </span>
-          ))}
-        </span>
-      </span>
-      <span className="aw-row__status">
-        {ci && <span className={`aw-ci ${ci.cls}`}>{ci.glyph}</span>}
-        {!!item.unresolvedThreads && item.unresolvedThreads > 0 && (
-          <span className="aw-threads" title="unresolved threads">
-            {item.unresolvedThreads}
-          </span>
+      <button
+        className="aw-row__activate"
+        onClick={() => onActivate(item)}
+        title={`${item.repo}#${item.number} — ${item.title}`}
+      >
+        <span className="aw-row__dot" aria-hidden />
+        {item.avatarUrl ? (
+          <img className="aw-row__avatar" src={item.avatarUrl} alt="" loading="lazy" />
+        ) : (
+          <span className="aw-row__avatar aw-row__avatar--blank" aria-hidden />
         )}
-        <span className="aw-row__time">{timeAgo(item.updatedAt, true)}</span>
+        <span className="aw-row__main">
+          <span className="aw-row__title">{item.title}</span>
+          <span className="aw-row__meta">
+            <span className="aw-row__repo">
+              {item.repo}#{item.number}
+            </span>
+            <span className={`aw-story aw-story--${story.tone}`}>{story.text}</span>
+          </span>
+        </span>
+        <span className="aw-row__status">
+          {ci && <span className={`aw-ci ${ci.cls}`}>{ci.glyph}</span>}
+          {!!item.unresolvedThreads && item.unresolvedThreads > 0 && (
+            <span className="aw-threads" title="unresolved threads">
+              {item.unresolvedThreads}
+            </span>
+          )}
+          <span className="aw-row__time">{timeAgo(item.updatedAt, true)}</span>
+        </span>
+      </button>
+      <span className="aw-row__actions">
+        {snoozedMode ? (
+          <button
+            className="aw-row__action"
+            onClick={(e) => {
+              e.stopPropagation();
+              onUnsnooze(item);
+            }}
+            aria-label="Unsnooze"
+            title="Unsnooze"
+          >
+            zz
+          </button>
+        ) : (
+          <>
+            <button
+              className="aw-row__action"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMarkSeen(item);
+              }}
+              aria-label="Mark seen"
+              title="Mark seen"
+            >
+              ✓
+            </button>
+            <button
+              className="aw-row__action"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSnooze(item);
+              }}
+              aria-label="Snooze"
+              title="Snooze"
+            >
+              zz
+            </button>
+            <button
+              className="aw-row__action"
+              onClick={(e) => {
+                e.stopPropagation();
+                openOnGithub(item.prUrl, variant);
+              }}
+              aria-label="Open on GitHub"
+              title="Open on GitHub"
+            >
+              ↗
+            </button>
+          </>
+        )}
       </span>
-    </button>
+    </div>
+  );
+}
+
+/** The "Now Reviewing" card: reflects the main window's active tab (via the
+ * `review-session` event) so both mini-player variants can jump back in. */
+function NowReviewingCard({
+  session,
+  compact,
+}: {
+  session: ReviewSession;
+  compact: boolean;
+}) {
+  const pct =
+    session.relevantCount > 0
+      ? Math.min(100, Math.round((session.viewedCount / session.relevantCount) * 100))
+      : 0;
+  const nextLabel = session.nextFile ? session.nextFile.split("/").pop() : null;
+
+  function resume() {
+    // Works for both variants: the floating window round-trips through the
+    // main window (as usual), and for the dock — which already IS the main
+    // window — this just re-focuses itself and advances to the next
+    // unviewed file, which App.tsx's `deep-link-resume` listener already
+    // handles regardless of which window emitted the event.
+    invoke("resume_review_in_main", { prRef: session.prRef }).catch(() => {});
+  }
+
+  return (
+    <div className={`aw-now ${compact ? "aw-now--compact" : ""}`}>
+      <div className="aw-now__top">
+        <div className="aw-now__info">
+          <span className="aw-now__eyebrow">Now reviewing</span>
+          <span className="aw-now__title">
+            #{session.number} {session.title}
+          </span>
+          <span className="aw-now__meta">
+            {session.viewedCount} of {session.relevantCount} files
+            {nextLabel ? ` · next: ${nextLabel}` : " · all files viewed"}
+          </span>
+        </div>
+        <button className="aw-now__resume" onClick={resume}>
+          Resume
+        </button>
+      </div>
+      <div className="aw-now__bar">
+        <div className="aw-now__bar-fill" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
   );
 }
 
 const COLLAPSED_KEY = "aw-collapsed";
 
 export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetProps) {
-  const { items, truncatedTotal, unreadCount, markSeen } = useActivityFeed();
+  const { items, truncatedTotal, unreadCount, markSeen, snoozePr, unsnoozePr } = useActivityFeed();
+  const session = useReviewSession();
   // Default to the unobtrusive pill; remember the user's choice across launches.
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
@@ -123,6 +344,7 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
   });
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [focusIdx, setFocusIdx] = useState(0);
+  const [snoozedExpanded, setSnoozedExpanded] = useState(false);
   // Temporary feed filters (not persisted).
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("all"); // a raw reason string, or "all"
@@ -196,6 +418,7 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
     }
   }
 
+  // Existing filters (unread-only, search, source) apply BEFORE tiering.
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items.filter((i) => {
@@ -209,9 +432,60 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
     });
   }, [items, unreadOnly, source, query]);
 
-  // The "now playing" item: clamp the cursor into range as the feed changes.
-  const safeIdx = visible.length ? Math.min(focusIdx, visible.length - 1) : 0;
-  const focus = visible[safeIdx];
+  // Group the filtered feed into tier sections (needs_you → yours → watching),
+  // sorted within each section; snoozed items are pulled out into their own
+  // trailing collapsed section instead of their tier.
+  const { sections, snoozed } = useMemo(() => {
+    const nonSnoozed = visible.filter((i) => !i.snoozed);
+    const snoozed = visible.filter((i) => i.snoozed);
+    const byTier: Record<string, PrActivityItem[]> = {};
+    for (const i of nonSnoozed) (byTier[i.tier] ??= []).push(i);
+    const sections = TIER_ORDER.map((tier) => ({ tier, items: sortSection(byTier[tier] ?? []) })).filter(
+      (s) => s.items.length > 0
+    );
+    return { sections, snoozed };
+  }, [visible]);
+
+  const needsYouItems = sections.find((s) => s.tier === "needs_you")?.items ?? [];
+
+  // Compact tier's prev/next transport steps through the needs-you tier only.
+  const safeIdx = needsYouItems.length ? Math.min(focusIdx, needsYouItems.length - 1) : 0;
+  const compactFocus = needsYouItems[safeIdx];
+
+  // Pill ticker: rotates through the top 3 items by urgency (raw feed, not
+  // narrowed by the search/filter controls — the pill is a global glance).
+  const tickerItems = useMemo(
+    () =>
+      [...items]
+        .filter((i) => !i.snoozed)
+        .sort((a, b) => b.urgency - a.urgency)
+        .slice(0, 3),
+    [items]
+  );
+  const needsYouCount = useMemo(
+    () => items.filter((i) => !i.snoozed && i.tier === "needs_you").length,
+    [items]
+  );
+  const prefersReducedMotion = useMemo(
+    () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
+    []
+  );
+  const [tickerIdx, setTickerIdx] = useState(0);
+  const [tickerVisible, setTickerVisible] = useState(true);
+  const [tickerPaused, setTickerPaused] = useState(false);
+  useEffect(() => {
+    if (prefersReducedMotion || tickerPaused || tickerItems.length <= 1) return;
+    const id = setInterval(() => {
+      setTickerVisible(false);
+      setTimeout(() => {
+        setTickerIdx((i) => (i + 1) % tickerItems.length);
+        setTickerVisible(true);
+      }, 300);
+    }, 6000);
+    return () => clearInterval(id);
+  }, [prefersReducedMotion, tickerPaused, tickerItems.length]);
+  const safeTickerIdx = tickerItems.length ? Math.min(tickerIdx, tickerItems.length - 1) : 0;
+  const tickerItem = tickerItems[safeTickerIdx];
 
   function activate(item: PrActivityItem) {
     markSeen(item);
@@ -225,10 +499,14 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
       <button
         className={`activity-widget activity-widget--pill ${unreadCount ? "activity-widget--alert" : ""}`}
         onClick={() => setCollapsedPersist(false)}
+        onMouseEnter={() => setTickerPaused(true)}
+        onMouseLeave={() => setTickerPaused(false)}
         title="PR activity"
       >
         <Equalizer />
-        <span className="aw-pill__count">{unreadCount}</span>
+        <span className={`aw-ticker__text ${tickerVisible ? "" : "aw-ticker__text--hidden"}`}>
+          {tickerItem ? tickerTextFor(tickerItem, needsYouCount) : "All caught up"}
+        </span>
       </button>
     );
   }
@@ -327,10 +605,20 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
       </div>
       )}
 
-      {/* Tier 1 — "now playing". Shown only when too short for a list. */}
-      {compact && focus && (
-        <div className="aw-focus">
-          <div className="aw-focus__transport">
+      {/* "Now Reviewing" — mirrors the main window's active tab. Hidden when
+          there's no active session, or (outside the compact tier) while the
+          search box is open. */}
+      {session && (!showControls || compact) && (
+        <NowReviewingCard session={session} compact={compact} />
+      )}
+
+      {/* Compact tier: no scrolling list — just a prev/next strip through the
+          needs-you tier. Driven by `.aw--compact` (toggled in JS from a
+          measured height) because height-axis container queries don't match
+          in the macOS WKWebView. */}
+      {compact ? (
+        <div className="aw-compact-foot">
+          <div className="aw-compact-foot__transport">
             <button
               className="aw-iconbtn"
               onClick={() => setFocusIdx((i) => Math.max(0, i - 1))}
@@ -341,22 +629,24 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
             </button>
             <button
               className="aw-iconbtn"
-              onClick={() => setFocusIdx((i) => Math.min(visible.length - 1, i + 1))}
-              disabled={safeIdx >= visible.length - 1}
+              onClick={() => setFocusIdx((i) => Math.min(needsYouItems.length - 1, i + 1))}
+              disabled={safeIdx >= needsYouItems.length - 1}
               title="Next"
             >
               ›
             </button>
-            <span className="aw-focus__pos">
-              {safeIdx + 1}/{visible.length}
-            </span>
           </div>
-          <ActivityRow item={focus} onActivate={activate} />
+          {compactFocus ? (
+            <span className="aw-compact-foot__next">
+              next: {compactFocus.repo}#{compactFocus.number} — {storyFor(compactFocus).text}
+            </span>
+          ) : (
+            <span className="aw-compact-foot__next aw-compact-foot__next--empty">
+              Nothing needs you right now
+            </span>
+          )}
         </div>
-      )}
-
-      {/* Tier 2 — the feed. Hidden only when the compact focus bar takes over. */}
-      {(!compact || !focus) && (
+      ) : (
         <div className="aw-feed">
           {visible.length === 0 ? (
             <div className="aw-empty">
@@ -367,9 +657,51 @@ export function ActivityWidget({ onOpenPr, variant = "dock" }: ActivityWidgetPro
                   : "No PR activity yet"}
             </div>
           ) : (
-            visible.map((item) => (
-              <ActivityRow key={item.prUrl} item={item} onActivate={activate} />
-            ))
+            <>
+              {sections.map((s) => (
+                <div className="aw-tier" key={s.tier}>
+                  <div className="aw-tier__head">
+                    <span>{TIER_LABELS[s.tier]}</span>
+                    <span className="aw-tier__count">{s.items.length}</span>
+                  </div>
+                  {s.items.map((item) => (
+                    <ActivityRow
+                      key={item.prUrl}
+                      item={item}
+                      variant={variant}
+                      onActivate={activate}
+                      onMarkSeen={markSeen}
+                      onSnooze={snoozePr}
+                      onUnsnooze={unsnoozePr}
+                    />
+                  ))}
+                </div>
+              ))}
+              {snoozed.length > 0 && (
+                <div className="aw-tier aw-tier--snoozed">
+                  <button
+                    className="aw-tier__head aw-tier__head--clickable"
+                    onClick={() => setSnoozedExpanded((v) => !v)}
+                  >
+                    <span>{snoozedExpanded ? "▾" : "▸"} Snoozed</span>
+                    <span className="aw-tier__count">{snoozed.length}</span>
+                  </button>
+                  {snoozedExpanded &&
+                    snoozed.map((item) => (
+                      <ActivityRow
+                        key={item.prUrl}
+                        item={item}
+                        variant={variant}
+                        snoozedMode
+                        onActivate={activate}
+                        onMarkSeen={markSeen}
+                        onSnooze={snoozePr}
+                        onUnsnooze={unsnoozePr}
+                      />
+                    ))}
+                </div>
+              )}
+            </>
           )}
           {truncatedTotal > 0 && (
             <div className="aw-truncated">+{truncatedTotal} more not shown</div>

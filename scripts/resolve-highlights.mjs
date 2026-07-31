@@ -11,6 +11,8 @@
 //   node scripts/resolve-highlights.mjs <pr> --severity=info,warning
 //   node scripts/resolve-highlights.mjs <pr> --file=commands.rs
 //   node scripts/resolve-highlights.mjs <pr> --prune    also drop stale keys (notes that no longer exist)
+//   node scripts/resolve-highlights.mjs <pr> --state=fixed|intentional|noise   (default: noise)
+//   node scripts/resolve-highlights.mjs <pr> --reason="why this was resolved"
 //
 // <pr> may be a bare number (e.g. 126 — matched against the manifests dir), an
 // owner/repo/number or PR URL, or a path to a manifest .json.
@@ -47,6 +49,11 @@ const opts = Object.fromEntries(
 const positional = args.filter((a) => !a.startsWith("--"));
 if (positional.length !== 1) die("expected exactly one <pr> argument. See header for usage.");
 const target = positional[0];
+
+const VALID_STATES = new Set(["fixed", "intentional", "noise"]);
+const state = opts.state || "noise";
+if (!VALID_STATES.has(state)) die(`--state must be one of fixed|intentional|noise, got "${state}"`);
+const reason = opts.reason || "";
 
 // ── Locate the manifest + derive owner/repo/number ──────────────────────────
 function manifestNameToParts(file) {
@@ -93,12 +100,18 @@ for (const f of manifest.files ?? []) {
 }
 
 const dismissedPath = path.join(DISMISSED, `${parts.owner}_${parts.repo}_${parts.number}.json`);
-const existing = new Set(fs.existsSync(dismissedPath) ? JSON.parse(fs.readFileSync(dismissedPath, "utf8")).keys : []);
+const existingRaw = fs.existsSync(dismissedPath) ? JSON.parse(fs.readFileSync(dismissedPath, "utf8")) : {};
+const existing = new Set(existingRaw.keys ?? []);
+const existingResolutions = existingRaw.resolutions ?? {};
 
 const label = `${parts.owner}/${parts.repo}#${parts.number}`;
 console.log(`${label} — ${notes.length} highlight(s)${sevFilter || fileFilter ? " (filtered)" : ""}`);
 for (const n of notes) {
-  const mark = existing.has(n.key) ? "✓ resolved" : "· open";
+  const res = existingResolutions[n.key];
+  let mark = "· open";
+  if (existing.has(n.key)) {
+    mark = res ? `✓ resolved (${res.state}${res.reason ? `: ${res.reason}` : ""})` : "✓ resolved";
+  }
   console.log(`  [${n.severity.padEnd(7)}] ${n.path} L${n.start_line}-${n.end_line}  ${mark}`);
 }
 
@@ -109,25 +122,43 @@ if (flags.has("--list")) {
 
 // ── Apply ───────────────────────────────────────────────────────────────────
 const undo = flags.has("--undo");
-const next = new Set(existing);
+const nextKeys = new Set(existing);
+const nextResolutions = { ...existingResolutions };
 let changed = 0;
 for (const n of notes) {
-  if (undo) { if (next.delete(n.key)) changed++; }
-  else if (!next.has(n.key)) { next.add(n.key); changed++; }
+  if (undo) {
+    if (nextKeys.delete(n.key)) changed++;
+    delete nextResolutions[n.key];
+  } else if (!nextKeys.has(n.key)) {
+    nextKeys.add(n.key);
+    nextResolutions[n.key] = { state, reason, at: new Date().toISOString() };
+    changed++;
+  }
 }
 
 if (flags.has("--prune")) {
   // Drop any stored key that doesn't correspond to a current highlight in this PR.
   const live = new Set((manifest.files ?? []).flatMap((f) => (f.highlights ?? []).map((h) => highlightKey(f.path, h))));
-  for (const k of [...next]) if (!live.has(k)) { next.delete(k); changed++; }
+  for (const k of [...nextKeys]) {
+    if (!live.has(k)) {
+      nextKeys.delete(k);
+      delete nextResolutions[k];
+      changed++;
+    }
+  }
+  for (const k of Object.keys(nextResolutions)) {
+    if (!nextKeys.has(k)) delete nextResolutions[k];
+  }
 }
 
 fs.mkdirSync(DISMISSED, { recursive: true });
-fs.writeFileSync(dismissedPath, JSON.stringify({ keys: [...next].sort() }, null, 2));
+const sortedKeys = [...nextKeys].sort();
+const sortedResolutions = Object.fromEntries(sortedKeys.filter((k) => nextResolutions[k]).map((k) => [k, nextResolutions[k]]));
+fs.writeFileSync(dismissedPath, JSON.stringify({ keys: sortedKeys, resolutions: sortedResolutions }, null, 2));
 fs.chmodSync(dismissedPath, 0o600);
 
 console.log(
-  `\n${undo ? "un-resolved" : "resolved"} ${changed} | file now has ${next.size} key(s)\n` +
+  `\n${undo ? "un-resolved" : `resolved (${state})`} ${changed} | file now has ${nextKeys.size} key(s)\n` +
     `→ ${dismissedPath}\n` +
     `→ switch back to Marrow (it reloads on window focus) to see the change.`,
 );

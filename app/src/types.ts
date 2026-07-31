@@ -40,8 +40,13 @@ export interface ReviewManifest {
   head_ref: string;
   base_sha: string;
   head_sha: string;
+  author: string;
+  draft: boolean;
   summary: string;
   change_groups: ChangeGroup[];
+  /** The PR description, truncated char-safely to bound cache size. Empty
+   * when the PR has no body or on manifests fetched before this field existed. */
+  body: string;
   files: FileDiff[];
 }
 
@@ -93,7 +98,55 @@ export type CommentThreadsState =
   | { status: "loaded"; threads: ReviewThread[] }
   | { status: "error"; message: string };
 
-export type SidebarView = "groups" | "comments" | "category" | "tree";
+/** One turn of the per-PR review chat. `filePath` records which file was in
+ * focus when a user message was sent (for display); undefined for whole-PR scope. */
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  filePath?: string;
+}
+
+/** Tab-scoped state for the conversational diff Q&A panel. */
+export interface ChatState {
+  messages: ChatMessage[];
+  /** "idle" between turns; "streaming" while an answer is being generated. */
+  status: "idle" | "streaming";
+  /** The in-progress assistant answer accumulated from stream deltas. */
+  streamingText: string;
+  /** Transient status shown while the AI is working but not emitting text
+   * (e.g. the CLI agent using tools between blocks); null when none. */
+  streamingStatus: string | null;
+  /** When true, ground answers in the whole PR rather than the selected file. */
+  includeWholePr: boolean;
+  /** Whether the chat dock is open. */
+  open: boolean;
+  /** Last error message from a failed request, if any. */
+  error?: string;
+}
+
+/** Streaming events sent from the backend `chat_send` command over the IPC channel. */
+export type ChatStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "status"; label: string | null }
+  | { type: "done"; content: string }
+  | { type: "error"; message: string };
+
+export type NoteResolutionState = "fixed" | "intentional" | "noise";
+
+/** How/why an AI note was resolved. Mirrors `NoteResolution` in
+ * `dismissed_highlights.rs` — `reason`/`at` are optional there too (empty
+ * string on the wire), kept optional here for the same reason. */
+export interface NoteResolution {
+  /** Normally a NoteResolutionState, but Rust serde-defaults a malformed
+   * entry's state to "" rather than failing the whole file, so loaded values
+   * can fall outside the union (rendered as plain "Dismissed"). The
+   * `string & {}` keeps union autocomplete while admitting that. */
+  state: NoteResolutionState | (string & {});
+  reason?: string;
+  at?: string;
+}
+
+export type SidebarView = "groups" | "category" | "tree";
 
 export type DiffViewMode = "split" | "unified";
 
@@ -116,13 +169,25 @@ export interface Tab {
   unread?: boolean;
   /** error message from a failed fetch in this (still pending) tab; null otherwise */
   error?: string | null;
+  /** last PR ref this tab tried to fetch — lets a failed fetch offer Retry */
+  lastPrRef?: string | null;
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
   staleViewedFiles: Set<string>;
   /** Keys (see highlightKey) of AI highlights the user has dismissed for this PR. */
   dismissedHighlights: Set<string>;
+  /** Resolution metadata (state + reason) for dismissed highlights, keyed by
+   * highlightKey. A dismissed key may have no entry here (plain/legacy dismiss). */
+  noteResolutions: Map<string, NoteResolution>;
+  /** Keys (see highlightKey) of AI highlights newly introduced by the most
+   * recent refresh's re-analysis, relative to the manifest it replaced.
+   * Transient — not persisted, and undefined outside a just-refreshed tab. */
+  newHighlightKeys?: Set<string>;
+  /** Conversational diff Q&A state for this PR. */
+  chat: ChatState;
   commentThreads: CommentThreadsState;
-  selectedCommentFile: string | null;
+  /** Whether the right-dock comments panel is open (mutually exclusive with `chat.open`). */
+  commentsOpen?: boolean;
   sidebarView: SidebarView;
   isRefreshing?: boolean;
   lastCommentCount?: number;
@@ -164,6 +229,10 @@ export interface Settings {
   activity_per_watch_cap: number;
   activity_mini_player: boolean;
   show_approved_prs: boolean;
+  /** Whether the review queue shows draft PRs. On by default (current
+   * behavior); the frontend filters draft rows out when this is off. */
+  show_draft_prs: boolean;
+  setup_done: boolean;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
@@ -172,6 +241,19 @@ export interface MyReviewState {
   status: ReviewStatus;
   is_re_requested: boolean;
   is_merged: boolean;
+  author: string;
+  draft: boolean;
+  approved_by: string[];
+  /** Lowercased GitHub `mergeable` enum: "mergeable" | "conflicting" |
+   * "unknown". Empty when GitHub hasn't computed it or the field is absent. */
+  mergeable: string;
+  labels: PrLabel[];
+}
+
+export interface PrLabel {
+  name: string;
+  /** Hex color without the leading '#', as GitHub returns it. */
+  color: string;
 }
 
 export interface CheckRunInfo {
@@ -214,6 +296,7 @@ export interface ReviewRequestItem {
   direct_request: boolean;
   my_review_status: ReviewStatus;
   unresolved_thread_count: number;
+  approval_count: number;
 }
 
 export type UpdateStatus =
@@ -272,6 +355,13 @@ export interface PrActivityItem {
   unresolvedThreads?: number | null;
   ciState?: string | null;
   unread: boolean;
+  /** "needs_you" | "yours" | "watching" — see Rust `compute_tier`. */
+  tier: string;
+  /** Sortable relevance score — see Rust `compute_urgency`. Not used by the
+   * current widget; for a future queue view to sort by. */
+  urgency: number;
+  /** Muted until the next delta wakes it. Current widget ignores this. */
+  snoozed: boolean;
 }
 
 /** Payload of the `pr-activity` event (matches Rust `PrActivityPayload`). */

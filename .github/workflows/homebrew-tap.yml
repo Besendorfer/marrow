@@ -1,13 +1,15 @@
 name: Update Homebrew Tap
 
-# When a CLI (`cli-v*`) release is *published*, copy its generated `marrow.rb`
-# into `Formula/marrow.rb` in the umbrella tap (Besendorfer/homebrew-tap) so
-# `brew install marrow` tracks the new version automatically.
+# When a release is *published*, sync the umbrella tap (Besendorfer/homebrew-tap):
+#   - CLI releases (`cli-v*`): copy the generated `marrow.rb` into `Formula/`
+#     so `brew install besendorfer/tap/marrow` tracks the new version.
+#   - Desktop releases (`v*`): regenerate `Casks/marrow.rb` against the release's
+#     `Marrow_aarch64.dmg` so `brew install --cask besendorfer/tap/marrow` works.
 #
-# Why `release: published` and not the tag push: cli-release.yml creates a
-# *draft* release, and a draft's asset download URLs aren't publicly reachable —
-# the formula points at those URLs, so it must only land in the tap once the
-# release is live. Publishing the draft fires this workflow.
+# Why `release: published` and not the tag push: both release workflows create
+# *draft* releases, and a draft's asset download URLs aren't publicly reachable —
+# the formula/cask point at those URLs, so they must only land in the tap once
+# the release is live. Publishing the draft fires this workflow.
 #
 # Requires a repo secret HOMEBREW_TAP_TOKEN: a PAT with contents:write on
 # Besendorfer/homebrew-tap (the default GITHUB_TOKEN can't push to another repo).
@@ -18,15 +20,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "CLI release tag to sync to the tap (e.g. cli-v0.1.0-alpha.3)"
+        description: "Release tag to sync to the tap (cli-v* → formula, v* → cask)"
         required: true
 
 jobs:
   update-tap:
-    # Only CLI releases carry a Homebrew formula; skip desktop (`v*`) releases.
-    # (workflow_dispatch has no release object, so allow it through and validate
-    # the tag below.)
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'cli-v') }}
+    # Only CLI releases carry a Homebrew formula; desktop (`v*`) releases are
+    # handled by update-cask below.
+    if: ${{ startsWith(github.event.release.tag_name, 'cli-v') || (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'cli-v')) }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve release tag
@@ -70,5 +71,84 @@ jobs:
             echo "Formula already up to date — nothing to commit."
           else
             git commit -m "marrow $VERSION"
+            git push
+          fi
+
+  update-cask:
+    # Desktop releases (`v*`, not `cli-v*`) ship the signed+notarized DMG; the
+    # cask pins its sha256, so it is generated from the published asset. The
+    # `cli-v` prefix starts with "c", so startsWith(tag, 'v') alone excludes it.
+    if: ${{ (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')) || (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: rel
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          case "$TAG" in
+            cli-v*) echo "::error::got a CLI tag ('$TAG') — the cask tracks desktop v* releases"; exit 1 ;;
+            v*) ;;
+            *) echo "::error::tag must start with v (got: '$TAG')"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download the DMG and compute its checksum
+        id: dmg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern Marrow_aarch64.dmg \
+            --dir .
+          SHA=$(sha256sum Marrow_aarch64.dmg | cut -d' ' -f1)
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Marrow_aarch64.dmg sha256: $SHA"
+
+      - name: Generate the cask and commit to the tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          SHA256: ${{ steps.dmg.outputs.sha256 }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set — create a PAT with contents:write on Besendorfer/homebrew-tap and add it as a repo secret."
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/Besendorfer/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          cat > tap/Casks/marrow.rb <<EOF
+          cask "marrow" do
+            version "$VERSION"
+            sha256 "$SHA256"
+
+            url "https://github.com/Besendorfer/marrow/releases/download/v#{version}/Marrow_aarch64.dmg"
+            name "Marrow"
+            desc "AI-powered GitHub PR review app - surfaces only the diffs that matter"
+            homepage "https://github.com/Besendorfer/marrow"
+
+            livecheck do
+              url "https://github.com/Besendorfer/marrow"
+              strategy :github_latest
+            end
+
+            # The app self-updates via the Tauri updater; brew upgrade skips it
+            # unless --greedy.
+            auto_updates true
+            depends_on arch: :arm64
+
+            app "Marrow.app"
+          end
+          EOF
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/marrow.rb
+          if git diff --cached --quiet; then
+            echo "Cask already up to date — nothing to commit."
+          else
+            git commit -m "marrow cask $VERSION"
             git push
           fi

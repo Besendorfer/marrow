@@ -1,4 +1,7 @@
+use marrow_core::ai::{AiBackend, ChatRole, ChatTurn};
 use marrow_core::bedrock::{region_from_arn, BedrockClient};
+use marrow_core::chat::{build_chat_system, ChatContext};
+use marrow_core::chat_history::{self, StoredChat};
 use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
@@ -9,10 +12,13 @@ use marrow_core::dismissed_highlights::{self, DismissedHighlights};
 use marrow_core::viewed_state::{self, ViewedFileState};
 use marrow_core::activity::{self, Observed};
 use marrow_core::watches::{self, Watch};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
+use tauri::ipc::Channel;
 use tauri::{command, State};
+use tokio_util::sync::CancellationToken;
 
 pub struct AppState {
     pub manifest_path: Mutex<Option<String>>,
@@ -23,6 +29,9 @@ pub struct AppState {
     // replay; after that point, hot-open emits suffice and we skip buffering
     // to avoid replaying stale URLs on the next cold-start.
     pub frontend_ready: Mutex<bool>,
+    // In-flight chat requests, keyed by a frontend-generated request id. Firing
+    // a token aborts the corresponding streaming `chat_send` (see `chat_cancel`).
+    pub chat_cancels: Mutex<HashMap<String, CancellationToken>>,
 }
 
 fn github_client() -> GithubClient {
@@ -39,6 +48,46 @@ pub fn get_settings() -> Settings {
 #[command]
 pub fn save_settings(settings: Settings) -> Result<(), String> {
     save_settings_to_disk(&settings)
+}
+
+/// Whether `fetch_pr` could open this input. The omnibox uses this to decide
+/// "open" vs "filter" — asking the real parser instead of mirroring its regex
+/// (the AI review caught that as a fifth copy of the quadruplicated pattern).
+#[command]
+pub fn check_pr_ref(input: String) -> bool {
+    marrow_core::pr_parser::parse_pr_ref(&input).is_ok()
+}
+
+/// The authenticated GitHub login for the configured token (queue header chip).
+#[command]
+pub async fn get_viewer_login() -> Result<String, String> {
+    github_client().get_authenticated_user().await
+}
+
+/// True when the first-run welcome should show: setup never completed/skipped
+/// and no GitHub token resolves from config or env.
+#[command]
+pub fn needs_setup() -> bool {
+    let settings = load_settings();
+    !settings.setup_done && resolve_github_token(&settings).is_none()
+}
+
+/// Check a GitHub token by fetching the authenticated user. Takes the token
+/// directly (not saved settings) so setup can validate before saving.
+#[command]
+pub async fn validate_github_token(token: String) -> Result<String, String> {
+    let trimmed = token.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("No token provided".into());
+    }
+    GithubClient::new(Some(trimmed)).get_authenticated_user().await
+}
+
+/// Check the AI provider config end-to-end with a one-word prompt. Takes the
+/// candidate settings so setup can validate before saving.
+#[command]
+pub async fn validate_ai_provider(settings: Settings) -> Result<String, String> {
+    marrow_core::ai::validate_provider(&settings).await
 }
 
 #[command]
@@ -134,6 +183,24 @@ pub fn save_watches(watches: Vec<Watch>) -> Result<(), String> {
 pub fn mark_pr_seen(pr_url: String, observed: Observed) -> Result<(), String> {
     let mut store = activity::load_activity_store();
     activity::mark_seen(&mut store, &pr_url, observed, activity::now_rfc3339());
+    activity::save_activity_store(&store)
+}
+
+/// Snooze a PR in the activity feed: like `mark_pr_seen`, but also mutes it
+/// until the next poll's diff finds any delta (see `activity::snooze`), at
+/// which point it wakes back up on its own.
+#[command]
+pub fn snooze_pr(pr_url: String, observed: Observed) -> Result<(), String> {
+    let mut store = activity::load_activity_store();
+    activity::snooze(&mut store, &pr_url, observed, activity::now_rfc3339());
+    activity::save_activity_store(&store)
+}
+
+/// Clear a manual snooze without waiting for a delta.
+#[command]
+pub fn unsnooze_pr(pr_url: String) -> Result<(), String> {
+    let mut store = activity::load_activity_store();
+    activity::unsnooze(&mut store, &pr_url);
     activity::save_activity_store(&store)
 }
 
@@ -285,6 +352,22 @@ pub fn dismiss_mini_player(app: tauri::AppHandle) -> Result<(), String> {
 pub fn open_pr_in_main(app: tauri::AppHandle, pr_ref: String) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let _ = app.emit("deep-link-open", &pr_ref);
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.set_focus();
+    }
+    Ok(())
+}
+
+/// Resume a PR the user was already reviewing, from the mini-player's "Now
+/// Reviewing" card: like `open_pr_in_main`, but emits `deep-link-resume`
+/// instead of `deep-link-open` so the main window can distinguish "jump back
+/// to my open tab and advance to the next unviewed file" from "open a PR I
+/// haven't started" (which still goes through the ordinary deep-link-open
+/// flow if no matching tab is open).
+#[command]
+pub fn resume_review_in_main(app: tauri::AppHandle, pr_ref: String) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    let _ = app.emit("deep-link-resume", &pr_ref);
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.set_focus();
     }
@@ -533,6 +616,128 @@ pub fn load_cached_manifest_by_pr(pr_url: String) -> Result<Option<ReviewManifes
         &parsed.repo,
         parsed.number,
     ))
+}
+
+/// One prior turn of the conversation, as sent from the frontend.
+#[derive(Debug, Deserialize)]
+pub struct ChatTurnDto {
+    pub role: String,
+    pub content: String,
+}
+
+/// A chat request: a unique id (so the stream can be cancelled), the grounding
+/// context, the conversation so far, and the new user message.
+#[derive(Debug, Deserialize)]
+pub struct ChatRequest {
+    pub request_id: String,
+    pub context: ChatContext,
+    #[serde(default)]
+    pub history: Vec<ChatTurnDto>,
+    pub message: String,
+}
+
+/// Streaming events sent back over the IPC channel while a chat answer is
+/// generated.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatStreamEvent {
+    /// A fragment of the assistant's answer.
+    Delta { text: String },
+    /// A transient status (e.g. the CLI agent using tools); `label` None clears it.
+    Status { label: Option<String> },
+    /// The stream finished cleanly; `content` is the full assembled answer.
+    Done { content: String },
+    /// The stream failed; `message` is a human-readable error.
+    Error { message: String },
+}
+
+fn dto_role(role: &str) -> ChatRole {
+    match role {
+        "assistant" => ChatRole::Assistant,
+        _ => ChatRole::User,
+    }
+}
+
+#[command]
+pub async fn chat_send(
+    state: State<'_, AppState>,
+    channel: Channel<ChatStreamEvent>,
+    request: ChatRequest,
+) -> Result<(), String> {
+    let settings = load_settings();
+    let backend = match AiBackend::from_settings(&settings).await {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = channel.send(ChatStreamEvent::Error { message: e });
+            return Ok(());
+        }
+    };
+
+    let system = build_chat_system(&request.context);
+    let mut turns: Vec<ChatTurn> = request
+        .history
+        .iter()
+        .map(|t| ChatTurn { role: dto_role(&t.role), content: t.content.clone() })
+        .collect();
+    turns.push(ChatTurn { role: ChatRole::User, content: request.message });
+
+    // Register a cancellation token so `chat_cancel` can abort this stream. The
+    // std Mutex guard must be dropped before any await (it isn't Send).
+    let token = CancellationToken::new();
+    let request_id = request.request_id.clone();
+    state.chat_cancels.lock().unwrap().insert(request_id.clone(), token.clone());
+
+    let update_channel = channel.clone();
+    let mut on_update = move |u: marrow_core::ai::StreamUpdate| {
+        let ev = match u {
+            marrow_core::ai::StreamUpdate::Delta(text) => ChatStreamEvent::Delta { text },
+            marrow_core::ai::StreamUpdate::Status(label) => ChatStreamEvent::Status { label },
+        };
+        let _ = update_channel.send(ev);
+    };
+
+    // Race the streaming call against cancellation. On cancel, the select drops
+    // the `invoke_chat_stream` future — closing the HTTP/Bedrock stream (and
+    // killing the `claude` child, which is spawned with kill_on_drop) — and we
+    // send nothing further. The frontend keeps the partial answer it streamed.
+    tokio::select! {
+        result = backend.invoke_chat_stream(&system, &turns, &mut on_update) => {
+            match result {
+                Ok(content) => { let _ = channel.send(ChatStreamEvent::Done { content }); }
+                Err(message) => { let _ = channel.send(ChatStreamEvent::Error { message }); }
+            }
+        }
+        _ = token.cancelled() => {
+            // Aborted by the user; the partial answer already lives on the frontend.
+        }
+    }
+
+    state.chat_cancels.lock().unwrap().remove(&request_id);
+    Ok(())
+}
+
+/// Abort an in-flight [`chat_send`] identified by `request_id`. A no-op if the
+/// request already finished or never existed.
+#[command]
+pub fn chat_cancel(state: State<AppState>, request_id: String) {
+    if let Some(token) = state.chat_cancels.lock().unwrap().get(&request_id) {
+        token.cancel();
+    }
+}
+
+#[command]
+pub fn load_chat_history(owner: String, repo: String, pr_number: u64) -> Option<StoredChat> {
+    chat_history::load_chat(&owner, &repo, pr_number)
+}
+
+#[command]
+pub fn save_chat_history(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    state: StoredChat,
+) -> Result<(), String> {
+    chat_history::save_chat(&owner, &repo, pr_number, &state)
 }
 
 #[command]
