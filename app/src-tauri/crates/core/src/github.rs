@@ -293,6 +293,16 @@ fn parse_commit_diff_file(f: &serde_json::Value) -> CommitDiffFile {
     }
 }
 
+/// Conclusions whose runs are worth scanning for annotations: outright
+/// failures plus the attention states a step can reach after emitting
+/// annotations (`timed_out`, `action_required`). `cancelled` is deliberately
+/// excluded — a user-initiated stop's partial annotations are noise.
+fn failing_conclusion(conclusion: &str) -> bool {
+    conclusion.eq_ignore_ascii_case("failure")
+        || conclusion.eq_ignore_ascii_case("timed_out")
+        || conclusion.eq_ignore_ascii_case("action_required")
+}
+
 /// Parse one annotation from a check run's `GET
 /// .../check-runs/{id}/annotations` REST response. Only "failure" and
 /// "warning" levels are surfaced; "notice" is dropped. Missing or malformed
@@ -688,7 +698,7 @@ impl GithubClient {
     ) -> Result<CheckFailures, String> {
         const MAX_ANNOTATIONS: usize = 200;
 
-        let mut failed_runs: Vec<(u64, String)> = Vec::new();
+        let mut failed_runs: Vec<(u64, String, u64)> = Vec::new();
         let mut run_list_truncated = false;
         let mut page = 1u32;
 
@@ -717,7 +727,7 @@ impl GithubClient {
 
             for r in &runs {
                 let conclusion = r.get("conclusion").and_then(|v| v.as_str()).unwrap_or("");
-                if !conclusion.eq_ignore_ascii_case("failure") {
+                if !failing_conclusion(conclusion) {
                     continue;
                 }
 
@@ -734,7 +744,7 @@ impl GithubClient {
                     None => continue,
                 };
                 let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                failed_runs.push((id, name));
+                failed_runs.push((id, name, annotations_count));
             }
 
             page += 1;
@@ -750,10 +760,15 @@ impl GithubClient {
         let mut annotations: Vec<CheckAnnotation> = Vec::new();
         let mut truncated = run_list_truncated;
 
-        for (id, name) in &failed_runs {
+        for (id, name, annotations_count) in &failed_runs {
             if annotations.len() >= MAX_ANNOTATIONS {
                 truncated = true;
                 break;
+            }
+            // One page of 50 per run is a deliberate cap — but a run reporting
+            // more must not let the result claim completeness.
+            if *annotations_count > 50 {
+                truncated = true;
             }
 
             let url = format!(
@@ -2328,7 +2343,7 @@ pub struct CollectedActivity {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_line, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+    use super::{failing_conclusion, first_line, latest_viewer_review, parse_check_annotation, parse_pr_commit};
 
     #[test]
     fn first_line_extracts_headline_from_multi_line_message() {
@@ -2391,6 +2406,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(parse_pr_commit(&c).committed_at, "2026-02-02T00:00:00Z");
+    }
+
+    #[test]
+    fn failing_conclusion_covers_attention_states_but_not_cancelled() {
+        assert!(failing_conclusion("failure"));
+        assert!(failing_conclusion("FAILURE"));
+        assert!(failing_conclusion("timed_out"));
+        assert!(failing_conclusion("action_required"));
+        assert!(!failing_conclusion("cancelled"));
+        assert!(!failing_conclusion("success"));
+        assert!(!failing_conclusion("neutral"));
+        assert!(!failing_conclusion(""));
     }
 
     #[test]
