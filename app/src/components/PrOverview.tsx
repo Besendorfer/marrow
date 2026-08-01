@@ -3,11 +3,14 @@ import { SummaryParagraphs } from "./SummaryParagraphs";
 import { Avatar } from "./ReviewRequestList";
 import { RichText } from "./RichText";
 import { highlightKey, timeAgo } from "../utils";
-import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, TopRisk, PrCommit } from "../types";
+import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, TopRisk, PrCommit, CheckFailures, CheckAnnotation } from "../types";
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
   checksStatus?: PrChecksStatus | null;
+  /** Inline CI failure annotations, loaded on demand once a failing check run
+   * is observed — powers the "Failing checks" card. */
+  checkFailures?: CheckFailures | null;
   reviewState: MyReviewState | null;
   viewedCount: number;
   unresolvedThreads: number | null;
@@ -213,6 +216,42 @@ function CommitsCard({
   );
 }
 
+/** Stable-sort annotations so every annotation for the same path is adjacent,
+ * in first-seen path order — a lightweight "group by path" that keeps the
+ * flat row list the card renders. */
+function groupAnnotationsByPath(annotations: CheckAnnotation[]): CheckAnnotation[] {
+  const order: string[] = [];
+  const byPath = new Map<string, CheckAnnotation[]>();
+  for (const a of annotations) {
+    if (!byPath.has(a.path)) {
+      byPath.set(a.path, []);
+      order.push(a.path);
+    }
+    byPath.get(a.path)!.push(a);
+  }
+  return order.flatMap((p) => byPath.get(p)!);
+}
+
+function CheckFailureRow({ annotation, onOpenAt }: { annotation: CheckAnnotation; onOpenAt?: (path: string, line?: number) => void }) {
+  const subtitle = annotation.title ?? annotation.message.split("\n")[0];
+  return (
+    <button
+      className="overview-check-row"
+      onClick={() => onOpenAt?.(annotation.path, annotation.start_line)}
+    >
+      <div className="overview-check-row-main">
+        <div className="overview-check-row-title">
+          <span className="risk-dot risk-dot--critical" /> {annotation.check_name}
+        </div>
+        <div className="overview-check-row-detail">{subtitle}</div>
+      </div>
+      <span className="overview-risk-file">
+        {fileName(annotation.path)}:{annotation.start_line}
+      </span>
+    </button>
+  );
+}
+
 function TopRiskRow({ risk, onOpenAt }: { risk: TopRisk; onOpenAt?: (path: string, line?: number) => void }) {
   return (
     <button
@@ -234,6 +273,7 @@ function TopRiskRow({ risk, onOpenAt }: { risk: TopRisk; onOpenAt?: (path: strin
 export function PrOverview({
   manifest,
   checksStatus,
+  checkFailures,
   reviewState,
   viewedCount,
   unresolvedThreads,
@@ -349,6 +389,17 @@ export function PrOverview({
         )}
       </div>
       <div className="overview-rail">
+        {checkFailures && checkFailures.annotations.length > 0 && (
+          <div className="overview-card overview-checks">
+            <h4>Failing checks ({checkFailures.annotations.length})</h4>
+            {groupAnnotationsByPath(checkFailures.annotations).map((a, i) => (
+              <CheckFailureRow key={i} annotation={a} onOpenAt={onOpenAt} />
+            ))}
+            {checkFailures.truncated && (
+              <div className="overview-checks-truncated">Showing the first 200 annotations</div>
+            )}
+          </div>
+        )}
         {topRisks.length > 0 && (
           <div className="overview-card overview-risks">
             <h4>What to review first</h4>

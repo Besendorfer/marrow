@@ -1,7 +1,7 @@
 import { Fragment, createContext, forwardRef, memo, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
-import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch, NoteResolution } from "../types";
+import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch, NoteResolution, CheckAnnotation } from "../types";
 import { timeAgo, highlightKey } from "../utils";
 import { RichText } from "./RichText";
 
@@ -122,6 +122,8 @@ interface DiffViewerProps {
   onToggleResolved?: (threadId: string, resolve: boolean) => void;
   onToggleReaction?: (commentId: string, content: string) => void;
   reviewThreads?: ReviewThread[];
+  /** Inline CI failure annotations for this file, from a loaded CheckFailures. */
+  checkAnnotations?: CheckAnnotation[];
   searchMatches?: SearchMatch[];
   currentSearchMatch?: SearchMatch | null;
   searchQuery?: string;
@@ -157,6 +159,8 @@ export interface DiffViewerHandle {
    * when the thread isn't rendered in this file (e.g. the diff hasn't
    * mounted it yet) so the caller can retry. */
   scrollToThread: (threadId: string, expandIfHidden?: boolean) => boolean;
+  /** Expand the hunk containing a head line (if collapsed) and scroll to it. */
+  revealLine: (line: number) => void;
 }
 
 /** Small keyboard-driven reply box, shown when `r` is pressed on a thread line. */
@@ -967,6 +971,53 @@ function HighlightMarker({ highlight, isNew, onPostAsComment }: { highlight: Hig
   );
 }
 
+/** A single failing-check annotation, rendered inline above the line it
+ * anchors to. Read-only besides expand/collapse of a long message — no
+ * dismiss/resolve/comment (issue #61 is CI signal, not a reviewer note). */
+function CheckAnnotationMarker({ annotation }: { annotation: CheckAnnotation }) {
+  const [expanded, setExpanded] = useState(false);
+  const firstLine = annotation.message.split("\n")[0] ?? "";
+  const subtitle = annotation.title ?? firstLine;
+  const isLong = annotation.message.split("\n").length > 3;
+
+  return (
+    <div className="check-annotation">
+      <span className="check-annotation-icon" aria-hidden="true">&#10007;</span>
+      <div className="check-annotation-body">
+        <div className="check-annotation-header">
+          <span className="check-annotation-name">{annotation.check_name}</span>
+          <span className="check-annotation-sep">&mdash;</span>
+          <span className="check-annotation-title">{subtitle}</span>
+        </div>
+        <pre className={`check-annotation-message${!expanded && isLong ? " check-annotation-message-collapsed" : ""}`}>
+          {annotation.message}
+        </pre>
+        {isLong && (
+          <button
+            type="button"
+            className="check-annotation-toggle"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Annotations keyed by the head-side line (`end_line`) they anchor to — a
+ * line can carry more than one (e.g. two failing checks on the same line). */
+function buildAnnotationsByLine(annotations: CheckAnnotation[] | undefined): Map<number, CheckAnnotation[]> {
+  const map = new Map<number, CheckAnnotation[]>();
+  for (const a of annotations ?? []) {
+    const arr = map.get(a.end_line);
+    if (arr) arr.push(a);
+    else map.set(a.end_line, [a]);
+  }
+  return map;
+}
+
 // ── Hunk grouping ────────────────────────────────────────────────────────
 
 interface Hunk {
@@ -1046,6 +1097,7 @@ function UnifiedHunkLines({
   onSubmitComment,
   onCancelComment,
   reviewThreads,
+  checkAnnotations,
   onEditComment,
   onReply,
   onToggleResolved,
@@ -1065,6 +1117,7 @@ function UnifiedHunkLines({
   onSubmitComment?: (body: string) => void;
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
+  checkAnnotations?: CheckAnnotation[];
   onEditComment?: (commentId: string, body: string) => void;
   onReply?: (threadId: string, commentId: string, body: string) => void;
   onToggleResolved?: (threadId: string, resolve: boolean) => void;
@@ -1073,6 +1126,7 @@ function UnifiedHunkLines({
   lang?: string;
 }) {
   const threadsByLine = useMemo(() => buildThreadsByLine(reviewThreads), [reviewThreads]);
+  const annotationsByLine = useMemo(() => buildAnnotationsByLine(checkAnnotations), [checkAnnotations]);
 
   return (
     <>
@@ -1112,6 +1166,9 @@ function UnifiedHunkLines({
         const lineRange = isEndOfSelection && commentingOn && commentingOn.startLine !== commentingOn.endLine
           ? `L${commentingOn.startLine}-L${commentingOn.endLine}`
           : undefined;
+        // Annotations anchor strictly on the head line number (end_line) — a
+        // pure removal (no newLineNum) never carries one.
+        const lineAnnotations = line.newLineNum != null ? (annotationsByLine.get(line.newLineNum) ?? []) : [];
 
         return (
           <Fragment key={idx}>
@@ -1119,6 +1176,15 @@ function UnifiedHunkLines({
               <tr className="highlight-row">
                 <td colSpan={4}>
                   <HighlightMarker highlight={hlStart} isNew={newHighlights?.has(hlStart)} onPostAsComment={onPostHighlightAsComment} />
+                </td>
+              </tr>
+            )}
+            {lineAnnotations.length > 0 && (
+              <tr className="check-annotation-row">
+                <td colSpan={4}>
+                  {lineAnnotations.map((a, i) => (
+                    <CheckAnnotationMarker key={i} annotation={a} />
+                  ))}
                 </td>
               </tr>
             )}
@@ -1193,6 +1259,7 @@ function UnifiedView({
   onSubmitComment,
   onCancelComment,
   reviewThreads,
+  checkAnnotations,
   onEditComment,
   onReply,
   onToggleResolved,
@@ -1214,6 +1281,7 @@ function UnifiedView({
   onSubmitComment?: (body: string) => void;
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
+  checkAnnotations?: CheckAnnotation[];
   onEditComment?: (commentId: string, body: string) => void;
   onReply?: (threadId: string, commentId: string, body: string) => void;
   onToggleResolved?: (threadId: string, resolve: boolean) => void;
@@ -1282,13 +1350,13 @@ function UnifiedView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} checkAnnotations={checkAnnotations} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} checkAnnotations={checkAnnotations} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -1312,6 +1380,7 @@ function SplitHunkLines({
   onSubmitComment,
   onCancelComment,
   reviewThreads,
+  checkAnnotations,
   onEditComment,
   onReply,
   onToggleResolved,
@@ -1331,6 +1400,7 @@ function SplitHunkLines({
   onSubmitComment?: (body: string) => void;
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
+  checkAnnotations?: CheckAnnotation[];
   onEditComment?: (commentId: string, body: string) => void;
   onReply?: (threadId: string, commentId: string, body: string) => void;
   onToggleResolved?: (threadId: string, resolve: boolean) => void;
@@ -1339,6 +1409,7 @@ function SplitHunkLines({
   lang?: string;
 }) {
   const threadsByLine = useMemo(() => buildThreadsByLine(reviewThreads), [reviewThreads]);
+  const annotationsByLine = useMemo(() => buildAnnotationsByLine(checkAnnotations), [checkAnnotations]);
 
   return (
     <>
@@ -1391,6 +1462,9 @@ function SplitHunkLines({
         const lineThreads = rightLine === leftLine
           ? leftThreads
           : [...leftThreads, ...rightThreads.filter(t => !leftThreads.some(lt => lt.id === t.id))];
+        // Annotations anchor strictly on the head line number (end_line) — a
+        // pure removal (no right side) never carries one.
+        const lineAnnotations = pair.right?.newLineNum != null ? (annotationsByLine.get(pair.right.newLineNum) ?? []) : [];
 
         return (
           <Fragment key={idx}>
@@ -1398,6 +1472,15 @@ function SplitHunkLines({
               <tr className="highlight-row">
                 <td colSpan={4}>
                   <HighlightMarker highlight={hlStart} isNew={newHighlights?.has(hlStart)} onPostAsComment={onPostHighlightAsComment} />
+                </td>
+              </tr>
+            )}
+            {lineAnnotations.length > 0 && (
+              <tr className="check-annotation-row">
+                <td colSpan={4}>
+                  {lineAnnotations.map((a, i) => (
+                    <CheckAnnotationMarker key={i} annotation={a} />
+                  ))}
                 </td>
               </tr>
             )}
@@ -1474,6 +1557,7 @@ function SplitView({
   onSubmitComment,
   onCancelComment,
   reviewThreads,
+  checkAnnotations,
   onEditComment,
   onReply,
   onToggleResolved,
@@ -1495,6 +1579,7 @@ function SplitView({
   onSubmitComment?: (body: string) => void;
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
+  checkAnnotations?: CheckAnnotation[];
   onEditComment?: (commentId: string, body: string) => void;
   onReply?: (threadId: string, commentId: string, body: string) => void;
   onToggleResolved?: (threadId: string, resolve: boolean) => void;
@@ -1566,13 +1651,13 @@ function SplitView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <SplitHunkLines splitLines={splitLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                        <SplitHunkLines splitLines={splitLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} checkAnnotations={checkAnnotations} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <SplitHunkLines splitLines={splitLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
+                <SplitHunkLines splitLines={splitLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} checkAnnotations={checkAnnotations} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -1584,7 +1669,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, expandAllHunks, dismissedHighlights, noteResolutions, newHighlightKeys, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, expandAllHunks, dismissedHighlights, noteResolutions, newHighlightKeys, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, checkAnnotations, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -2268,6 +2353,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     nextHunk, prevHunk, foldAll,
     cursorMove, cursorEdge, cursorPage, nextFinding, prevFinding, foldAtCursor,
     commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor, scrollToThread,
+    revealLine,
   }));
 
   return (
@@ -2403,6 +2489,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
               onSubmitComment={handleSubmitComment}
               onCancelComment={handleCancelComment}
               reviewThreads={fileThreads}
+              checkAnnotations={checkAnnotations}
               onEditComment={onEditComment}
               onReply={onReply}
               onToggleResolved={onToggleResolved}
@@ -2426,6 +2513,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
               onSubmitComment={handleSubmitComment}
               onCancelComment={handleCancelComment}
               reviewThreads={fileThreads}
+              checkAnnotations={checkAnnotations}
               onEditComment={onEditComment}
               onReply={onReply}
               onToggleResolved={onToggleResolved}
@@ -2443,7 +2531,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
               <col />
             </colgroup>
             <tbody>
-              <UnifiedHunkLines lines={diffLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
+              <UnifiedHunkLines lines={diffLines} highlights={highlights} newHighlights={newHighlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} checkAnnotations={checkAnnotations} onEditComment={onEditComment} onReply={onReply} onToggleResolved={onToggleResolved} onToggleReaction={onToggleReaction} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
             </tbody>
           </table>
         )}

@@ -759,14 +759,17 @@ body {
 /* Progressive disclosure: stats and note counts surface on hover/selection.
    Opacity (not display) so row layout never shifts. */
 .file-item .line-stats,
-.file-item .file-highlight-count {
+.file-item .file-highlight-count,
+.file-item .file-check-failure-count {
   opacity: 0;
   transition: opacity 0.12s;
 }
 .file-item:hover .line-stats,
 .file-item.selected .line-stats,
 .file-item:hover .file-highlight-count,
-.file-item.selected .file-highlight-count {
+.file-item.selected .file-highlight-count,
+.file-item:hover .file-check-failure-count,
+.file-item.selected .file-check-failure-count {
   opacity: 1;
 }
 
@@ -2035,6 +2038,90 @@ tr.cursor-selected td {
   flex: 1;
 }
 
+/* Inline CI failure annotations (issue #61) — same card treatment as an AI
+   note (.highlight-marker), red-accented, read-only besides expand/collapse. */
+.check-annotation-row td {
+  padding: 0;
+}
+
+.check-annotation {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 6px var(--space-4) 6px 56px;
+  padding: 8px var(--space-3);
+  font-size: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(182, 35, 36, 0.4);
+  border-left: 3px solid var(--sev-critical-fill);
+  background: var(--bg-secondary);
+}
+
+.check-annotation-icon {
+  flex-shrink: 0;
+  color: var(--risk-critical);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.check-annotation-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.check-annotation-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.check-annotation-name {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.check-annotation-sep {
+  color: var(--text-muted);
+}
+
+.check-annotation-title {
+  color: var(--text-secondary);
+}
+
+.check-annotation-message {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.check-annotation-message-collapsed {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.check-annotation-toggle {
+  margin-top: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.check-annotation-toggle:hover {
+  color: var(--text-primary);
+}
+
 .highlight-post-comment {
   margin-left: auto;
   flex-shrink: 0;
@@ -2253,6 +2340,23 @@ tr.cursor-selected td {
   border-radius: 8px;
   background: rgba(88, 166, 255, 0.2);
   color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* Sidebar CI failure annotation count badge — same shape as the AI-note
+   count, red instead of accent-blue. */
+.file-check-failure-count {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--risk-critical-bg);
+  color: var(--risk-critical);
   flex-shrink: 0;
 }
 
@@ -4940,6 +5044,59 @@ mark.search-highlight-current {
   border-radius: var(--radius-pill);
   padding: 1px 9px;
   white-space: nowrap;
+}
+
+/* "Failing checks" card rows — a close variant of .overview-risk-row (same
+   layout), with a critical-risk dot ahead of the check name. */
+.overview-check-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 10px 4px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--chip-border);
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview-check-row:first-of-type {
+  border-top: none;
+}
+
+.overview-check-row:hover .overview-check-row-title {
+  color: var(--accent);
+}
+
+.overview-check-row-main {
+  min-width: 0;
+}
+
+.overview-check-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.overview-check-row-detail {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-checks-truncated {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .overview-chip {

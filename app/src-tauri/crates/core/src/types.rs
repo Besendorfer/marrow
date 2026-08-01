@@ -409,6 +409,25 @@ pub struct PrChecksStatus {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CheckAnnotation {
+    pub path: String,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub annotation_level: String,
+    pub message: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub check_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CheckFailures {
+    pub head_sha: String,
+    pub annotations: Vec<CheckAnnotation>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewRequestItem {
     pub owner: String,
     pub repo: String,

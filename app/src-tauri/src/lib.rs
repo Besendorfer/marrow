@@ -241,6 +241,7 @@ pub fn run() {
             commands::toggle_thread_resolved,
             commands::get_my_review_state,
             commands::get_commit_diff,
+            commands::get_check_annotations,
             commands::submit_review,
             commands::generate_review_body,
             commands::update_review_comment,

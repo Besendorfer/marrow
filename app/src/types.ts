@@ -160,6 +160,12 @@ export type CommentThreadsState =
   | { status: "loaded"; threads: ReviewThread[] }
   | { status: "error"; message: string };
 
+export type CheckAnnotationsState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "loaded"; failures: CheckFailures }
+  | { status: "error"; message: string };
+
 /** One turn of the per-PR review chat. `filePath` records which file was in
  * focus when a user message was sent (for display); undefined for whole-PR scope. */
 export interface ChatMessage {
@@ -248,6 +254,9 @@ export interface Tab {
   /** Conversational diff Q&A state for this PR. */
   chat: ChatState;
   commentThreads: CommentThreadsState;
+  /** Inline CI failure annotations for this tab's PR, fetched on demand once
+   * a failing check run is observed (see the fetch effect in App.tsx). */
+  checkAnnotations: CheckAnnotationsState;
   /** Whether the right-dock comments panel is open (mutually exclusive with `chat.open`). */
   commentsOpen?: boolean;
   sidebarView: SidebarView;
@@ -336,6 +345,25 @@ export interface CheckRunInfo {
 export interface PrChecksStatus {
   overall_state: string;
   check_runs: CheckRunInfo[];
+}
+
+/** One inline annotation on a failing check run (a lint/test failure pinned
+ * to a file + line range on the head commit). */
+export interface CheckAnnotation {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: string;
+  message: string;
+  title: string | null;
+  check_name: string;
+}
+
+/** Annotations from a PR's failing checks, fetched on demand for the head SHA. */
+export interface CheckFailures {
+  head_sha: string;
+  annotations: CheckAnnotation[];
+  truncated: boolean;
 }
 
 export interface ViewedFileState {
