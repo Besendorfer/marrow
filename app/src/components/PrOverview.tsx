@@ -143,7 +143,9 @@ function splitByLastReview(
     idx >= 0
       ? commits.slice(idx + 1)
       : reviewState.last_reviewed_at
-        ? commits.filter((c) => c.committed_at > reviewState.last_reviewed_at!)
+        ? // A commit with no committer date can't be placed — surface it as new
+          // rather than silently burying it under "Earlier".
+          commits.filter((c) => !c.committed_at || c.committed_at > reviewState.last_reviewed_at!)
         : [];
   // All-new is still a split (header with an empty "Earlier"): after a full
   // history rewrite the "since your last review" signal matters most.

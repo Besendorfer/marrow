@@ -33,7 +33,9 @@ export function Avatar({ login, size = 30 }: { login: string; size?: 16 | 30 }) 
   const [failedLogin, setFailedLogin] = useState<string | null>(null);
   const failed = failedLogin === login;
   const sizeClass = size === 16 ? " queue-avatar--sm" : "";
-  if (failed || !login) {
+  // A login with a space can't be a real GitHub account — it's a raw commit
+  // author name (unlinked email) — so skip the doomed avatar request.
+  if (failed || !login || login.includes(" ")) {
     return (
       <span className={`queue-avatar${sizeClass}`} aria-hidden="true">
         {initials(login)}
