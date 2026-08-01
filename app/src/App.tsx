@@ -12,7 +12,7 @@ import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { PrOverview } from "./components/PrOverview";
-import { CommitPeek } from "./components/CommitPeek";
+import { CommitView } from "./components/CommitView";
 import { NextFileBar } from "./components/NextFileBar";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
@@ -72,10 +72,14 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  // Commit peek overlay (issue #147): the commit whose diff is showing, plus
-  // that fetch's loading/error state. A session-only cache (never invalidated
-  // — commit diffs are immutable) keyed by sha avoids refetching on reopen.
-  const [peekCommit, setPeekCommit] = useState<PrCommit | null>(null);
+  // Commit scope (issue #147): while set, CommitView replaces the sidebar +
+  // diff pane for the active tab with a single commit's file list + a
+  // read-only patch view. commitScopePath is the selected file within that
+  // commit; the diff fetch's loading/error state is tracked alongside it. A
+  // session-only cache (never invalidated — commit diffs are immutable)
+  // keyed by sha avoids refetching on reopen.
+  const [commitScope, setCommitScope] = useState<PrCommit | null>(null);
+  const [commitScopePath, setCommitScopePath] = useState<string | null>(null);
   const [commitDiffLoading, setCommitDiffLoading] = useState(false);
   const [commitDiffError, setCommitDiffError] = useState<string | null>(null);
   const [commitDiff, setCommitDiff] = useState<CommitDiff | null>(null);
@@ -203,6 +207,14 @@ function App() {
 
   const activeChecks = activeTab ? checksMap[activeTab.id] : undefined;
   const showChecksModal = !!activeTab && !!activeTab.manifest && !!activeChecks && activeChecks.overall_state !== "success" && !checksDismissed[activeTab.manifest.pr_url];
+
+  // Commit scope is layered per-tab state, not part of Tab itself — clear it
+  // on every active-tab change (click, keyboard cycle, new/opened PR, deep
+  // link) so a commit view from one tab never carries over onto another.
+  useEffect(() => {
+    setCommitScope(null);
+    setCommitScopePath(null);
+  }, [activeTabId]);
 
   const selectedFilePath = activeTab?.selectedFile?.path ?? null;
   const fileSearchMatches = useMemo(
@@ -352,7 +364,7 @@ function App() {
       onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
-      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); setPaletteOpen(false); },
+      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); setPaletteOpen(false); setCommitScope(null); },
       // Not during first-run setup — the palette would open invisibly under
       // the welcome card and pop up when setup closes.
       onTogglePalette: () => { if (!welcomeOpen) setPaletteOpen((v) => !v); },
@@ -384,7 +396,7 @@ function App() {
     },
     {
       enabled: !!activeTab?.manifest,
-      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen || !!peekCommit,
+      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen || !!commitScope,
     },
   );
 
@@ -1401,21 +1413,24 @@ function App() {
     }
   }
 
-  /** Commit row click in the Commits card — opens the read-only commit-diff
-   * overlay, serving from the session cache when this sha was already fetched. */
-  async function handlePeekCommit(commit: PrCommit) {
-    setPeekCommit(commit);
+  /** Commit row click in the Commits card (or a Newer/Older nav in CommitView)
+   * — enters/moves commit scope, serving from the session cache when this sha
+   * was already fetched. */
+  async function handleViewCommit(commit: PrCommit) {
+    setCommitScope(commit);
     const cached = commitDiffCacheRef.current.get(commit.sha);
     if (cached) {
       setCommitDiff(cached);
       setCommitDiffError(null);
       setCommitDiffLoading(false);
+      setCommitScopePath(cached.files[0]?.path ?? null);
       return;
     }
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return;
     setCommitDiff(null);
     setCommitDiffError(null);
+    setCommitScopePath(null);
     setCommitDiffLoading(true);
     try {
       const diff = await invoke<CommitDiff>("get_commit_diff", {
@@ -1423,17 +1438,18 @@ function App() {
         sha: commit.sha,
       });
       commitDiffCacheRef.current.set(commit.sha, diff);
-      // A late resolve after the user switched to another commit (or closed
-      // the peek) must not clobber whatever's now showing.
-      setPeekCommit((current) => {
+      // A late resolve after the user switched to another commit (or exited
+      // the scope) must not clobber whatever's now showing.
+      setCommitScope((current) => {
         if (current?.sha === commit.sha) {
           setCommitDiff(diff);
           setCommitDiffLoading(false);
+          setCommitScopePath(diff.files[0]?.path ?? null);
         }
         return current;
       });
     } catch (err) {
-      setPeekCommit((current) => {
+      setCommitScope((current) => {
         if (current?.sha === commit.sha) {
           setCommitDiffError(String(err));
           setCommitDiffLoading(false);
@@ -1441,6 +1457,18 @@ function App() {
         return current;
       });
     }
+  }
+
+  /** The commit adjacent to `commit` in `manifest.commits` (oldest-first) —
+   * "newer" walks toward the end of that array, "older" toward the start.
+   * The Commits card displays newest-first (reversed), so this is the
+   * inverse of index adjacency in the card's own render order. */
+  function commitNeighbor(commit: PrCommit, direction: "newer" | "older"): PrCommit | null {
+    const commits = activeTab?.manifest?.commits;
+    if (!commits) return null;
+    const idx = commits.findIndex((c) => c.sha === commit.sha);
+    if (idx === -1) return null;
+    return commits[direction === "newer" ? idx + 1 : idx - 1] ?? null;
   }
 
   /** File-group header click in the comments panel — jump to the file, no thread scroll. */
@@ -2162,16 +2190,6 @@ function App() {
         open={settingsOpen}
         onClose={handleSettingsClose}
       />
-      {peekCommit && activeTab?.manifest && (
-        <CommitPeek
-          commit={peekCommit}
-          diff={commitDiff}
-          loading={commitDiffLoading}
-          error={commitDiffError}
-          repoBaseUrl={repoBaseUrl(activeTab.manifest.pr_url)}
-          onClose={() => setPeekCommit(null)}
-        />
-      )}
       {!activeTab ? null : activeTab.manifest === null ? (
         <div
           className="opener-tab"
@@ -2267,7 +2285,22 @@ function App() {
           onOpenChange={setSearchOpen}
         />
         <div className="main-content">
-          {!activeTab.selectedFile ? (
+          {commitScope ? (
+            <CommitView
+              commit={commitScope}
+              diff={commitDiff}
+              loading={commitDiffLoading}
+              error={commitDiffError}
+              selectedPath={commitScopePath}
+              onSelectFile={setCommitScopePath}
+              repoBaseUrl={repoBaseUrl(activeTab.manifest.pr_url)}
+              onBack={() => setCommitScope(null)}
+              onNewer={() => { const n = commitNeighbor(commitScope, "newer"); if (n) handleViewCommit(n); }}
+              onOlder={() => { const n = commitNeighbor(commitScope, "older"); if (n) handleViewCommit(n); }}
+              hasNewer={commitNeighbor(commitScope, "newer") !== null}
+              hasOlder={commitNeighbor(commitScope, "older") !== null}
+            />
+          ) : !activeTab.selectedFile ? (
             <PrOverview
               manifest={activeTab.manifest}
               checksStatus={activeChecks ?? null}
@@ -2280,7 +2313,7 @@ function App() {
               onSelectFile={setSelectedFile}
               onOpenAt={handleChatOpenFile}
               onBriefMe={briefMe}
-              onPeekCommit={handlePeekCommit}
+              onViewCommit={handleViewCommit}
               newHighlightKeys={
                 // Dismissing a new note removes it from the chip immediately —
                 // a dead "1 new AI note" pointing at a hidden note is worse

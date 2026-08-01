@@ -22,8 +22,8 @@ interface PrOverviewProps {
   onOpenAt?: (path: string, line?: number) => void;
   /** Start a whole-PR chat walkthrough, most-important-first. */
   onBriefMe?: () => void;
-  /** Open the read-only commit-diff overlay for a row in the Commits card. */
-  onPeekCommit?: (commit: PrCommit) => void;
+  /** Enter commit scope for a row in the Commits card. */
+  onViewCommit?: (commit: PrCommit) => void;
 }
 
 /** First file (in manifest order) whose highlights include a new-note key. */
@@ -151,9 +151,9 @@ function splitByLastReview(
   return { newer, older };
 }
 
-function CommitRow({ commit, onPeekCommit }: { commit: PrCommit; onPeekCommit?: (commit: PrCommit) => void }) {
+function CommitRow({ commit, onViewCommit }: { commit: PrCommit; onViewCommit?: (commit: PrCommit) => void }) {
   return (
-    <button className="overview-commit-row" onClick={() => onPeekCommit?.(commit)}>
+    <button className="overview-commit-row" onClick={() => onViewCommit?.(commit)}>
       {commit.author_login && <Avatar login={commit.author_login} size={16} />}
       <span className="overview-commit-message">{commit.message_headline}</span>
       <span className="overview-commit-sha">{commit.sha.slice(0, 7)}</span>
@@ -167,11 +167,11 @@ const COMMITS_COLLAPSED_LIMIT = 8;
 function CommitsCard({
   commits,
   reviewState,
-  onPeekCommit,
+  onViewCommit,
 }: {
   commits: PrCommit[];
   reviewState: MyReviewState | null;
-  onPeekCommit?: (commit: PrCommit) => void;
+  onViewCommit?: (commit: PrCommit) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const split = splitByLastReview(commits, reviewState);
@@ -196,7 +196,7 @@ function CommitsCard({
             {split && item.group === "old" && prevGroup === "new" && (
               <div className="overview-commit-divider">Earlier</div>
             )}
-            <CommitRow commit={item.commit} onPeekCommit={onPeekCommit} />
+            <CommitRow commit={item.commit} onViewCommit={onViewCommit} />
           </Fragment>
         );
       })}
@@ -240,7 +240,7 @@ export function PrOverview({
   newHighlightKeys,
   onOpenAt,
   onBriefMe,
-  onPeekCommit,
+  onViewCommit,
 }: PrOverviewProps) {
   const newNoteCount = newHighlightKeys?.size ?? 0;
   const relevant = manifest.files.filter((f) => f.classification !== "NOT_RELEVANT");
@@ -334,7 +334,7 @@ export function PrOverview({
           </div>
         )}
         {manifest.commits.length > 0 && (
-          <CommitsCard commits={manifest.commits} reviewState={reviewState} onPeekCommit={onPeekCommit} />
+          <CommitsCard commits={manifest.commits} reviewState={reviewState} onViewCommit={onViewCommit} />
         )}
         {setAside > 0 && (
           <div className="overview-card overview-noise">

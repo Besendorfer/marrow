@@ -926,6 +926,13 @@ body {
   color: #d29922;
 }
 
+/* Renamed has no FileDiff.diff_type equivalent in the main sidebar — only
+   CommitView's per-file status chip (A/D/M/R) needs it. */
+.diff-type-renamed {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
 /* ─── Line Stats ───────────────────────────────────────────────────────── */
 .line-stats {
   display: flex;
@@ -1208,156 +1215,132 @@ tr.cursor-selected td {
   padding: 0;
 }
 
-/* ─── Commit Peek (read-only commit-diff overlay) ──────────────────────── */
-.commit-peek-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  overflow-y: auto;
-}
-
-.commit-peek-modal {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  width: 800px;
-  max-width: 90vw;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.commit-peek-header {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: 20px 24px;
+/* ─── Commit View (in-layout commit scope, replaces the file sidebar +
+   diff pane while a commit from the Commits card is open) ──────────────── */
+.commit-view-identity {
+  padding: var(--space-3) 16px;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
-.commit-peek-header-main {
+.commit-view-nav {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.commit-view-nav-btn {
   flex: 1;
-  min-width: 0;
-}
-
-.commit-peek-sha {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  padding: 4px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  margin-right: var(--space-2);
+  font-size: 11.5px;
+  font-family: var(--font-sans);
+  cursor: pointer;
 }
 
-.commit-peek-headline {
-  font-size: 15px;
-  font-weight: 600;
+.commit-view-nav-btn:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
-.commit-peek-meta {
+.commit-view-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.commit-view-sha {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.commit-view-headline {
+  margin-top: 4px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.commit-view-meta {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   margin-top: 6px;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-secondary);
 }
 
-.commit-peek-author {
+.commit-view-author {
   display: inline-flex;
   align-items: center;
   gap: 5px;
 }
 
-.commit-peek-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 16px 24px 24px;
-}
-
-.commit-peek-banner {
-  margin-bottom: 16px;
-  padding: 8px 12px;
+.commit-view-banner {
+  flex-shrink: 0;
+  margin: var(--space-2) 16px 0;
+  padding: 6px 10px;
   background: var(--diff-header-bg);
   border-radius: var(--radius-md);
   color: var(--text-secondary);
+  font-size: 11.5px;
+}
+
+.commit-view-file-list-state {
+  padding: 16px;
+  color: var(--text-muted);
   font-size: 12.5px;
 }
 
-.commit-peek-state {
+.commit-view-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-view-file-dir {
+  color: var(--text-muted);
+}
+
+.commit-view-github {
+  margin-left: auto;
+}
+
+.commit-view-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3) var(--space-4);
+}
+
+.commit-view-pane-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 48px 0;
+  height: 100%;
   color: var(--text-secondary);
   font-size: 13.5px;
 }
 
-.commit-peek-error {
+.commit-view-pane-error {
   color: var(--diff-remove-text);
 }
 
-.commit-peek-file {
-  margin-bottom: 20px;
-}
-
-.commit-peek-file:last-child {
-  margin-bottom: 0;
-}
-
-.commit-peek-file-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 6px 0;
-  border-bottom: 1px solid var(--chip-border);
-  margin-bottom: 6px;
-}
-
-.commit-peek-file-path {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
-}
-
-.commit-peek-file-stats {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-}
-
-.commit-peek-file-add {
-  color: var(--diff-add-text);
-}
-
-.commit-peek-file-del {
-  color: var(--diff-remove-text);
-}
-
-.commit-peek-file-status {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-}
-
-.commit-peek-file-nopatch {
+.commit-view-nopatch {
   font-size: 12.5px;
   color: var(--text-secondary);
   padding: 8px 0;
 }
 
-.commit-peek-patch {
+.commit-view-patch {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -1369,7 +1352,7 @@ tr.cursor-selected td {
   padding: 4px 0;
 }
 
-.commit-peek-patch > div {
+.commit-view-patch > div {
   padding: 0 12px;
 }
 
