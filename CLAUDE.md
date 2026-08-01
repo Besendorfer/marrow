@@ -41,6 +41,7 @@ Notes:
 ## Release process
 
 - **Desktop app**: push a `v*` tag → `.github/workflows/release.yml` builds on `macos-14` (aarch64 only), signs, notarizes, and creates a **draft** GitHub release with updater artifacts (`latest.json`). Publish the draft manually.
+- **ALWAYS write release notes before publishing** — the draft's body is empty (no `releaseBody` in the workflow). Write them from `git log <prev-tag>..<tag>` in the house style of past releases (one-line tagline, then `##` sections with bold-led bullets, user-facing language). Applies to `cli-v*` releases too.
 - **Versions in-repo are stale on purpose**: CI stamps the version from the tag into `package.json`/`tauri.conf.json` via `sed`. Repo says `0.3.1`; latest real release is the highest `v*` tag (`git tag --sort=-creatordate`). Do NOT hand-bump these files for an app release.
 - **CLI**: separate `cli-v*` tags → `cli-release.yml` (macOS/Linux/Windows binaries + Homebrew formula → `besendorfer/tap`). crates.io publish is manual, always `marrow-core` before `marrow-cli` — see `PUBLISHING.md`. CLI version is `[workspace.package]` in `app/src-tauri/Cargo.toml`.
 - Auto-updates require `TAURI_SIGNING_PRIVATE_KEY` secrets in CI; the matching pubkey is in `tauri.conf.json`. Never rebuild/replace release assets after a run (hashes in `latest.json`/`marrow.rb` won't match).
