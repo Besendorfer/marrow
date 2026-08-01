@@ -6465,3 +6465,11 @@ mark.search-highlight-current {
 .overview-check-row--nodiff:hover .overview-check-row-title {
   color: inherit;
 }
+
+.check-annotation-range {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-left: auto;
+  white-space: nowrap;
+}

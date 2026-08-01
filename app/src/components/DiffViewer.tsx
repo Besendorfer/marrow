@@ -990,6 +990,13 @@ function CheckAnnotationMarker({ annotation }: { annotation: CheckAnnotation }) 
           <span className="check-annotation-name">{annotation.check_name}</span>
           <span className="check-annotation-sep">&mdash;</span>
           <span className="check-annotation-title">{subtitle}</span>
+          {annotation.end_line > annotation.start_line && (
+            // Multi-line annotations anchor once, above their last line — say
+            // which lines they actually span.
+            <span className="check-annotation-range">
+              L{annotation.start_line}&ndash;{annotation.end_line}
+            </span>
+          )}
         </div>
         <pre className={`check-annotation-message${!expanded && isLong ? " check-annotation-message-collapsed" : ""}`}>
           {annotation.message}
