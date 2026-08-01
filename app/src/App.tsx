@@ -1068,11 +1068,15 @@ function App() {
     if (!target) return;
     if (line != null && target.path === tab.selectedFile?.path) {
       // Already viewing the file — the mounted DiffViewer can jump directly.
-      diffViewerRef.current?.revealLine(line);
+      if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
       return;
     }
     pendingRevealLineRef.current = line ?? null;
     setSelectedFile(target);
+  }
+
+  function notifyLineOutsideDiff(line: number) {
+    addToast("info", `Line ${line} isn't part of this PR's changes — the annotation targets unchanged code.`);
   }
 
   /** Line to reveal once the DiffViewer for a newly-selected file mounts —
@@ -1083,7 +1087,9 @@ function App() {
     if (line == null) return;
     pendingRevealLineRef.current = null;
     // Next frame, so the fresh DiffViewer instance has attached its ref.
-    requestAnimationFrame(() => diffViewerRef.current?.revealLine(line));
+    requestAnimationFrame(() => {
+      if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
+    });
   }, [selectedFilePath]);
 
   // Set by briefMe below; consumed once the chat-open/whole-PR state it just

@@ -232,12 +232,24 @@ function groupAnnotationsByPath(annotations: CheckAnnotation[]): CheckAnnotation
   return order.flatMap((p) => byPath.get(p)!);
 }
 
-function CheckFailureRow({ annotation, onOpenAt }: { annotation: CheckAnnotation; onOpenAt?: (path: string, line?: number) => void }) {
+function CheckFailureRow({
+  annotation,
+  inDiff,
+  onOpenAt,
+}: {
+  annotation: CheckAnnotation;
+  /** Whether the annotation's path is a file in this PR's diff — CI often
+   * anchors run-level failures to paths like `.github` that aren't. */
+  inDiff: boolean;
+  onOpenAt?: (path: string, line?: number) => void;
+}) {
   const subtitle = annotation.title ?? annotation.message.split("\n")[0];
   return (
     <button
-      className="overview-check-row"
-      onClick={() => onOpenAt?.(annotation.path, annotation.start_line)}
+      className={`overview-check-row${inDiff ? "" : " overview-check-row--nodiff"}`}
+      disabled={!inDiff}
+      title={inDiff ? undefined : "Not a file in this PR's diff — see the check's log on GitHub"}
+      onClick={() => inDiff && onOpenAt?.(annotation.path, annotation.start_line)}
     >
       <div className="overview-check-row-main">
         <div className="overview-check-row-title">
@@ -393,7 +405,7 @@ export function PrOverview({
           <div className="overview-card overview-checks">
             <h4>Failing checks ({checkFailures.annotations.length})</h4>
             {groupAnnotationsByPath(checkFailures.annotations).map((a, i) => (
-              <CheckFailureRow key={i} annotation={a} onOpenAt={onOpenAt} />
+              <CheckFailureRow key={i} annotation={a} inDiff={byPath.has(a.path)} onOpenAt={onOpenAt} />
             ))}
             {checkFailures.truncated && (
               <div className="overview-checks-truncated">Showing the first 200 annotations</div>

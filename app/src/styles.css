@@ -6455,3 +6455,13 @@ mark.search-highlight-current {
   .activity-widget--dock,
   .activity-widget--pill { transition: none; }
 }
+
+/* Failing-check rows whose path isn't in the diff (run-level anchors like
+   `.github`) — visible for completeness but not clickable. */
+.overview-check-row--nodiff {
+  opacity: 0.55;
+  cursor: default;
+}
+.overview-check-row--nodiff:hover .overview-check-row-title {
+  color: inherit;
+}

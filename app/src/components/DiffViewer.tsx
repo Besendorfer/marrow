@@ -159,8 +159,9 @@ export interface DiffViewerHandle {
    * when the thread isn't rendered in this file (e.g. the diff hasn't
    * mounted it yet) so the caller can retry. */
   scrollToThread: (threadId: string, expandIfHidden?: boolean) => boolean;
-  /** Expand the hunk containing a head line (if collapsed) and scroll to it. */
-  revealLine: (line: number) => void;
+  /** Expand the hunk containing a head line (if collapsed) and scroll to it.
+   * Returns false when the line isn't part of the diff (unchanged code). */
+  revealLine: (line: number) => boolean;
 }
 
 /** Small keyboard-driven reply box, shown when `r` is pressed on a thread line. */
@@ -1714,8 +1715,10 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   }
 
   // Un-collapse the hunk containing `line` so it renders, then queue a scroll to
-  // it. Shared by the AI-note composer and finding navigation.
-  function revealLine(line: number) {
+  // it. Shared by the AI-note composer and finding navigation. Returns whether
+  // the line is part of the rendered diff at all — a jump target from an
+  // external source (CI annotation, chat citation) may point at unchanged code.
+  function revealLine(line: number): boolean {
     const hunk = hunks.find((h) =>
       h.lines.some((l) => l.newLineNum === line || l.oldLineNum === line),
     );
@@ -1727,6 +1730,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       });
     }
     setPendingScroll(`diff-line-${line}`);
+    return hunk != null;
   }
 
   function handlePostHighlightAsComment(h: Highlight) {
