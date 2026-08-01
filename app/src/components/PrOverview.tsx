@@ -253,7 +253,9 @@ function CheckFailureRow({
     >
       <div className="overview-check-row-main">
         <div className="overview-check-row-title">
-          <span className="risk-dot risk-dot--critical" /> {annotation.check_name}
+          {/* Warnings get the amber dot — a red one would present them as failures. */}
+          <span className={`risk-dot ${annotation.annotation_level === "warning" ? "risk-dot--medium" : "risk-dot--critical"}`} />{" "}
+          {annotation.check_name}
         </div>
         <div className="overview-check-row-detail">{subtitle}</div>
       </div>
