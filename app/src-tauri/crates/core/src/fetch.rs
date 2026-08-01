@@ -90,15 +90,19 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         }
     }
 
-    // Step 2: Fetch PR file list and diff in parallel
+    // Step 2: Fetch PR file list, diff, and commits in parallel. Commits are
+    // best-effort — a failure here must not fail the whole review fetch, so
+    // its result is defaulted to empty rather than propagated with `?`.
     emit_progress(app, 2, "Fetching files and diff", FetchStatus::Running, None, None);
-    let (files_result, diff_result) = tokio::join!(
+    let (files_result, diff_result, commits_result) = tokio::join!(
         github.get_pr_files(&parsed.owner, &parsed.repo, parsed.number),
         github.get_pr_diff(&parsed.owner, &parsed.repo, parsed.number),
+        github.get_pr_commits(&parsed.owner, &parsed.repo, parsed.number),
     );
 
     let pr_files = files_result?;
     let full_diff = diff_result?;
+    let commits = commits_result.unwrap_or_default();
     emit_progress(app, 2, "Fetching files and diff", FetchStatus::Done, None, None);
 
     if pr_files.is_empty() {
@@ -377,6 +381,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         change_groups,
         triage,
         body: truncate_chars(&pr_body, 10000),
+        commits,
         files: file_diffs,
     };
 

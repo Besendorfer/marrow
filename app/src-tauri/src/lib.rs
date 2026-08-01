@@ -240,6 +240,7 @@ pub fn run() {
             commands::reply_to_thread,
             commands::toggle_thread_resolved,
             commands::get_my_review_state,
+            commands::get_commit_diff,
             commands::submit_review,
             commands::generate_review_body,
             commands::update_review_comment,
