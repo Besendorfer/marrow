@@ -3,7 +3,7 @@ import { SummaryParagraphs } from "./SummaryParagraphs";
 import { Avatar } from "./ReviewRequestList";
 import { RichText } from "./RichText";
 import { highlightKey } from "../utils";
-import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState } from "../types";
+import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, TopRisk } from "../types";
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
@@ -18,6 +18,10 @@ interface PrOverviewProps {
   /** Keys (see highlightKey) of AI highlights introduced by the most recent
    * refresh's re-analysis — surfaced as a "new AI notes" chip when non-empty. */
   newHighlightKeys?: Set<string>;
+  /** Jump to a file, optionally scrolling to a specific line (head version). */
+  onOpenAt?: (path: string, line?: number) => void;
+  /** Start a whole-PR chat walkthrough, most-important-first. */
+  onBriefMe?: () => void;
 }
 
 /** First file (in manifest order) whose highlights include a new-note key. */
@@ -122,6 +126,24 @@ function GroupRow({
   );
 }
 
+function TopRiskRow({ risk, onOpenAt }: { risk: TopRisk; onOpenAt?: (path: string, line?: number) => void }) {
+  return (
+    <button
+      className="overview-risk-row"
+      onClick={() => onOpenAt?.(risk.path, risk.start_line ?? undefined)}
+    >
+      <div className="overview-risk-row-main">
+        <div className="overview-risk-row-title">{risk.title}</div>
+        <div className="overview-risk-row-detail">{risk.detail}</div>
+      </div>
+      <span className="overview-risk-file">
+        {fileName(risk.path)}
+        {risk.start_line ? `:${risk.start_line}` : ""}
+      </span>
+    </button>
+  );
+}
+
 export function PrOverview({
   manifest,
   checksStatus,
@@ -133,6 +155,8 @@ export function PrOverview({
   onStartReview,
   onSelectFile,
   newHighlightKeys,
+  onOpenAt,
+  onBriefMe,
 }: PrOverviewProps) {
   const newNoteCount = newHighlightKeys?.size ?? 0;
   const relevant = manifest.files.filter((f) => f.classification !== "NOT_RELEVANT");
@@ -154,6 +178,7 @@ export function PrOverview({
   const highRisk = relevant.filter(
     (f) => f.risk_level === "critical" || f.risk_level === "high"
   ).length;
+  const topRisks = manifest.triage?.top_risks ?? [];
 
   return (
     <div className="pr-overview">
@@ -233,6 +258,14 @@ export function PrOverview({
         )}
       </div>
       <div className="overview-rail">
+        {topRisks.length > 0 && (
+          <div className="overview-card overview-risks">
+            <h4>What to review first</h4>
+            {topRisks.map((risk, i) => (
+              <TopRiskRow key={i} risk={risk} onOpenAt={onOpenAt} />
+            ))}
+          </div>
+        )}
         <div className="overview-card">
           <h4>Start reviewing</h4>
           <div className="overview-risk-strip">
@@ -252,13 +285,20 @@ export function PrOverview({
               <span>No high-risk changes flagged</span>
             )}
           </div>
-          {startTarget ? (
-            <button className="overview-start" onClick={onStartReview}>
-              Start review → {fileName(startTarget.path)}
-            </button>
-          ) : (
-            <div className="overview-state-line">All files reviewed</div>
-          )}
+          <div className="overview-start-row">
+            {startTarget ? (
+              <button className="overview-start" onClick={onStartReview}>
+                Start review → {fileName(startTarget.path)}
+              </button>
+            ) : (
+              <div className="overview-state-line">All files reviewed</div>
+            )}
+            {onBriefMe && (
+              <button className="overview-start-secondary" onClick={onBriefMe}>
+                Brief me
+              </button>
+            )}
+          </div>
           <div className="overview-start-sub">
             {relevant.length} relevant {relevant.length === 1 ? "file" : "files"},
             in review order

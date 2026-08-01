@@ -29,6 +29,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [watches, setWatches] = useState<Watch[]>([]);
   const [perWatchCap, setPerWatchCap] = useState(50);
   const [showApprovedPrs, setShowApprovedPrs] = useState(false);
+  const [expandAllHunks, setExpandAllHunks] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -50,6 +51,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setOpenaiBaseUrl(s.openai_base_url || "");
         setPerWatchCap(s.activity_per_watch_cap || 50);
         setShowApprovedPrs(s.show_approved_prs ?? false);
+        setExpandAllHunks(s.expand_all_hunks ?? false);
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
       setSaved(false);
@@ -90,6 +92,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           openai_base_url: openaiBaseUrl.trim(),
           activity_per_watch_cap: perWatchCap,
           show_approved_prs: showApprovedPrs,
+          expand_all_hunks: expandAllHunks,
         },
       });
       // Persist watches alongside settings, dropping blank rows.
@@ -373,6 +376,22 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           <p className="settings-hint">
             By default, approving a PR removes it from the mini-player feed.
             Enable this to keep approved PRs in the list.
+          </p>
+
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={expandAllHunks}
+              onChange={(e) => {
+                setExpandAllHunks(e.target.checked);
+                setSaved(false);
+              }}
+            />
+            Open files with all hunks expanded
+          </label>
+          <p className="settings-hint">
+            By default, low-significance hunks start collapsed. Enable this to
+            open every file with all hunks expanded.
           </p>
 
           <div className="settings-divider" />

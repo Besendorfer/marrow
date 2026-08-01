@@ -122,6 +122,71 @@ Respond with ONLY a valid JSON array. Each element must be an object with:
 
 Do NOT include any text before or after the JSON array. Just the JSON."#;
 
+pub const TRIAGE_PROMPT: &str = r#"You are a code review assistant helping a reviewer triage a large pull request so they can review the risky parts first, in the order that's easiest to understand.
+
+Produce two things:
+
+1. "top_risks": the 2-3 changes in this PR that carry the most real risk — security/auth changes, removed safety checks, data/permission changes, breaking API/contract changes, concurrency. NOT style, renames, or routine additions. For each: a short "title", a one-sentence "detail" on why it matters, the "path" it lives in, and "start_line" (the line in the NEW version where it starts) when you can tell from the diff. If nothing carries real risk, return an empty array.
+
+2. "review_order": ALL of the relevant files, ordered "contract-first" so the reviewer builds understanding with the fewest jumps back: first the files that DEFINE things (types, schemas, interfaces, API contracts), then the PRODUCERS that implement them, then the CONSUMERS that use them, then tests/config last. Each entry has the "path" and a "rationale" of at most ~12 words explaining why it's here in the order (e.g. "defines the ReviewMode shape the rest consumes"). Every relevant file must appear exactly once.
+
+Respond with ONLY a valid JSON object of this exact shape:
+{
+  "top_risks": [{"title": "...", "detail": "...", "path": "...", "start_line": 123}],
+  "review_order": [{"path": "...", "rationale": "..."}]
+}
+Do NOT include any text before or after the JSON object. Just the JSON."#;
+
+/// Build the triage prompt: structured per-file info (path, category, risk,
+/// reason) plus compact diff snippets so the model can reason about contracts and
+/// dependencies for ordering. Diffs are budgeted tighter than the highlight pass
+/// since ordering needs signatures/imports, not full bodies.
+pub fn build_triage_prompt(
+    pr_title: &str,
+    relevant_files: &[&FileClassification],
+    per_file_diffs: &[(String, String)],
+) -> String {
+    const PER_FILE_BUDGET: usize = 1500;
+    const TOTAL_BUDGET: usize = 20000;
+
+    let mut file_info = String::new();
+    for f in relevant_files {
+        file_info.push_str(&format!(
+            "- {} [{}] [{}] — {}\n",
+            f.path, f.category, f.risk_level, f.reason
+        ));
+    }
+
+    let mut diffs = String::new();
+    let mut remaining = TOTAL_BUDGET;
+    for (path, diff) in per_file_diffs {
+        if remaining == 0 {
+            break;
+        }
+        diffs.push_str(&format!("=== FILE: {} ===\n", path));
+        let cap = PER_FILE_BUDGET.min(remaining);
+        if diff.chars().count() > cap {
+            let snippet: String = diff.chars().take(cap).collect();
+            diffs.push_str(&snippet);
+            diffs.push_str("\n... (truncated)\n");
+            remaining = remaining.saturating_sub(cap);
+        } else {
+            diffs.push_str(diff);
+            remaining = remaining.saturating_sub(diff.chars().count());
+        }
+        diffs.push_str("\n\n");
+    }
+
+    format!(
+        "{}\n\n---\n\nPR Title: {}\n\nRelevant files ({} total):\n\n{}\n\n=== DIFFS ===\n\n{}",
+        TRIAGE_PROMPT,
+        pr_title,
+        relevant_files.len(),
+        file_info,
+        diffs
+    )
+}
+
 pub fn build_summary_prompt(
     pr_title: &str,
     relevant_files: &[&FileClassification],

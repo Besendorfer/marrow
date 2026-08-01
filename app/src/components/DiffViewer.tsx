@@ -102,6 +102,9 @@ interface DiffViewerProps {
   onViewModeChange?: (mode: DiffViewMode) => void;
   showHunkSignificance: boolean;
   showAiNotes: boolean;
+  /** When true, every hunk starts expanded instead of auto-collapsing
+   * low-significance ones (issue #55). */
+  expandAllHunks?: boolean;
   /** Keys (highlightKey) of AI highlights dismissed for this PR — hidden from the diff. */
   dismissedHighlights?: Set<string>;
   /** Resolution metadata (state + reason) for dismissed highlights, keyed by highlightKey. */
@@ -1581,7 +1584,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, dismissedHighlights, noteResolutions, newHighlightKeys, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, expandAllHunks, dismissedHighlights, noteResolutions, newHighlightKeys, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1732,7 +1735,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   // Low hunks start collapsed when significance is shown; state resets on file change
   // via the key prop on DiffViewer (see App.tsx)
   const [collapsedHunks, setCollapsedHunks] = useState<Set<number>>(() => {
-    if (!showHunkSignificance || hunks.length <= 1) return new Set<number>();
+    if (expandAllHunks || !showHunkSignificance || hunks.length <= 1) return new Set<number>();
     return new Set(
       hunks.filter((h) => h.significance === "low").map((h) => h.index)
     );

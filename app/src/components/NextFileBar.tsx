@@ -3,6 +3,7 @@ interface NextFileBarProps {
   total: number;
   isViewed: boolean;
   nextName: string | null;
+  nextRationale?: string | null;
   allReviewed: boolean;
   onMarkReviewed: () => void;
   onNext: () => void;
@@ -15,6 +16,7 @@ export function NextFileBar({
   total,
   isViewed,
   nextName,
+  nextRationale,
   allReviewed,
   onMarkReviewed,
   onNext,
@@ -46,6 +48,11 @@ export function NextFileBar({
                 Next: <span className="next-bar-file">{nextName}</span>
                 <kbd className="next-bar-key">]</kbd>
               </button>
+            )}
+            {nextName && nextRationale && (
+              <span className="next-bar-rationale" title={nextRationale}>
+                {nextRationale}
+              </span>
             )}
           </>
         )}

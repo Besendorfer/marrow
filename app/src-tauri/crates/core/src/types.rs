@@ -64,6 +64,39 @@ pub struct ChangeGroup {
     pub file_paths: Vec<String>,
 }
 
+/// One of the 2-3 highest-risk changes, surfaced in the top-of-review triage card.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TopRisk {
+    /// Short headline (e.g. "Admin-only check removed on /users").
+    pub title: String,
+    /// One sentence on why it carries risk.
+    pub detail: String,
+    /// File the reviewer should jump to.
+    pub path: String,
+    /// Line (in the head version) to scroll to, when known.
+    #[serde(default)]
+    pub start_line: Option<u64>,
+}
+
+/// One file in the contract-first "fastest path" ordering, with a one-line
+/// rationale ("defines the shape the rest consumes").
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReviewOrderItem {
+    pub path: String,
+    #[serde(default)]
+    pub rationale: String,
+}
+
+/// Triage guidance for large PRs: what to review first and in what order.
+/// Absent for small PRs (see the gate in `fetch`).
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct TriageReport {
+    #[serde(default)]
+    pub top_risks: Vec<TopRisk>,
+    #[serde(default)]
+    pub review_order: Vec<ReviewOrderItem>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewManifest {
     pub pr_title: String,
@@ -81,6 +114,10 @@ pub struct ReviewManifest {
     pub summary: String,
     #[serde(default)]
     pub change_groups: Vec<ChangeGroup>,
+    /// Triage-first guidance (top risks + contract-first order). `None` for small
+    /// PRs or when the triage AI pass fails without a usable fallback.
+    #[serde(default)]
+    pub triage: Option<TriageReport>,
     /// The PR description, truncated char-safely to bound cache size. Empty
     /// when the PR has no body or on manifests fetched before this field existed.
     #[serde(default)]
@@ -146,6 +183,11 @@ pub struct Settings {
     /// never auto-shows again (config via env vars alone also suppresses it).
     #[serde(default)]
     pub setup_done: bool,
+    /// When true, files open with every hunk expanded instead of auto-collapsing
+    /// low-significance hunks (issue #55). Off by default to keep the
+    /// collapsed-by-default behavior.
+    #[serde(default)]
+    pub expand_all_hunks: bool,
 }
 
 fn default_true() -> bool {

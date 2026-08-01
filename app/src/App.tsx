@@ -35,6 +35,10 @@ function isOpenerTab(tab: Tab): boolean {
   return !tab.manifest && !tab.loading && !tab.error;
 }
 
+/** Prompt sent by the "Brief me" command — a whole-PR guided walkthrough. */
+const BRIEF_ME_PROMPT =
+  "Walk me through this PR change by change, most important first. For each change: what it does, why it matters, and any risks you see. Cite file:line locations (in backticks) so I can jump to each one.";
+
 /** A fresh, closed chat panel for a new tab. */
 function emptyChatState(): ChatState {
   return { messages: [], status: "idle", streamingText: "", streamingStatus: null, includeWholePr: false, open: false };
@@ -57,6 +61,7 @@ function App() {
   const [showHunkSignificance, setShowHunkSignificance] = useState(true);
   const [showAiNotes, setShowAiNotes] = useState(true);
   const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
+  const [expandAllHunks, setExpandAllHunks] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -100,7 +105,10 @@ function App() {
 
   const handleSettingsClose = useCallback(() => {
     setSettingsOpen(false);
-    invoke<Settings>("get_settings").then((s) => { settingsRef.current = s; }).catch(() => {});
+    invoke<Settings>("get_settings").then((s) => {
+      settingsRef.current = s;
+      setExpandAllHunks(s.expand_all_hunks ?? false);
+    }).catch(() => {});
   }, []);
 
   const addToast = useCallback((type: ToastData["type"], message: string) => {
@@ -222,11 +230,28 @@ function App() {
     if (!activeTab?.manifest) return [];
     const inManifest = new Set(activeTab.manifest.files.map((f) => f.path));
     const visible = visibleOrderRef.current.filter((p) => inManifest.has(p));
-    return visible.length
+    const candidates = visible.length
       ? visible
       : activeTab.manifest.files
           .filter((f) => f.classification !== "NOT_RELEVANT")
           .map((f) => f.path);
+
+    const reviewOrder = activeTab.manifest.triage?.review_order;
+    if (!reviewOrder?.length) return candidates;
+
+    const candidateSet = new Set(candidates);
+    const triaged = reviewOrder.map((item) => item.path).filter((p) => candidateSet.has(p));
+    const triagedSet = new Set(triaged);
+    const remaining = candidates.filter((p) => !triagedSet.has(p));
+    return [...triaged, ...remaining];
+  }
+
+  // Rationale for a path from the triage review order, if any (null when
+  // triage is absent or the path isn't in it).
+  function triageRationale(path: string): string | null {
+    const reviewOrder = activeTab?.manifest?.triage?.review_order;
+    if (!reviewOrder?.length) return null;
+    return reviewOrder.find((item) => item.path === path)?.rationale ?? null;
   }
 
   // First unviewed file after `fromIdx` in review order (wrapping), treating
@@ -418,6 +443,7 @@ function App() {
         setShowHunkSignificance(settings.show_hunk_significance ?? true);
         setShowAiNotes(settings.show_ai_notes ?? true);
         setHunkFilter(settings.hunk_filter || "all");
+        setExpandAllHunks(settings.expand_all_hunks ?? false);
       } catch {
         // Use defaults on failure
       }
@@ -952,11 +978,12 @@ function App() {
   }
 
   // Chat and Comments are mutually exclusive right-dock panels — opening chat closes comments.
+  function withChatOpen(t: Tab, open: boolean): Tab {
+    return { ...t, chat: { ...t.chat, open }, commentsOpen: open ? false : t.commentsOpen };
+  }
+
   function toggleChatOpen() {
-    updateTab(activeTabId, (t) => {
-      const opening = !t.chat.open;
-      return { ...t, chat: { ...t.chat, open: opening }, commentsOpen: opening ? false : t.commentsOpen };
-    });
+    updateTab(activeTabId, (t) => withChatOpen(t, !t.chat.open));
   }
 
   function setCommentsOpen(open: boolean) {
@@ -980,6 +1007,32 @@ function App() {
     const suffixMatches = files.filter((f) => f.path.endsWith("/" + path));
     if (suffixMatches.length === 1) setSelectedFile(suffixMatches[0]);
   }
+
+  // Set by briefMe below; consumed once the chat-open/whole-PR state it just
+  // requested has actually committed (handleChatSend reads tabsRef, which
+  // only reflects this render's tabs after that commit — see the effect).
+  const briefMePendingRef = useRef(false);
+  /** Bumped on every briefMe() call so the send effect runs even when chat was
+   * already open in whole-PR scope (no dependency would otherwise change). */
+  const [briefMePing, setBriefMePing] = useState(0);
+
+  /** AI walkthrough of the whole PR, most-important-first — opens/expands
+   * chat to whole-PR scope and asks it to narrate the changes. */
+  function briefMe() {
+    if (!activeTab?.manifest) return;
+    updateTab(activeTabId, (t) => withChatOpen(t, true));
+    handleChatToggleWholePr(true);
+    if (activeTab.chat.status === "streaming") return;
+    briefMePendingRef.current = true;
+    setBriefMePing((p) => p + 1);
+  }
+
+  useEffect(() => {
+    if (!briefMePendingRef.current) return;
+    if (!activeTab?.manifest) return;
+    briefMePendingRef.current = false;
+    handleChatSend(BRIEF_ME_PROMPT);
+  }, [briefMePing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -1943,6 +1996,7 @@ function App() {
       { id: "refresh", section: "Review", title: "Refresh PR", keys: "⌃R", run: handleRefreshPr },
       { id: "github", section: "Review", title: "Open PR on GitHub", run: () => { openUrl(m.pr_url); } },
       { id: "ask-ai", section: "Review", title: "Ask AI about this change", keys: "⌘J", run: toggleChatOpen },
+      { id: "brief-me", section: "Review", title: "Brief me — AI walkthrough of this PR", run: briefMe },
       { id: "view-split", section: "View", title: "Split diff view", run: () => setViewMode("split") },
       { id: "view-unified", section: "View", title: "Unified diff view", run: () => setViewMode("unified") },
       { id: "toggle-sig", section: "View", title: showHunkSignificance ? "Hide hunk significance" : "Show hunk significance", run: () => setShowHunkSignificance((v) => !v) },
@@ -2153,6 +2207,8 @@ function App() {
               startTarget={nextUnviewed(guidedOrder(), -1)}
               onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
               onSelectFile={setSelectedFile}
+              onOpenAt={handleChatOpenFile}
+              onBriefMe={briefMe}
               newHighlightKeys={
                 // Dismissing a new note removes it from the chip immediately —
                 // a dead "1 new AI note" pointing at a hidden note is worse
@@ -2193,12 +2249,13 @@ function App() {
                 const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
                 return (
                   <>
-                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} newHighlightKeys={activeTab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} newHighlightKeys={activeTab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
                     <NextFileBar
                       index={idx >= 0 ? idx : 0}
                       total={order.length}
                       isViewed={activeTab.viewedFiles.has(activeTab.selectedFile.path)}
                       nextName={next ? next.path.split("/").pop() ?? next.path : null}
+                      nextRationale={next ? triageRationale(next.path) : null}
                       allReviewed={allReviewed}
                       onMarkReviewed={markReviewedAndAdvance}
                       onNext={() => { if (next) setSelectedFile(next); }}
