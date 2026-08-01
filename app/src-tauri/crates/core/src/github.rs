@@ -684,8 +684,9 @@ impl GithubClient {
         })
     }
 
-    /// Inline annotations from the head commit's failed check runs. Only
-    /// runs with `conclusion == "failure"` and at least one reported
+    /// Inline annotations from the head commit's failed check runs. Runs with
+    /// an attention conclusion (see `failing_conclusion`: failure, timed_out,
+    /// action_required) and at least one reported
     /// annotation are fetched. Each qualifying run's annotations are capped
     /// at 50 (one page); total accumulation is capped at 200, with
     /// `truncated` set when that cap is hit or a qualifying run couldn't be

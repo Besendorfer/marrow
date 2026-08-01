@@ -405,7 +405,18 @@ export function PrOverview({
       <div className="overview-rail">
         {checkFailures && checkFailures.annotations.length > 0 && (
           <div className="overview-card overview-checks">
-            <h4>Failing checks ({checkFailures.annotations.length})</h4>
+            {(() => {
+              // Warnings ride along in the card but shouldn't inflate the
+              // failure count in its title.
+              const failures = checkFailures.annotations.filter((a) => a.annotation_level !== "warning").length;
+              const warnings = checkFailures.annotations.length - failures;
+              return (
+                <h4>
+                  Failing checks ({failures})
+                  {warnings > 0 && <span className="overview-checks-warnings"> + {warnings} warning{warnings === 1 ? "" : "s"}</span>}
+                </h4>
+              );
+            })()}
             {groupAnnotationsByPath(checkFailures.annotations).map((a, i) => (
               <CheckFailureRow key={i} annotation={a} inDiff={byPath.has(a.path)} onOpenAt={onOpenAt} />
             ))}

@@ -6473,3 +6473,8 @@ mark.search-highlight-current {
   margin-left: auto;
   white-space: nowrap;
 }
+
+.overview-checks-warnings {
+  color: var(--text-tertiary);
+  font-weight: normal;
+}
