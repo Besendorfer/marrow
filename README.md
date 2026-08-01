@@ -35,6 +35,10 @@ Or browse [all releases](https://github.com/Besendorfer/marrow/releases).
 
 Marrow also ships as a terminal app -- the same fetch/classify/review workflow in an interactive TUI, built on the same core (no webview). It installs a command named **`marrow`**.
 
+<p align="center">
+  <img src="assets/tui.png" alt="The marrow TUI reviewing a PR: change groups and files in the left sidebar, a syntax-colored diff on the right, keybindings along the bottom" width="850" />
+</p>
+
 ```bash
 # Homebrew (macOS / Linux):
 brew tap besendorfer/tap
@@ -72,6 +76,10 @@ marrow review <pr> # fetch + classify, then open the TUI
 - **Guided first run** -- a two-step welcome validates your GitHub token and AI provider before you ever see an empty screen.
 
 ### Stay on top of PR activity
+
+<p align="center">
+  <img src="assets/mini-player.png" alt="The floating Marrow Activity mini-player listing your PRs with unseen-activity indicators (two PRs blurred)" width="480" />
+</p>
 
 - **Activity mini-player** -- a compact, always-current view of new comments, status changes, new commits, and review requests across the PRs you care about. It runs as an in-app dock *and* an optional floating, always-on-top window that appears when you switch away from Marrow and tucks itself away when you return (resizable; remembers its size and position).
 - **Watches** -- follow any org or repo via saved GitHub searches, including PRs that don't request you as a reviewer. A configurable per-watch cap keeps busy queries tidy, with search + source filtering to narrow the feed.
