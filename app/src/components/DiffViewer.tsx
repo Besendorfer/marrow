@@ -159,8 +159,9 @@ export interface DiffViewerHandle {
    * when the thread isn't rendered in this file (e.g. the diff hasn't
    * mounted it yet) so the caller can retry. */
   scrollToThread: (threadId: string, expandIfHidden?: boolean) => boolean;
-  /** Expand the hunk containing a head line (if collapsed) and scroll to it.
-   * Returns false when the line isn't part of the diff (unchanged code). */
+  /** Reveal a head line: expand its hunk, or switch to the whole-file view when
+   * the line is unchanged code. Returns false when it can't be shown at all
+   * (no head content, or the line is beyond the file's current end). */
   revealLine: (line: number) => boolean;
 }
 
@@ -1715,22 +1716,32 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   }
 
   // Un-collapse the hunk containing `line` so it renders, then queue a scroll to
-  // it. Shared by the AI-note composer and finding navigation. Returns whether
-  // the line is part of the rendered diff at all — a jump target from an
-  // external source (CI annotation, chat citation) may point at unchanged code.
+  // it. Shared by the AI-note composer and finding navigation. A jump target
+  // from an external source (CI annotation, chat citation) may point at
+  // unchanged code — fall back to the whole-file view so the line can still be
+  // shown. Returns false only when the line can't be displayed at all.
   function revealLine(line: number): boolean {
     const hunk = hunks.find((h) =>
       h.lines.some((l) => l.newLineNum === line || l.oldLineNum === line),
     );
-    if (hunk && collapsedHunks.has(hunk.index)) {
-      setCollapsedHunks((prev) => {
-        const next = new Set(prev);
-        next.delete(hunk.index);
-        return next;
-      });
+    if (hunk) {
+      if (collapsedHunks.has(hunk.index)) {
+        setCollapsedHunks((prev) => {
+          const next = new Set(prev);
+          next.delete(hunk.index);
+          return next;
+        });
+      }
+      setPendingScroll(`diff-line-${line}`);
+      return true;
     }
-    setPendingScroll(`diff-line-${line}`);
-    return hunk != null;
+    const headLines = file.head_content ? file.head_content.split("\n").length : 0;
+    if (line > 0 && line <= headLines) {
+      setFullFile(true);
+      setPendingScroll(`diff-line-${line}`);
+      return true;
+    }
+    return false;
   }
 
   function handlePostHighlightAsComment(h: Highlight) {

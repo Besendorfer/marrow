@@ -1055,18 +1055,48 @@ function App() {
   /** Resolve a file mention (exact path, or a unique suffix match against the
    * manifest), select it, and reveal the given head line — expanding its hunk
    * if collapsed. Serves chat citations, top-risk rows, and check-failure rows. */
-  function handleChatOpenFile(path: string, line?: number) {
+  async function handleChatOpenFile(path: string, line?: number) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return;
     const files = tab.manifest.files;
-    const target =
+    let target =
       files.find((f) => f.path === path) ??
       (() => {
         const suffixMatches = files.filter((f) => f.path.endsWith("/" + path));
         return suffixMatches.length === 1 ? suffixMatches[0] : undefined;
       })();
     if (!target) return;
-    if (line != null && target.path === tab.selectedFile?.path) {
+    if (line != null && !target.head_content && target.diff_type !== "removed") {
+      // Jump targets in files whose contents weren't fetched at analysis time
+      // (NOT_RELEVANT files): pull the head version on demand so the whole-file
+      // fallback in revealLine has something to show, and remember it on the
+      // manifest for the rest of the session.
+      const tabId = tab.id;
+      try {
+        const content = await invoke<string>("get_file_content", {
+          prRef: tab.manifest.pr_url,
+          path: target.path,
+          refSha: tab.manifest.head_sha,
+        });
+        const patched = { ...target, head_content: content };
+        updateTab(tabId, (t) =>
+          t.manifest
+            ? {
+                ...t,
+                manifest: {
+                  ...t.manifest,
+                  files: t.manifest.files.map((f) => (f.path === patched.path ? patched : f)),
+                },
+              }
+            : t
+        );
+        target = patched;
+      } catch {
+        // Content unavailable (deleted path, network) — fall through; the
+        // reveal will report honestly.
+      }
+    }
+    if (line != null && target.path === tab.selectedFile?.path && target.head_content === tab.selectedFile?.head_content) {
       // Already viewing the file — the mounted DiffViewer can jump directly.
       if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
       return;
@@ -1076,7 +1106,7 @@ function App() {
   }
 
   function notifyLineOutsideDiff(line: number) {
-    addToast("info", `Line ${line} isn't part of this PR's changes — the annotation targets unchanged code.`);
+    addToast("info", `Line ${line} doesn't exist in this file's current version.`);
   }
 
   /** Line to reveal once the DiffViewer for a newly-selected file mounts —

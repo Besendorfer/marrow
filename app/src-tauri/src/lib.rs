@@ -242,6 +242,7 @@ pub fn run() {
             commands::get_my_review_state,
             commands::get_commit_diff,
             commands::get_check_annotations,
+            commands::get_file_content,
             commands::submit_review,
             commands::generate_review_body,
             commands::update_review_comment,
