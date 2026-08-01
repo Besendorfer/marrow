@@ -1,14 +1,15 @@
-use crate::ai::{extract_json_array, AiBackend};
+use crate::ai::{extract_json_array, extract_json_object, AiBackend};
 use crate::config::resolve_github_token;
 use crate::dismissed_highlights;
 use crate::github::GithubClient;
 use crate::manifest_cache;
 use crate::pr_parser::parse_pr_ref;
 use crate::prompts::{
-    build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_summary_prompt, PriorNote,
+    build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_summary_prompt, build_triage_prompt, PriorNote,
 };
 use crate::types::{
-    ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest, Settings,
+    ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest,
+    ReviewOrderItem, Settings, TopRisk, TriageReport,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use sha2::{Sha256, Digest};
@@ -140,37 +141,56 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let mut highlights_by_path: HashMap<String, Vec<Highlight>> = HashMap::new();
     let mut summary = String::new();
     let mut change_groups: Vec<ChangeGroup> = Vec::new();
+    // Triage guidance (top risks + contract-first order). Only computed for large
+    // PRs (see the gate below); None means the UI falls back to its normal views.
+    let mut triage: Option<TriageReport> = None;
     // Fetched full contents (base, head), keyed by path — only relevant files,
     // so NOT_RELEVANT files show their diff but not a full-file view.
     let mut content_by_path: HashMap<String, (String, String)> = HashMap::new();
 
     if !relevant.is_empty() {
-        // Step 4: AI highlight analysis + summary + grouping (parallel)
-        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((0, 3)));
+        // Step 4: AI highlight analysis + summary + grouping (+ triage for large
+        // PRs), in parallel. The triage pass (top risks + contract-first order) is
+        // gated on size — small PRs don't need a guided path.
+        let run_triage = relevant.len() >= TRIAGE_MIN_FILES;
+        let ai_total: u32 = if run_triage { 4 } else { 3 };
+        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((0, ai_total)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
         let prior_notes = build_prior_notes(&previous_manifest, &parsed.owner, &parsed.repo, parsed.number);
         let highlight_prompt = build_highlight_prompt(&pr_title, &pr_body, &per_file_diffs, &prior_notes);
 
         let summary_prompt = build_summary_prompt(&pr_title, &relevant);
         let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
+        let triage_prompt = if run_triage {
+            build_triage_prompt(&pr_title, &relevant, &per_file_diffs)
+        } else {
+            String::new()
+        };
 
-        let mut ai_stream: FuturesUnordered<_> = [
+        let mut tasks = vec![
             ("highlights", ai.invoke(&highlight_prompt)),
             ("summary", ai.invoke(&summary_prompt)),
             ("grouping", ai.invoke(&grouping_prompt)),
-        ].into_iter().map(|(name, fut)| async move { (name, fut.await) }).collect();
+        ];
+        if run_triage {
+            tasks.push(("triage", ai.invoke(&triage_prompt)));
+        }
+        let mut ai_stream: FuturesUnordered<_> =
+            tasks.into_iter().map(|(name, fut)| async move { (name, fut.await) }).collect();
 
         let mut highlights_raw = Err("not started".to_string());
         let mut summary_raw = Err("not started".to_string());
         let mut grouping_raw = Err("not started".to_string());
+        let mut triage_raw = Err("not started".to_string());
         let mut ai_done: u32 = 0;
         while let Some((name, result)) = ai_stream.next().await {
             ai_done += 1;
-            emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((ai_done, 3)));
+            emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((ai_done, ai_total)));
             match name {
                 "highlights" => highlights_raw = result,
                 "summary" => summary_raw = result,
                 "grouping" => grouping_raw = result,
+                "triage" => triage_raw = result,
                 _ => {}
             }
         }
@@ -204,6 +224,20 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                     severity: h.severity,
                     comment: h.comment,
                 });
+        }
+
+        // Assemble triage: parse the AI object, else fall back to a deterministic
+        // risk-ordered report. Either way, finalize so it references only real
+        // files and covers every relevant file.
+        if run_triage {
+            let parsed = triage_raw
+                .ok()
+                .and_then(|raw| extract_json_object(&raw).ok())
+                .and_then(|json| serde_json::from_value::<TriageReport>(json).ok())
+                .filter(|t| !t.review_order.is_empty());
+            let mut report = parsed.unwrap_or_else(|| fallback_triage(&relevant, &highlights_by_path));
+            finalize_triage(&mut report, &relevant);
+            triage = Some(report);
         }
 
         // Step 5: Fetch file contents for all relevant files concurrently
@@ -341,6 +375,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         draft,
         summary,
         change_groups,
+        triage,
         body: truncate_chars(&pr_body, 10000),
         files: file_diffs,
     };
@@ -348,6 +383,68 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
 
     Ok(manifest)
+}
+
+/// Minimum number of relevant files before the triage pass runs. Small PRs are
+/// fast to review flat and don't need a guided path.
+const TRIAGE_MIN_FILES: usize = 5;
+
+/// Rank a risk level for ordering (lower = riskier, comes first).
+fn risk_rank(level: &str) -> u8 {
+    match level {
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        _ => 3,
+    }
+}
+
+/// Deterministic triage for when the AI pass is unavailable: order relevant files
+/// by risk (critical first), and surface the critical/high files as top risks,
+/// using each file's first highlight (or its classification reason) as the detail.
+fn fallback_triage(
+    relevant: &[&FileClassification],
+    highlights_by_path: &HashMap<String, Vec<Highlight>>,
+) -> TriageReport {
+    let mut ordered: Vec<&FileClassification> = relevant.to_vec();
+    ordered.sort_by_key(|f| risk_rank(&f.risk_level));
+    let review_order = ordered
+        .iter()
+        .map(|f| ReviewOrderItem { path: f.path.clone(), rationale: String::new() })
+        .collect();
+
+    let top_risks = relevant
+        .iter()
+        .filter(|f| f.risk_level == "critical" || f.risk_level == "high")
+        .take(3)
+        .map(|f| {
+            let first = highlights_by_path.get(&f.path).and_then(|h| h.first());
+            TopRisk {
+                title: format!("{} ({})", f.path, f.risk_level),
+                detail: first.map(|h| h.comment.clone()).unwrap_or_else(|| f.reason.clone()),
+                path: f.path.clone(),
+                start_line: first.map(|h| h.start_line),
+            }
+        })
+        .collect();
+
+    TriageReport { top_risks, review_order }
+}
+
+/// Keep triage output honest regardless of source: drop top_risks / order entries
+/// that point at files not in this PR (AI hallucinations), and append any relevant
+/// file the AI left out of the order so `[`/`]` navigation still covers everything.
+fn finalize_triage(report: &mut TriageReport, relevant: &[&FileClassification]) {
+    let known: HashSet<&str> = relevant.iter().map(|f| f.path.as_str()).collect();
+    report.top_risks.retain(|r| known.contains(r.path.as_str()));
+    report.review_order.retain(|r| known.contains(r.path.as_str()));
+
+    let ordered: HashSet<String> = report.review_order.iter().map(|r| r.path.clone()).collect();
+    for f in relevant {
+        if !ordered.contains(&f.path) {
+            report.review_order.push(ReviewOrderItem { path: f.path.clone(), rationale: String::new() });
+        }
+    }
 }
 
 /// Build the prior-triage context fed back into the highlight prompt: for
@@ -986,5 +1083,60 @@ mod tests {
         assert_eq!(classify_diff_type(None, true, false), "added");
         assert_eq!(classify_diff_type(None, false, true), "removed");
         assert_eq!(classify_diff_type(None, false, false), "modified");
+    }
+
+    use super::{fallback_triage, finalize_triage};
+    use crate::types::{FileClassification, Highlight, ReviewOrderItem, TopRisk, TriageReport};
+    use std::collections::HashMap;
+
+    fn fc(path: &str, risk: &str) -> FileClassification {
+        FileClassification {
+            path: path.to_string(),
+            classification: "RELEVANT".to_string(),
+            category: "Business Logic".to_string(),
+            risk_level: risk.to_string(),
+            reason: format!("reason for {path}"),
+        }
+    }
+
+    #[test]
+    fn fallback_triage_orders_by_risk_and_surfaces_top_risks() {
+        let files = [fc("a.rs", "low"), fc("b.rs", "critical"), fc("c.rs", "high")];
+        let relevant: Vec<&FileClassification> = files.iter().collect();
+        let mut highlights = HashMap::new();
+        highlights.insert(
+            "b.rs".to_string(),
+            vec![Highlight { start_line: 42, end_line: 50, severity: "critical".into(), comment: "auth check removed".into() }],
+        );
+
+        let report = fallback_triage(&relevant, &highlights);
+        // Risk-first ordering: critical, high, low.
+        let order: Vec<&str> = report.review_order.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(order, vec!["b.rs", "c.rs", "a.rs"]);
+        // Top risks are the critical/high files; the highlight drives detail+line.
+        assert_eq!(report.top_risks.len(), 2);
+        let b = report.top_risks.iter().find(|r| r.path == "b.rs").unwrap();
+        assert_eq!(b.detail, "auth check removed");
+        assert_eq!(b.start_line, Some(42));
+    }
+
+    #[test]
+    fn finalize_triage_drops_unknown_and_appends_missing() {
+        let files = [fc("a.rs", "high"), fc("b.rs", "low")];
+        let relevant: Vec<&FileClassification> = files.iter().collect();
+        // AI returned an order missing b.rs and a hallucinated ghost.rs, plus a
+        // top risk pointing at a file not in the PR.
+        let mut report = TriageReport {
+            top_risks: vec![TopRisk { title: "x".into(), detail: "y".into(), path: "ghost.rs".into(), start_line: None }],
+            review_order: vec![
+                ReviewOrderItem { path: "a.rs".into(), rationale: "defines it".into() },
+                ReviewOrderItem { path: "ghost.rs".into(), rationale: "nope".into() },
+            ],
+        };
+        finalize_triage(&mut report, &relevant);
+        // ghost.rs dropped from both; b.rs appended to the order.
+        assert!(report.top_risks.is_empty());
+        let order: Vec<&str> = report.review_order.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(order, vec!["a.rs", "b.rs"]);
     }
 }

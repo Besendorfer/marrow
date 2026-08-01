@@ -32,6 +32,32 @@ export interface ChangeGroup {
   file_paths: string[];
 }
 
+/** One of the 2-3 highest-risk changes, surfaced in the top-of-review triage card. */
+export interface TopRisk {
+  /** Short headline (e.g. "Admin-only check removed on /users"). */
+  title: string;
+  /** One sentence on why it carries risk. */
+  detail: string;
+  /** File the reviewer should jump to. */
+  path: string;
+  /** Line (in the head version) to scroll to, when known. */
+  start_line?: number | null;
+}
+
+/** One file in the contract-first "fastest path" ordering, with a one-line
+ * rationale ("defines the shape the rest consumes"). */
+export interface ReviewOrderItem {
+  path: string;
+  rationale: string;
+}
+
+/** Triage guidance for large PRs: what to review first and in what order.
+ * Absent for small PRs (see the gate in `fetch`). */
+export interface TriageReport {
+  top_risks: TopRisk[];
+  review_order: ReviewOrderItem[];
+}
+
 export interface ReviewManifest {
   pr_title: string;
   pr_url: string;
@@ -44,6 +70,9 @@ export interface ReviewManifest {
   draft: boolean;
   summary: string;
   change_groups: ChangeGroup[];
+  /** Triage-first guidance (top risks + contract-first order). `null` for small
+   * PRs or when the triage AI pass fails without a usable fallback. */
+  triage?: TriageReport | null;
   /** The PR description, truncated char-safely to bound cache size. Empty
    * when the PR has no body or on manifests fetched before this field existed. */
   body: string;
@@ -233,6 +262,10 @@ export interface Settings {
    * behavior); the frontend filters draft rows out when this is off. */
   show_draft_prs: boolean;
   setup_done: boolean;
+  /** When true, files open with every hunk expanded instead of auto-collapsing
+   * low-significance hunks (issue #55). Off by default to keep the
+   * collapsed-by-default behavior. */
+  expand_all_hunks: boolean;
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";

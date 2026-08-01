@@ -106,6 +106,7 @@ fn default_settings() -> Settings {
         show_approved_prs: false,
         show_draft_prs: true,
         setup_done: false,
+        expand_all_hunks: false,
     }
 }
 
@@ -139,6 +140,7 @@ pub fn load_settings() -> Settings {
     let mut show_approved_prs = false;
     let mut show_draft_prs = true;
     let mut setup_done = false;
+    let mut expand_all_hunks = false;
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -181,6 +183,8 @@ pub fn load_settings() -> Settings {
             show_draft_prs = val == "true";
         } else if let Some(val) = line.strip_prefix("setup_done=") {
             setup_done = val == "true";
+        } else if let Some(val) = line.strip_prefix("expand_all_hunks=") {
+            expand_all_hunks = val == "true";
         }
     }
 
@@ -204,6 +208,7 @@ pub fn load_settings() -> Settings {
         show_approved_prs,
         show_draft_prs,
         setup_done,
+        expand_all_hunks,
     }
 }
 
@@ -253,6 +258,7 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     content.push_str(&format!("show_approved_prs={}\n", settings.show_approved_prs));
     content.push_str(&format!("show_draft_prs={}\n", settings.show_draft_prs));
     content.push_str(&format!("setup_done={}\n", settings.setup_done));
+    content.push_str(&format!("expand_all_hunks={}\n", settings.expand_all_hunks));
 
     fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;
 
