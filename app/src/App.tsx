@@ -35,9 +35,16 @@ function isOpenerTab(tab: Tab): boolean {
   return !tab.manifest && !tab.loading && !tab.error;
 }
 
-/** Prompt sent by the "Brief me" command — a whole-PR guided walkthrough. */
+/** Prompt sent by the "Brief me" command — a whole-PR guided walkthrough.
+ * Deliberately strict about brevity: without hard limits the model produces an
+ * exhausting per-change essay instead of a scannable briefing. */
 const BRIEF_ME_PROMPT =
-  "Walk me through this PR change by change, most important first. For each change: what it does, why it matters, and any risks you see. Cite file:line locations (in backticks) so I can jump to each one.";
+  "Brief me on this PR — a briefing I can scan in under a minute, not an essay. " +
+  "Start with a one-sentence TL;DR. Then one line per change, most important first: " +
+  "a `file:line` citation (in backticks, so I can jump there), what it does, and its sharpest risk if it has one. " +
+  "Hard limits: at most 7 lines, roughly 25 words each, no sub-bullets, no headings, no code snippets, no restating the diff. " +
+  "Merge related changes into one line. Skip filler like 'low risk' or 'mechanical change' — silence means fine. " +
+  "End with one line: where to spend my review time. If I want depth on a stop, I'll ask.";
 
 /** A fresh, closed chat panel for a new tab. */
 function emptyChatState(): ChatState {
