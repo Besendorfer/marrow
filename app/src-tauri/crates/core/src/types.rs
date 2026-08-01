@@ -97,6 +97,18 @@ pub struct TriageReport {
     pub review_order: Vec<ReviewOrderItem>,
 }
 
+/// One commit in a PR's commit list (the "commits" tab).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PrCommit {
+    pub sha: String,
+    pub message_headline: String,
+    #[serde(default)]
+    pub author_login: Option<String>,
+    #[serde(default)]
+    pub author_avatar: Option<String>,
+    pub committed_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewManifest {
     pub pr_title: String,
@@ -122,6 +134,10 @@ pub struct ReviewManifest {
     /// when the PR has no body or on manifests fetched before this field existed.
     #[serde(default)]
     pub body: String,
+    /// This PR's commits, oldest first. Empty on manifests fetched before this
+    /// field existed, or when the commits fetch failed (best-effort).
+    #[serde(default)]
+    pub commits: Vec<PrCommit>,
     pub files: Vec<FileDiff>,
 }
 
@@ -270,6 +286,32 @@ pub struct PrFile {
     pub deletions: u64,
 }
 
+/// One file changed by a single commit (the "commit diff" side panel).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommitDiffFile {
+    pub path: String,
+    pub status: String,
+    pub additions: u64,
+    pub deletions: u64,
+    /// Absent for large or binary files GitHub doesn't return a patch for.
+    #[serde(default)]
+    pub patch: Option<String>,
+    /// The prior path, when this file was renamed.
+    #[serde(default)]
+    pub previous_path: Option<String>,
+}
+
+/// The diff for a single commit, fetched on demand when a commit is opened.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommitDiff {
+    pub sha: String,
+    pub message_headline: String,
+    pub files: Vec<CommitDiffFile>,
+    /// True when GitHub's 300-file cap on this endpoint truncated the list.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommentAuthor {
     pub login: String,
@@ -336,6 +378,12 @@ pub struct MyReviewState {
     pub mergeable: String,
     #[serde(default)]
     pub labels: Vec<PrLabel>,
+    /// The SHA the viewer's most recent review was submitted against, and when.
+    /// `None` if the viewer hasn't reviewed this PR.
+    #[serde(default)]
+    pub last_reviewed_sha: Option<String>,
+    #[serde(default)]
+    pub last_reviewed_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -376,4 +424,29 @@ pub struct ReviewRequestItem {
     pub unresolved_thread_count: u32,
     #[serde(default)]
     pub approval_count: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `ReviewManifest` JSON blob missing `commits` (a cached manifest saved
+    /// before the field existed) must still deserialize, with `commits`
+    /// defaulting to empty — mirrors `triage`'s cache-compat guarantee.
+    #[test]
+    fn review_manifest_defaults_commits_when_absent() {
+        let json = serde_json::json!({
+            "pr_title": "t",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "pr_number": 1,
+            "base_ref": "main",
+            "head_ref": "feature",
+            "base_sha": "aaa",
+            "head_sha": "bbb",
+            "files": [],
+        });
+
+        let manifest: ReviewManifest = serde_json::from_value(json).unwrap();
+        assert!(manifest.commits.is_empty());
+    }
 }

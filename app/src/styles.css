@@ -926,6 +926,13 @@ body {
   color: #d29922;
 }
 
+/* Renamed has no FileDiff.diff_type equivalent in the main sidebar — only
+   CommitView's per-file status chip (A/D/M/R) needs it. */
+.diff-type-renamed {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
 /* ─── Line Stats ───────────────────────────────────────────────────────── */
 .line-stats {
   display: flex;
@@ -1206,6 +1213,147 @@ tr.cursor-selected td {
   background: transparent;
   color: #c9d1d9;
   padding: 0;
+}
+
+/* ─── Commit View (in-layout commit scope, replaces the file sidebar +
+   diff pane while a commit from the Commits card is open) ──────────────── */
+.commit-view-identity {
+  padding: var(--space-3) 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.commit-view-nav {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.commit-view-nav-btn {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.commit-view-nav-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.commit-view-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.commit-view-sha {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.commit-view-headline {
+  margin-top: 4px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.commit-view-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.commit-view-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.commit-view-banner {
+  flex-shrink: 0;
+  margin: var(--space-2) 16px 0;
+  padding: 6px 10px;
+  background: var(--diff-header-bg);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+
+.commit-view-file-list-state {
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.commit-view-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-view-file-dir {
+  color: var(--text-muted);
+}
+
+.commit-view-github {
+  margin-left: auto;
+}
+
+.commit-view-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3) var(--space-4);
+}
+
+.commit-view-pane-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+}
+
+.commit-view-pane-error {
+  color: var(--diff-remove-text);
+}
+
+.commit-view-nopatch {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  padding: 8px 0;
+}
+
+.commit-view-patch {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+  padding: 4px 0;
+}
+
+.commit-view-patch > div {
+  padding: 0 12px;
 }
 
 /* ─── PR Opener ─────────────────────────────────────────────────────────── */
@@ -4666,6 +4814,80 @@ mark.search-highlight-current {
   align-items: center;
   gap: var(--space-2);
   flex-shrink: 0;
+}
+
+.overview-commit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 8px 4px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--chip-border);
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview-commit-row:first-child,
+.overview-commit-header + .overview-commit-row,
+.overview-commit-divider + .overview-commit-row {
+  border-top: none;
+}
+
+.overview-commit-row:hover .overview-commit-message {
+  color: var(--accent);
+}
+
+.overview-commit-message {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overview-commit-sha {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.overview-commit-time {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  min-width: 3em;
+  text-align: right;
+}
+
+.overview-commit-header {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.overview-commit-header:first-child {
+  margin-top: 0;
+}
+
+.overview-commit-divider {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--chip-border);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .overview-risk-row {

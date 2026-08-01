@@ -1,4 +1,4 @@
-use crate::types::{CheckRunInfo, CommentAuthor, MyReviewState, PrChecksStatus, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CheckRunInfo, CommentAuthor, CommitDiff, CommitDiffFile, MyReviewState, PrChecksStatus, PrCommit, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
 use std::collections::HashMap;
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -224,6 +224,97 @@ fn resolve_review_state(pr: &serde_json::Value, viewer: &str) -> (String, bool) 
     (status, is_re_requested)
 }
 
+/// Extract a commit message's headline: its first line, with no trailing
+/// newline (GitHub's REST commit payloads always include the full multi-line
+/// message here).
+fn first_line(message: &str) -> String {
+    message.lines().next().unwrap_or("").to_string()
+}
+
+/// Parse one commit from GitHub's `GET .../pulls/{n}/commits` REST response.
+/// `author_login`/`author_avatar` come from the top-level `author` (GitHub's
+/// linked-account association), which is `null` when the commit's email isn't
+/// linked to a GitHub account — fall back to the raw `commit.author.name` for
+/// the login in that case (there's no avatar to fall back to).
+fn parse_pr_commit(c: &serde_json::Value) -> PrCommit {
+    let message = c
+        .pointer("/commit/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let author_login = c
+        .pointer("/author/login")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            c.pointer("/commit/author/name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+
+    let author_avatar = c
+        .pointer("/author/avatar_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Committer date, not author date: rebases and cherry-picks preserve the
+    // author date, so only the committer date reflects when a commit actually
+    // landed on the branch — which is what the "since your last review"
+    // fallback compares against after a force push.
+    let committed_at = c
+        .pointer("/commit/committer/date")
+        .or_else(|| c.pointer("/commit/author/date"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    PrCommit {
+        sha: c.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        message_headline: first_line(message),
+        author_login,
+        author_avatar,
+        committed_at,
+    }
+}
+
+/// Parse one file entry from a commit's `files` array (REST `GET
+/// /repos/{owner}/{repo}/commits/{sha}`).
+fn parse_commit_diff_file(f: &serde_json::Value) -> CommitDiffFile {
+    CommitDiffFile {
+        path: f.get("filename").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        status: f.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        additions: f.get("additions").and_then(|v| v.as_u64()).unwrap_or(0),
+        deletions: f.get("deletions").and_then(|v| v.as_u64()).unwrap_or(0),
+        patch: f.get("patch").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        previous_path: f
+            .get("previous_filename")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    }
+}
+
+/// Find the viewer's most recent submitted review (by `submittedAt`) from a
+/// `reviews { nodes { author{login} submittedAt commit{oid} } }` JSON array.
+/// Returns `(sha, submitted_at)`; `None` if the viewer has no submitted
+/// review (pending/unsubmitted reviews have a `null` `submittedAt` and are
+/// skipped).
+fn latest_viewer_review(reviews: &[serde_json::Value], username: &str) -> Option<(String, String)> {
+    reviews
+        .iter()
+        .filter(|r| {
+            r.pointer("/author/login")
+                .and_then(|l| l.as_str())
+                .map(|l| l.eq_ignore_ascii_case(username))
+                .unwrap_or(false)
+        })
+        .filter_map(|r| {
+            let submitted_at = r.get("submittedAt").and_then(|v| v.as_str())?.to_string();
+            let sha = r.pointer("/commit/oid").and_then(|v| v.as_str())?.to_string();
+            Some((sha, submitted_at))
+        })
+        .max_by(|a, b| a.1.cmp(&b.1))
+}
+
 /// Lowercase a `statusCheckRollup.state` GraphQL enum
 /// (`SUCCESS`/`FAILURE`/`ERROR`/`PENDING`/`EXPECTED`) to the activity feed's
 /// `ci_state` convention. `EXPECTED` (checks queued but not yet reported)
@@ -446,6 +537,115 @@ impl GithubClient {
         }
 
         Ok(all_files)
+    }
+
+    /// This PR's commits, oldest first (GitHub's returned order).
+    pub async fn get_pr_commits(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<PrCommit>, String> {
+        let mut all_commits = Vec::new();
+        let mut page = 1u32;
+
+        loop {
+            let url = format!(
+                "https://api.github.com/repos/{}/{}/pulls/{}/commits?per_page=100&page={}",
+                owner, repo, pr_number, page
+            );
+
+            let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
+
+            let commits: Vec<serde_json::Value> = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse PR commits: {}", e))?;
+
+            if commits.is_empty() {
+                break;
+            }
+
+            all_commits.extend(commits.iter().map(parse_pr_commit));
+            page += 1;
+
+            // Safety: don't paginate forever
+            if page > 30 {
+                break;
+            }
+        }
+
+        Ok(all_commits)
+    }
+
+    /// A single commit's diff. GitHub caps this endpoint's file listing at
+    /// 300 files; `truncated` is set when that cap is hit.
+    pub async fn get_commit_diff(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<CommitDiff, String> {
+        let mut all_files: Vec<CommitDiffFile> = Vec::new();
+        let mut message_headline = String::new();
+        let mut truncated = false;
+        let mut page = 1u32;
+
+        loop {
+            let url = format!(
+                "https://api.github.com/repos/{}/{}/commits/{}?per_page=100&page={}",
+                owner, repo, sha, page
+            );
+
+            let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
+
+            let commit: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse commit: {}", e))?;
+
+            if page == 1 {
+                let message = commit
+                    .pointer("/commit/message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                message_headline = first_line(message);
+            }
+
+            let files = commit
+                .get("files")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let page_len = files.len();
+
+            for f in &files {
+                if all_files.len() >= 300 {
+                    truncated = true;
+                    break;
+                }
+                all_files.push(parse_commit_diff_file(f));
+            }
+
+            // Last page: fewer than a full page (or empty) means no more pages.
+            if truncated || page_len < 100 {
+                break;
+            }
+
+            page += 1;
+
+            // Safety: don't paginate forever
+            if page > 30 {
+                break;
+            }
+        }
+
+        Ok(CommitDiff {
+            sha: sha.to_string(),
+            message_headline,
+            files: all_files,
+            truncated,
+        })
     }
 
     pub async fn get_pr_diff(
@@ -1469,6 +1669,8 @@ impl GithubClient {
                             nodes {{
                                 author {{ login }}
                                 state
+                                submittedAt
+                                commit {{ oid }}
                             }}
                         }}
                     }}
@@ -1539,6 +1741,13 @@ impl GithubClient {
             })
             .unwrap_or_default();
 
+        let (last_reviewed_sha, last_reviewed_at) = pr
+            .pointer("/reviews/nodes")
+            .and_then(|v| v.as_array())
+            .and_then(|reviews| latest_viewer_review(reviews, viewer_login))
+            .map(|(sha, at)| (Some(sha), Some(at)))
+            .unwrap_or((None, None));
+
         Ok(MyReviewState {
             status,
             is_re_requested,
@@ -1548,6 +1757,8 @@ impl GithubClient {
             approved_by,
             mergeable,
             labels,
+            last_reviewed_sha,
+            last_reviewed_at,
         })
     }
 }
@@ -1975,4 +2186,82 @@ pub struct CollectedActivity {
     /// The authenticated user's login (when a token resolved), so the app layer
     /// can suppress the viewer's own-comment "updated" deltas in compute_activity.
     pub viewer: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{first_line, latest_viewer_review, parse_pr_commit};
+
+    #[test]
+    fn first_line_extracts_headline_from_multi_line_message() {
+        assert_eq!(first_line("fix bug\n\nLonger explanation here."), "fix bug");
+    }
+
+    #[test]
+    fn first_line_handles_trailing_newline() {
+        assert_eq!(first_line("fix bug\n"), "fix bug");
+    }
+
+    #[test]
+    fn first_line_handles_single_line_message() {
+        assert_eq!(first_line("fix bug"), "fix bug");
+    }
+
+    #[test]
+    fn latest_viewer_review_picks_most_recent_submitted_at() {
+        let reviews: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+                {"author": {"login": "alice"}, "submittedAt": "2026-07-01T00:00:00Z", "commit": {"oid": "sha1"}},
+                {"author": {"login": "alice"}, "submittedAt": "2026-07-15T00:00:00Z", "commit": {"oid": "sha2"}},
+                {"author": {"login": "bob"}, "submittedAt": "2026-07-20T00:00:00Z", "commit": {"oid": "sha3"}}
+            ]"#,
+        )
+        .unwrap();
+
+        let result = latest_viewer_review(&reviews, "alice");
+        assert_eq!(result, Some(("sha2".to_string(), "2026-07-15T00:00:00Z".to_string())));
+    }
+
+    #[test]
+    fn latest_viewer_review_none_when_viewer_has_no_review() {
+        let reviews: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"author": {"login": "bob"}, "submittedAt": "2026-07-20T00:00:00Z", "commit": {"oid": "sha3"}}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(latest_viewer_review(&reviews, "alice"), None);
+    }
+
+    #[test]
+    fn latest_viewer_review_skips_pending_unsubmitted_reviews() {
+        // A pending (draft) review has no submittedAt yet.
+        let reviews: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"author": {"login": "alice"}, "submittedAt": null, "commit": {"oid": "sha1"}}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(latest_viewer_review(&reviews, "alice"), None);
+    }
+
+    #[test]
+    fn parse_pr_commit_prefers_committer_date_over_author_date() {
+        // Rebases keep the author date but stamp a fresh committer date; the
+        // "since your last review" fallback needs the latter.
+        let c: serde_json::Value = serde_json::from_str(
+            r#"{"sha": "abc", "commit": {"message": "m", "author": {"name": "a", "date": "2026-01-01T00:00:00Z"}, "committer": {"date": "2026-02-02T00:00:00Z"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parse_pr_commit(&c).committed_at, "2026-02-02T00:00:00Z");
+    }
+
+    #[test]
+    fn parse_pr_commit_falls_back_to_author_date() {
+        let c: serde_json::Value = serde_json::from_str(
+            r#"{"sha": "abc", "commit": {"message": "m", "author": {"name": "a", "date": "2026-01-01T00:00:00Z"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parse_pr_commit(&c).committed_at, "2026-01-01T00:00:00Z");
+    }
 }

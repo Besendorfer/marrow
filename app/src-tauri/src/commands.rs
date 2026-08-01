@@ -5,7 +5,7 @@ use marrow_core::chat_history::{self, StoredChat};
 use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
-use marrow_core::types::{MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use marrow_core::types::{CommitDiff, MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
 use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
 use marrow_core::dismissed_highlights::{self, DismissedHighlights};
@@ -437,6 +437,14 @@ pub async fn get_my_review_state(pr_url: String) -> Result<MyReviewState, String
     github
         .get_my_review_state(&parsed.owner, &parsed.repo, parsed.number)
         .await
+}
+
+/// A single commit's diff, fetched on demand when the commits view opens one.
+#[command]
+pub async fn get_commit_diff(pr_ref: String, sha: String) -> Result<CommitDiff, String> {
+    let github = github_client();
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_ref)?;
+    github.get_commit_diff(&parsed.owner, &parsed.repo, &sha).await
 }
 
 #[command]

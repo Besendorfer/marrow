@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { SummaryParagraphs } from "./SummaryParagraphs";
 import { Avatar } from "./ReviewRequestList";
 import { RichText } from "./RichText";
-import { highlightKey } from "../utils";
-import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, TopRisk } from "../types";
+import { highlightKey, timeAgo } from "../utils";
+import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, TopRisk, PrCommit } from "../types";
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
@@ -22,6 +22,8 @@ interface PrOverviewProps {
   onOpenAt?: (path: string, line?: number) => void;
   /** Start a whole-PR chat walkthrough, most-important-first. */
   onBriefMe?: () => void;
+  /** Enter commit scope for a row in the Commits card. */
+  onViewCommit?: (commit: PrCommit) => void;
 }
 
 /** First file (in manifest order) whose highlights include a new-note key. */
@@ -126,6 +128,91 @@ function GroupRow({
   );
 }
 
+/** Splits `commits` (chronological, oldest first) into the commits newer than
+ * the viewer's last review and the rest, or `null` when no split should be
+ * shown (no review yet, or everything/nothing is new). Falls back to
+ * comparing `committed_at` when `last_reviewed_sha` isn't found in the list
+ * (a force push rewrote history). */
+function splitByLastReview(
+  commits: PrCommit[],
+  reviewState: MyReviewState | null
+): { newer: PrCommit[]; older: PrCommit[] } | null {
+  if (!reviewState || !reviewState.last_reviewed_sha) return null;
+  const idx = commits.findIndex((c) => c.sha === reviewState.last_reviewed_sha);
+  const newer =
+    idx >= 0
+      ? commits.slice(idx + 1)
+      : reviewState.last_reviewed_at
+        ? // A commit with no committer date can't be placed — surface it as new
+          // rather than silently burying it under "Earlier".
+          commits.filter((c) => !c.committed_at || c.committed_at > reviewState.last_reviewed_at!)
+        : [];
+  // All-new is still a split (header with an empty "Earlier"): after a full
+  // history rewrite the "since your last review" signal matters most.
+  if (newer.length === 0) return null;
+  const newerShas = new Set(newer.map((c) => c.sha));
+  const older = commits.filter((c) => !newerShas.has(c.sha));
+  return { newer, older };
+}
+
+function CommitRow({ commit, onViewCommit }: { commit: PrCommit; onViewCommit?: (commit: PrCommit) => void }) {
+  return (
+    <button className="overview-commit-row" onClick={() => onViewCommit?.(commit)}>
+      {commit.author_login && <Avatar login={commit.author_login} size={16} />}
+      <span className="overview-commit-message">{commit.message_headline}</span>
+      <span className="overview-commit-sha">{commit.sha.slice(0, 7)}</span>
+      <span className="overview-commit-time">{timeAgo(commit.committed_at, true)}</span>
+    </button>
+  );
+}
+
+const COMMITS_COLLAPSED_LIMIT = 8;
+
+function CommitsCard({
+  commits,
+  reviewState,
+  onViewCommit,
+}: {
+  commits: PrCommit[];
+  reviewState: MyReviewState | null;
+  onViewCommit?: (commit: PrCommit) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const split = splitByLastReview(commits, reviewState);
+  type CommitRowItem = { commit: PrCommit; group: "new" | "old" };
+  const ordered: CommitRowItem[] = split
+    ? ([...split.newer].reverse().map((c) => ({ commit: c, group: "new" })) as CommitRowItem[]).concat(
+        [...split.older].reverse().map((c) => ({ commit: c, group: "old" }))
+      )
+    : [...commits].reverse().map((c) => ({ commit: c, group: "old" }));
+  const visible = expanded ? ordered : ordered.slice(0, COMMITS_COLLAPSED_LIMIT);
+
+  return (
+    <div className="overview-card">
+      <h4>Commits</h4>
+      {visible.map((item, i) => {
+        const prevGroup = i > 0 ? visible[i - 1].group : null;
+        return (
+          <Fragment key={item.commit.sha}>
+            {split && item.group === "new" && i === 0 && (
+              <div className="overview-commit-header">{split.newer.length} since your last review</div>
+            )}
+            {split && item.group === "old" && prevGroup === "new" && (
+              <div className="overview-commit-divider">Earlier</div>
+            )}
+            <CommitRow commit={item.commit} onViewCommit={onViewCommit} />
+          </Fragment>
+        );
+      })}
+      {ordered.length > COMMITS_COLLAPSED_LIMIT && (
+        <button className="overview-description-toggle" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? "Show less" : `Show all ${commits.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function TopRiskRow({ risk, onOpenAt }: { risk: TopRisk; onOpenAt?: (path: string, line?: number) => void }) {
   return (
     <button
@@ -157,6 +244,7 @@ export function PrOverview({
   newHighlightKeys,
   onOpenAt,
   onBriefMe,
+  onViewCommit,
 }: PrOverviewProps) {
   const newNoteCount = newHighlightKeys?.size ?? 0;
   const relevant = manifest.files.filter((f) => f.classification !== "NOT_RELEVANT");
@@ -248,6 +336,9 @@ export function PrOverview({
               />
             ))}
           </div>
+        )}
+        {manifest.commits.length > 0 && (
+          <CommitsCard commits={manifest.commits} reviewState={reviewState} onViewCommit={onViewCommit} />
         )}
         {setAside > 0 && (
           <div className="overview-card overview-noise">
