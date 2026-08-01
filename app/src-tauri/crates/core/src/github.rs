@@ -257,9 +257,13 @@ fn parse_pr_commit(c: &serde_json::Value) -> PrCommit {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Committer date, not author date: rebases and cherry-picks preserve the
+    // author date, so only the committer date reflects when a commit actually
+    // landed on the branch — which is what the "since your last review"
+    // fallback compares against after a force push.
     let committed_at = c
-        .pointer("/commit/author/date")
-        .or_else(|| c.pointer("/commit/committer/date"))
+        .pointer("/commit/committer/date")
+        .or_else(|| c.pointer("/commit/author/date"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -2186,7 +2190,7 @@ pub struct CollectedActivity {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_line, latest_viewer_review};
+    use super::{first_line, latest_viewer_review, parse_pr_commit};
 
     #[test]
     fn first_line_extracts_headline_from_multi_line_message() {
@@ -2237,5 +2241,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(latest_viewer_review(&reviews, "alice"), None);
+    }
+
+    #[test]
+    fn parse_pr_commit_prefers_committer_date_over_author_date() {
+        // Rebases keep the author date but stamp a fresh committer date; the
+        // "since your last review" fallback needs the latter.
+        let c: serde_json::Value = serde_json::from_str(
+            r#"{"sha": "abc", "commit": {"message": "m", "author": {"name": "a", "date": "2026-01-01T00:00:00Z"}, "committer": {"date": "2026-02-02T00:00:00Z"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parse_pr_commit(&c).committed_at, "2026-02-02T00:00:00Z");
+    }
+
+    #[test]
+    fn parse_pr_commit_falls_back_to_author_date() {
+        let c: serde_json::Value = serde_json::from_str(
+            r#"{"sha": "abc", "commit": {"message": "m", "author": {"name": "a", "date": "2026-01-01T00:00:00Z"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parse_pr_commit(&c).committed_at, "2026-01-01T00:00:00Z");
     }
 }

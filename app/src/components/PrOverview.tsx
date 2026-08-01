@@ -145,7 +145,9 @@ function splitByLastReview(
       : reviewState.last_reviewed_at
         ? commits.filter((c) => c.committed_at > reviewState.last_reviewed_at!)
         : [];
-  if (newer.length === 0 || newer.length === commits.length) return null;
+  // All-new is still a split (header with an empty "Earlier"): after a full
+  // history rewrite the "since your last review" signal matters most.
+  if (newer.length === 0) return null;
   const newerShas = new Set(newer.map((c) => c.sha));
   const older = commits.filter((c) => !newerShas.has(c.sha));
   return { newer, older };
