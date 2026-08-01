@@ -1585,12 +1585,13 @@ function App() {
 
     try {
       await invoke<boolean>("toggle_thread_resolved", { threadId, resolve });
-    } catch {
-      // Revert on error
+    } catch (err) {
+      // Revert on error — and say so, or the button just looks dead (#72)
       updateTab(activeTabId,(t) => ({
         ...t,
         commentThreads: { status: "loaded", threads: prevThreads },
       }));
+      addToast("error", `Couldn't ${resolve ? "resolve" : "unresolve"} the thread: ${String(err)}`);
     }
   }
 
