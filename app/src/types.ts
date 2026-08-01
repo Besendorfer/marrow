@@ -58,6 +58,15 @@ export interface TriageReport {
   review_order: ReviewOrderItem[];
 }
 
+/** One commit in a PR's commit list (the "commits" tab). */
+export interface PrCommit {
+  sha: string;
+  message_headline: string;
+  author_login: string | null;
+  author_avatar: string | null;
+  committed_at: string;
+}
+
 export interface ReviewManifest {
   pr_title: string;
   pr_url: string;
@@ -76,7 +85,31 @@ export interface ReviewManifest {
   /** The PR description, truncated char-safely to bound cache size. Empty
    * when the PR has no body or on manifests fetched before this field existed. */
   body: string;
+  /** This PR's commits, oldest first. Empty on manifests fetched before this
+   * field existed, or when the commits fetch failed (best-effort). */
+  commits: PrCommit[];
   files: FileDiff[];
+}
+
+/** One file changed by a single commit (the "commit diff" side panel). */
+export interface CommitDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  /** Absent for large or binary files GitHub doesn't return a patch for. */
+  patch: string | null;
+  /** The prior path, when this file was renamed. */
+  previous_path: string | null;
+}
+
+/** The diff for a single commit, fetched on demand when a commit is opened. */
+export interface CommitDiff {
+  sha: string;
+  message_headline: string;
+  files: CommitDiffFile[];
+  /** True when GitHub's 300-file cap on this endpoint truncated the list. */
+  truncated: boolean;
 }
 
 export interface FetchProgress {
@@ -281,6 +314,10 @@ export interface MyReviewState {
    * "unknown". Empty when GitHub hasn't computed it or the field is absent. */
   mergeable: string;
   labels: PrLabel[];
+  /** The SHA the viewer's most recent review was submitted against, and when.
+   * `null` if the viewer hasn't reviewed this PR. */
+  last_reviewed_sha: string | null;
+  last_reviewed_at: string | null;
 }
 
 export interface PrLabel {

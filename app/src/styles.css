@@ -1208,6 +1208,171 @@ tr.cursor-selected td {
   padding: 0;
 }
 
+/* ─── Commit Peek (read-only commit-diff overlay) ──────────────────────── */
+.commit-peek-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  overflow-y: auto;
+}
+
+.commit-peek-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 800px;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.commit-peek-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.commit-peek-header-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.commit-peek-sha {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-right: var(--space-2);
+}
+
+.commit-peek-headline {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.commit-peek-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.commit-peek-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.commit-peek-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 24px 24px;
+}
+
+.commit-peek-banner {
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: var(--diff-header-bg);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.commit-peek-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 0;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+}
+
+.commit-peek-error {
+  color: var(--diff-remove-text);
+}
+
+.commit-peek-file {
+  margin-bottom: 20px;
+}
+
+.commit-peek-file:last-child {
+  margin-bottom: 0;
+}
+
+.commit-peek-file-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--chip-border);
+  margin-bottom: 6px;
+}
+
+.commit-peek-file-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.commit-peek-file-stats {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.commit-peek-file-add {
+  color: var(--diff-add-text);
+}
+
+.commit-peek-file-del {
+  color: var(--diff-remove-text);
+}
+
+.commit-peek-file-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.commit-peek-file-nopatch {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  padding: 8px 0;
+}
+
+.commit-peek-patch {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+  padding: 4px 0;
+}
+
+.commit-peek-patch > div {
+  padding: 0 12px;
+}
+
 /* ─── PR Opener ─────────────────────────────────────────────────────────── */
 .pr-opener {
   margin-top: 24px;
@@ -4666,6 +4831,80 @@ mark.search-highlight-current {
   align-items: center;
   gap: var(--space-2);
   flex-shrink: 0;
+}
+
+.overview-commit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 8px 4px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--chip-border);
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview-commit-row:first-child,
+.overview-commit-header + .overview-commit-row,
+.overview-commit-divider + .overview-commit-row {
+  border-top: none;
+}
+
+.overview-commit-row:hover .overview-commit-message {
+  color: var(--accent);
+}
+
+.overview-commit-message {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overview-commit-sha {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.overview-commit-time {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  min-width: 3em;
+  text-align: right;
+}
+
+.overview-commit-header {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.overview-commit-header:first-child {
+  margin-top: 0;
+}
+
+.overview-commit-divider {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--chip-border);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .overview-risk-row {

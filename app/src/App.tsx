@@ -12,6 +12,7 @@ import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { PrOverview } from "./components/PrOverview";
+import { CommitPeek } from "./components/CommitPeek";
 import { NextFileBar } from "./components/NextFileBar";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
@@ -26,7 +27,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution, PrCommit, CommitDiff } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey } from "./utils";
 import type { ReviewSession } from "./hooks/useActivityFeed";
 
@@ -42,6 +43,12 @@ const BRIEF_ME_PROMPT =
 /** A fresh, closed chat panel for a new tab. */
 function emptyChatState(): ChatState {
   return { messages: [], status: "idle", streamingText: "", streamingStatus: null, includeWholePr: false, open: false };
+}
+
+/** The repo's base GitHub URL (e.g. `https://github.com/owner/repo`), derived
+ * by stripping the `/pull/<n>` suffix off a PR URL — used to build commit URLs. */
+function repoBaseUrl(prUrl: string): string {
+  return prUrl.replace(/\/pull\/\d+\/?$/, "");
 }
 
 /** Every AI highlight key (see highlightKey) across a manifest's files. */
@@ -65,6 +72,14 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // Commit peek overlay (issue #147): the commit whose diff is showing, plus
+  // that fetch's loading/error state. A session-only cache (never invalidated
+  // — commit diffs are immutable) keyed by sha avoids refetching on reopen.
+  const [peekCommit, setPeekCommit] = useState<PrCommit | null>(null);
+  const [commitDiffLoading, setCommitDiffLoading] = useState(false);
+  const [commitDiffError, setCommitDiffError] = useState<string | null>(null);
+  const [commitDiff, setCommitDiff] = useState<CommitDiff | null>(null);
+  const commitDiffCacheRef = useRef(new Map<string, CommitDiff>());
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   // Cached PR whose head moved — re-analyzing costs an AI pass, so confirm.
@@ -369,7 +384,7 @@ function App() {
     },
     {
       enabled: !!activeTab?.manifest,
-      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen,
+      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen || !!peekCommit,
     },
   );
 
@@ -1386,6 +1401,48 @@ function App() {
     }
   }
 
+  /** Commit row click in the Commits card — opens the read-only commit-diff
+   * overlay, serving from the session cache when this sha was already fetched. */
+  async function handlePeekCommit(commit: PrCommit) {
+    setPeekCommit(commit);
+    const cached = commitDiffCacheRef.current.get(commit.sha);
+    if (cached) {
+      setCommitDiff(cached);
+      setCommitDiffError(null);
+      setCommitDiffLoading(false);
+      return;
+    }
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return;
+    setCommitDiff(null);
+    setCommitDiffError(null);
+    setCommitDiffLoading(true);
+    try {
+      const diff = await invoke<CommitDiff>("get_commit_diff", {
+        prRef: tab.manifest.pr_url,
+        sha: commit.sha,
+      });
+      commitDiffCacheRef.current.set(commit.sha, diff);
+      // A late resolve after the user switched to another commit (or closed
+      // the peek) must not clobber whatever's now showing.
+      setPeekCommit((current) => {
+        if (current?.sha === commit.sha) {
+          setCommitDiff(diff);
+          setCommitDiffLoading(false);
+        }
+        return current;
+      });
+    } catch (err) {
+      setPeekCommit((current) => {
+        if (current?.sha === commit.sha) {
+          setCommitDiffError(String(err));
+          setCommitDiffLoading(false);
+        }
+        return current;
+      });
+    }
+  }
+
   /** File-group header click in the comments panel — jump to the file, no thread scroll. */
   function handleOpenCommentFile(path: string) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
@@ -1627,6 +1684,8 @@ function App() {
           is_merged: t.myReviewState?.is_merged ?? false,
           mergeable: t.myReviewState?.mergeable ?? "",
           labels: t.myReviewState?.labels ?? [],
+          last_reviewed_sha: t.myReviewState?.last_reviewed_sha ?? null,
+          last_reviewed_at: t.myReviewState?.last_reviewed_at ?? null,
         },
       }));
 
@@ -1788,6 +1847,8 @@ function App() {
                       is_merged: true,
                       mergeable: t.myReviewState?.mergeable ?? "",
                       labels: t.myReviewState?.labels ?? [],
+                      last_reviewed_sha: t.myReviewState?.last_reviewed_sha ?? null,
+                      last_reviewed_at: t.myReviewState?.last_reviewed_at ?? null,
                     },
                   }
             );
@@ -2101,6 +2162,16 @@ function App() {
         open={settingsOpen}
         onClose={handleSettingsClose}
       />
+      {peekCommit && activeTab?.manifest && (
+        <CommitPeek
+          commit={peekCommit}
+          diff={commitDiff}
+          loading={commitDiffLoading}
+          error={commitDiffError}
+          repoBaseUrl={repoBaseUrl(activeTab.manifest.pr_url)}
+          onClose={() => setPeekCommit(null)}
+        />
+      )}
       {!activeTab ? null : activeTab.manifest === null ? (
         <div
           className="opener-tab"
@@ -2209,6 +2280,7 @@ function App() {
               onSelectFile={setSelectedFile}
               onOpenAt={handleChatOpenFile}
               onBriefMe={briefMe}
+              onPeekCommit={handlePeekCommit}
               newHighlightKeys={
                 // Dismissing a new note removes it from the chip immediately —
                 // a dead "1 new AI note" pointing at a hidden note is worse
