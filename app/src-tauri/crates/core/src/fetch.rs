@@ -432,12 +432,15 @@ fn fallback_triage(
 }
 
 /// Keep triage output honest regardless of source: drop top_risks / order entries
-/// that point at files not in this PR (AI hallucinations), and append any relevant
-/// file the AI left out of the order so `[`/`]` navigation still covers everything.
+/// that point at files not in this PR (AI hallucinations), dedupe repeated order
+/// entries (first occurrence wins — the prompt asks for each file exactly once,
+/// but nothing forces the model to comply), and append any relevant file the AI
+/// left out of the order so `[`/`]` navigation still covers everything.
 fn finalize_triage(report: &mut TriageReport, relevant: &[&FileClassification]) {
     let known: HashSet<&str> = relevant.iter().map(|f| f.path.as_str()).collect();
     report.top_risks.retain(|r| known.contains(r.path.as_str()));
-    report.review_order.retain(|r| known.contains(r.path.as_str()));
+    let mut seen: HashSet<String> = HashSet::new();
+    report.review_order.retain(|r| known.contains(r.path.as_str()) && seen.insert(r.path.clone()));
 
     let ordered: HashSet<String> = report.review_order.iter().map(|r| r.path.clone()).collect();
     for f in relevant {
@@ -1124,19 +1127,22 @@ mod tests {
     fn finalize_triage_drops_unknown_and_appends_missing() {
         let files = [fc("a.rs", "high"), fc("b.rs", "low")];
         let relevant: Vec<&FileClassification> = files.iter().collect();
-        // AI returned an order missing b.rs and a hallucinated ghost.rs, plus a
-        // top risk pointing at a file not in the PR.
+        // AI returned an order missing b.rs, listing a.rs twice, and a
+        // hallucinated ghost.rs, plus a top risk pointing at a file not in the PR.
         let mut report = TriageReport {
             top_risks: vec![TopRisk { title: "x".into(), detail: "y".into(), path: "ghost.rs".into(), start_line: None }],
             review_order: vec![
                 ReviewOrderItem { path: "a.rs".into(), rationale: "defines it".into() },
                 ReviewOrderItem { path: "ghost.rs".into(), rationale: "nope".into() },
+                ReviewOrderItem { path: "a.rs".into(), rationale: "again".into() },
             ],
         };
         finalize_triage(&mut report, &relevant);
-        // ghost.rs dropped from both; b.rs appended to the order.
+        // ghost.rs dropped from both; duplicate a.rs collapsed to its first
+        // occurrence; b.rs appended to the order.
         assert!(report.top_risks.is_empty());
         let order: Vec<&str> = report.review_order.iter().map(|r| r.path.as_str()).collect();
         assert_eq!(order, vec!["a.rs", "b.rs"]);
+        assert_eq!(report.review_order[0].rationale, "defines it");
     }
 }

@@ -285,20 +285,20 @@ export function PrOverview({
               <span>No high-risk changes flagged</span>
             )}
           </div>
-          {startTarget ? (
-            <div className="overview-start-row">
+          <div className="overview-start-row">
+            {startTarget ? (
               <button className="overview-start" onClick={onStartReview}>
                 Start review → {fileName(startTarget.path)}
               </button>
-              {onBriefMe && (
-                <button className="overview-start-secondary" onClick={onBriefMe}>
-                  Brief me
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="overview-state-line">All files reviewed</div>
-          )}
+            ) : (
+              <div className="overview-state-line">All files reviewed</div>
+            )}
+            {onBriefMe && (
+              <button className="overview-start-secondary" onClick={onBriefMe}>
+                Brief me
+              </button>
+            )}
+          </div>
           <div className="overview-start-sub">
             {relevant.length} relevant {relevant.length === 1 ? "file" : "files"},
             in review order
