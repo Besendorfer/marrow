@@ -155,3 +155,5 @@ core rejects brand-new projects), the bare name `marrow` being free in core, and
 a **build-from-source** formula (`depends_on "rust"`; core doesn't ship our
 prebuilt binaries). Worth doing post-`0.1.0` once Marrow has some traction;
 until then the tap is the path.
+
+<!-- annotation fixture line C (#61 live test) -->

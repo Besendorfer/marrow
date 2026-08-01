@@ -1,0 +1,16 @@
+# Throwaway fixture for live-testing issue #61 (inline CI failure annotations).
+# Lives only on a draft PR that is closed unmerged — never on main.
+name: Annotation fixture
+on: pull_request
+jobs:
+  emit-annotations:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error file=README.md,line=214,title=Fixture assertion failed::Deliberate failing annotation on a diff line — expected 'marrow' to equal 'bone broth' (fixture for #61; stack trace excerpt line 1
+          fixture frame 2 at review.rs:42
+          fixture frame 3 at soup.rs:7)"
+          echo "::error file=README.md,line=215,title=Second fixture failure::Two annotations on nearby lines to exercise stacking and per-file counts"
+          echo "::error file=PUBLISHING.md,line=159,title=Cross-file fixture failure::Annotation in a second changed file for the sidebar badge"
+          echo "::warning file=README.md,line=3,title=Fixture warning::Warning-level annotation on an unchanged line (should appear in the card but not inline)"
+          exit 1

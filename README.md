@@ -210,3 +210,6 @@ Marrow began as [`rr`](rr), a standalone Bash script driving the same fetch/clas
 ## License
 
 MIT
+
+<!-- annotation fixture line A (#61 live test) -->
+<!-- annotation fixture line B -->
