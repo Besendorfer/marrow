@@ -1,4 +1,4 @@
-use crate::types::{CheckRunInfo, CommentAuthor, CommitDiff, CommitDiffFile, MyReviewState, PrChecksStatus, PrCommit, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CheckAnnotation, CheckFailures, CheckRunInfo, CommentAuthor, CommitDiff, CommitDiffFile, MyReviewState, PrChecksStatus, PrCommit, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
 use std::collections::HashMap;
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -291,6 +291,42 @@ fn parse_commit_diff_file(f: &serde_json::Value) -> CommitDiffFile {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
     }
+}
+
+/// Conclusions whose runs are worth scanning for annotations: outright
+/// failures plus the attention states a step can reach after emitting
+/// annotations (`timed_out`, `action_required`). `cancelled` is deliberately
+/// excluded — a user-initiated stop's partial annotations are noise.
+fn failing_conclusion(conclusion: &str) -> bool {
+    conclusion.eq_ignore_ascii_case("failure")
+        || conclusion.eq_ignore_ascii_case("timed_out")
+        || conclusion.eq_ignore_ascii_case("action_required")
+}
+
+/// Parse one annotation from a check run's `GET
+/// .../check-runs/{id}/annotations` REST response. Only "failure" and
+/// "warning" levels are surfaced; "notice" is dropped. Missing or malformed
+/// required fields skip the annotation rather than erroring.
+fn parse_check_annotation(v: &serde_json::Value, check_name: &str) -> Option<CheckAnnotation> {
+    let path = v.get("path").and_then(|v| v.as_str())?.to_string();
+    let start_line = v.get("start_line").and_then(|v| v.as_u64())?;
+    let end_line = v.get("end_line").and_then(|v| v.as_u64())?;
+    let annotation_level = v.get("annotation_level").and_then(|v| v.as_str())?.to_string();
+    if annotation_level != "failure" && annotation_level != "warning" {
+        return None;
+    }
+    let message = v.get("message").and_then(|v| v.as_str())?.to_string();
+    let title = v.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    Some(CheckAnnotation {
+        path,
+        start_line,
+        end_line,
+        annotation_level,
+        message,
+        title,
+        check_name: check_name.to_string(),
+    })
 }
 
 /// Find the viewer's most recent submitted review (by `submittedAt`) from a
@@ -644,6 +680,124 @@ impl GithubClient {
             sha: sha.to_string(),
             message_headline,
             files: all_files,
+            truncated,
+        })
+    }
+
+    /// Inline annotations from the head commit's failed check runs. Runs with
+    /// an attention conclusion (see `failing_conclusion`: failure, timed_out,
+    /// action_required) and at least one reported
+    /// annotation are fetched. Each qualifying run's annotations are capped
+    /// at 50 (one page); total accumulation is capped at 200, with
+    /// `truncated` set when that cap is hit or a qualifying run couldn't be
+    /// fetched because the cap was already reached.
+    pub async fn get_check_annotations(
+        &self,
+        owner: &str,
+        repo: &str,
+        head_sha: &str,
+    ) -> Result<CheckFailures, String> {
+        const MAX_ANNOTATIONS: usize = 200;
+
+        let mut failed_runs: Vec<(u64, String, u64)> = Vec::new();
+        let mut run_list_truncated = false;
+        let mut page = 1u32;
+
+        loop {
+            let url = format!(
+                "https://api.github.com/repos/{}/{}/commits/{}/check-runs?per_page=100&page={}",
+                owner, repo, head_sha, page
+            );
+
+            let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
+
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse check runs: {}", e))?;
+
+            let runs = body
+                .get("check_runs")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            if runs.is_empty() {
+                break;
+            }
+
+            for r in &runs {
+                let conclusion = r.get("conclusion").and_then(|v| v.as_str()).unwrap_or("");
+                if !failing_conclusion(conclusion) {
+                    continue;
+                }
+
+                let annotations_count = r
+                    .pointer("/output/annotations_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if annotations_count == 0 {
+                    continue;
+                }
+
+                let id = match r.get("id").and_then(|v| v.as_u64()) {
+                    Some(id) => id,
+                    None => continue,
+                };
+                let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                failed_runs.push((id, name, annotations_count));
+            }
+
+            page += 1;
+
+            // Safety: don't paginate forever. Runs past this point are
+            // dropped, so the result must say so.
+            if page > 30 {
+                run_list_truncated = true;
+                break;
+            }
+        }
+
+        let mut annotations: Vec<CheckAnnotation> = Vec::new();
+        let mut truncated = run_list_truncated;
+
+        for (id, name, annotations_count) in &failed_runs {
+            if annotations.len() >= MAX_ANNOTATIONS {
+                truncated = true;
+                break;
+            }
+            // One page of 50 per run is a deliberate cap — but a run reporting
+            // more must not let the result claim completeness.
+            if *annotations_count > 50 {
+                truncated = true;
+            }
+
+            let url = format!(
+                "https://api.github.com/repos/{}/{}/check-runs/{}/annotations?per_page=50",
+                owner, repo, id
+            );
+
+            let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
+
+            let items: Vec<serde_json::Value> = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse check annotations: {}", e))?;
+
+            for item in &items {
+                if annotations.len() >= MAX_ANNOTATIONS {
+                    truncated = true;
+                    break;
+                }
+                if let Some(a) = parse_check_annotation(item, name) {
+                    annotations.push(a);
+                }
+            }
+        }
+
+        Ok(CheckFailures {
+            head_sha: head_sha.to_string(),
+            annotations,
             truncated,
         })
     }
@@ -2190,7 +2344,7 @@ pub struct CollectedActivity {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_line, latest_viewer_review, parse_pr_commit};
+    use super::{failing_conclusion, first_line, latest_viewer_review, parse_check_annotation, parse_pr_commit};
 
     #[test]
     fn first_line_extracts_headline_from_multi_line_message() {
@@ -2256,6 +2410,18 @@ mod tests {
     }
 
     #[test]
+    fn failing_conclusion_covers_attention_states_but_not_cancelled() {
+        assert!(failing_conclusion("failure"));
+        assert!(failing_conclusion("FAILURE"));
+        assert!(failing_conclusion("timed_out"));
+        assert!(failing_conclusion("action_required"));
+        assert!(!failing_conclusion("cancelled"));
+        assert!(!failing_conclusion("success"));
+        assert!(!failing_conclusion("neutral"));
+        assert!(!failing_conclusion(""));
+    }
+
+    #[test]
     fn parse_pr_commit_falls_back_to_author_date() {
         let c: serde_json::Value = serde_json::from_str(
             r#"{"sha": "abc", "commit": {"message": "m", "author": {"name": "a", "date": "2026-01-01T00:00:00Z"}}}"#,
@@ -2263,5 +2429,67 @@ mod tests {
         .unwrap();
 
         assert_eq!(parse_pr_commit(&c).committed_at, "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn parse_check_annotation_parses_all_fields() {
+        let a: serde_json::Value = serde_json::from_str(
+            r#"{"path": "src/main.rs", "start_line": 10, "end_line": 12, "annotation_level": "failure", "message": "unused variable", "title": "clippy"}"#,
+        )
+        .unwrap();
+
+        let parsed = parse_check_annotation(&a, "clippy-check").unwrap();
+        assert_eq!(parsed.path, "src/main.rs");
+        assert_eq!(parsed.start_line, 10);
+        assert_eq!(parsed.end_line, 12);
+        assert_eq!(parsed.annotation_level, "failure");
+        assert_eq!(parsed.message, "unused variable");
+        assert_eq!(parsed.title, Some("clippy".to_string()));
+        assert_eq!(parsed.check_name, "clippy-check");
+    }
+
+    #[test]
+    fn parse_check_annotation_null_title_becomes_none() {
+        let a: serde_json::Value = serde_json::from_str(
+            r#"{"path": "src/main.rs", "start_line": 10, "end_line": 12, "annotation_level": "warning", "message": "msg", "title": null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parse_check_annotation(&a, "check").unwrap().title, None);
+    }
+
+    #[test]
+    fn parse_check_annotation_missing_start_line_is_skipped() {
+        let a: serde_json::Value = serde_json::from_str(
+            r#"{"path": "src/main.rs", "end_line": 12, "annotation_level": "failure", "message": "msg"}"#,
+        )
+        .unwrap();
+
+        assert!(parse_check_annotation(&a, "check").is_none());
+    }
+
+    #[test]
+    fn parse_check_annotation_drops_notice_level() {
+        let a: serde_json::Value = serde_json::from_str(
+            r#"{"path": "src/main.rs", "start_line": 1, "end_line": 1, "annotation_level": "notice", "message": "msg"}"#,
+        )
+        .unwrap();
+
+        assert!(parse_check_annotation(&a, "check").is_none());
+    }
+
+    #[test]
+    fn parse_check_annotation_keeps_failure_and_warning_levels() {
+        let failure: serde_json::Value = serde_json::from_str(
+            r#"{"path": "a.rs", "start_line": 1, "end_line": 1, "annotation_level": "failure", "message": "msg"}"#,
+        )
+        .unwrap();
+        let warning: serde_json::Value = serde_json::from_str(
+            r#"{"path": "a.rs", "start_line": 1, "end_line": 1, "annotation_level": "warning", "message": "msg"}"#,
+        )
+        .unwrap();
+
+        assert!(parse_check_annotation(&failure, "check").is_some());
+        assert!(parse_check_annotation(&warning, "check").is_some());
     }
 }

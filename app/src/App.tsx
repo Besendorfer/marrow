@@ -27,7 +27,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution, PrCommit, CommitDiff } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey } from "./utils";
 import type { ReviewSession } from "./hooks/useActivityFeed";
 
@@ -236,6 +236,28 @@ function App() {
     [searchMatches, searchCurrentIndex, selectedFilePath]
   );
 
+  // Inline CI failure annotations for the active tab, once loaded (see the
+  // fetch effect above) — grouped by path so the sidebar badge and the diff
+  // pane's inline markers are cheap lookups.
+  const annotationsByPath = useMemo(() => {
+    if (activeTab?.checkAnnotations.status !== "loaded") return null;
+    const map = new Map<string, CheckAnnotation[]>();
+    for (const a of activeTab.checkAnnotations.failures.annotations) {
+      const arr = map.get(a.path);
+      if (arr) arr.push(a); else map.set(a.path, [a]);
+    }
+    return map;
+  }, [activeTab?.checkAnnotations]);
+  const checkFailureCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    if (annotationsByPath) {
+      for (const [path, anns] of annotationsByPath) map.set(path, anns.length);
+    }
+    return map;
+  }, [annotationsByPath]);
+  const selectedFileAnnotations = (selectedFilePath && annotationsByPath?.get(selectedFilePath)) || [];
+  const activeCheckFailures = activeTab?.checkAnnotations.status === "loaded" ? activeTab.checkAnnotations.failures : null;
+
   // Opening from the "Recently analyzed" cache: if the PR's head moved, the
   // backend would silently run a full AI re-analysis — surface that first.
   async function handleOpenCachedPr(prRef: string, info: CachedPrInfo) {
@@ -422,6 +444,7 @@ function App() {
       noteResolutions: new Map(),
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
+      checkAnnotations: { status: "idle" },
       commentsOpen: false,
       sidebarView: hasGroups ? "groups" : "category",
       isRefreshing: false,
@@ -448,6 +471,7 @@ function App() {
       noteResolutions: new Map(),
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
+      checkAnnotations: { status: "idle" },
       commentsOpen: false,
       sidebarView: "category",
       isRefreshing: false,
@@ -1028,19 +1052,75 @@ function App() {
     updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, includeWholePr: value } }));
   }
 
-  /** Resolve a file mention from the chat (exact path, or a unique suffix
-   * match against the manifest) and select it. No absolute-line scroll API
-   * exists on DiffViewerHandle (only relative cursor movement), so this is a
-   * file-level jump only — the line number is accepted but unused. */
-  function handleChatOpenFile(path: string, _line?: number) {
+  /** Resolve a file mention (exact path, or a unique suffix match against the
+   * manifest), select it, and reveal the given head line — expanding its hunk
+   * if collapsed. Serves chat citations, top-risk rows, and check-failure rows. */
+  async function handleChatOpenFile(path: string, line?: number) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return;
     const files = tab.manifest.files;
-    const exact = files.find((f) => f.path === path);
-    if (exact) { setSelectedFile(exact); return; }
-    const suffixMatches = files.filter((f) => f.path.endsWith("/" + path));
-    if (suffixMatches.length === 1) setSelectedFile(suffixMatches[0]);
+    let target =
+      files.find((f) => f.path === path) ??
+      (() => {
+        const suffixMatches = files.filter((f) => f.path.endsWith("/" + path));
+        return suffixMatches.length === 1 ? suffixMatches[0] : undefined;
+      })();
+    if (!target) return;
+    if (line != null && !target.head_content && target.diff_type !== "removed") {
+      // Jump targets in files whose contents weren't fetched at analysis time
+      // (NOT_RELEVANT files): pull the head version on demand so the whole-file
+      // fallback in revealLine has something to show, and remember it on the
+      // manifest for the rest of the session.
+      const tabId = tab.id;
+      try {
+        const content = await invoke<string>("get_file_content", {
+          prRef: tab.manifest.pr_url,
+          path: target.path,
+          refSha: tab.manifest.head_sha,
+        });
+        const patched = { ...target, head_content: content };
+        updateTab(tabId, (t) =>
+          t.manifest
+            ? {
+                ...t,
+                manifest: {
+                  ...t.manifest,
+                  files: t.manifest.files.map((f) => (f.path === patched.path ? patched : f)),
+                },
+              }
+            : t
+        );
+        target = patched;
+      } catch {
+        // Content unavailable (deleted path, network) — fall through; the
+        // reveal will report honestly.
+      }
+    }
+    if (line != null && target.path === tab.selectedFile?.path && target.head_content === tab.selectedFile?.head_content) {
+      // Already viewing the file — the mounted DiffViewer can jump directly.
+      if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
+      return;
+    }
+    pendingRevealLineRef.current = line ?? null;
+    setSelectedFile(target);
   }
+
+  function notifyLineOutsideDiff(line: number) {
+    addToast("info", `Line ${line} doesn't exist in this file's current version.`);
+  }
+
+  /** Line to reveal once the DiffViewer for a newly-selected file mounts —
+   * the viewer remounts per file (key={path}), so the jump must wait for it. */
+  const pendingRevealLineRef = useRef<number | null>(null);
+  useEffect(() => {
+    const line = pendingRevealLineRef.current;
+    if (line == null) return;
+    pendingRevealLineRef.current = null;
+    // Next frame, so the fresh DiffViewer instance has attached its ref.
+    requestAnimationFrame(() => {
+      if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
+    });
+  }, [selectedFilePath]);
 
   // Set by briefMe below; consumed once the chat-open/whole-PR state it just
   // requested has actually committed (handleChatSend reads tabsRef, which
@@ -1269,6 +1349,9 @@ function App() {
               ? newManifest.files.find((f) => f.path === tab.selectedFile!.path) ?? null
               : newManifest.files[0] ?? null,
         commentThreads: { status: "idle" },
+        // A refresh can land on a new head_sha, invalidating any annotations
+        // fetched for the old one — re-fetch is driven by the idle-state effect.
+        checkAnnotations: { status: "idle" },
         newHighlightKeys,
       };
 
@@ -1938,6 +2021,33 @@ function App() {
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Fetch inline CI failure annotations for the active tab once its checks are
+  // loaded with at least one failing run — GraphQL conclusions arrive UPPERCASE
+  // (see the CiChip comment in PrOverview). Guarded by tab id + head_sha so a
+  // stale resolve (tab closed, or refreshed onto a new head in the meantime)
+  // never lands on the wrong state.
+  useEffect(() => {
+    if (!activeTab?.manifest) return;
+    if (activeTab.checkAnnotations.status !== "idle") return;
+    if (!activeChecks) return;
+    const hasFailure = activeChecks.check_runs.some((c) => c.conclusion === "FAILURE");
+    if (!hasFailure) return;
+
+    const tabId = activeTab.id;
+    const prRef = activeTab.manifest.pr_url;
+    const headSha = activeTab.manifest.head_sha;
+
+    updateTab(tabId, (t) => (t.checkAnnotations.status === "idle" ? { ...t, checkAnnotations: { status: "loading" } } : t));
+
+    invoke<CheckFailures>("get_check_annotations", { prRef, headSha })
+      .then((failures) => {
+        updateTab(tabId, (t) => (t.manifest && t.manifest.head_sha === headSha ? { ...t, checkAnnotations: { status: "loaded", failures } } : t));
+      })
+      .catch((err) => {
+        updateTab(tabId, (t) => (t.manifest && t.manifest.head_sha === headSha ? { ...t, checkAnnotations: { status: "error", message: String(err) } } : t));
+      });
+  }, [activeTab?.id, activeTab?.manifest?.pr_url, activeTab?.manifest?.head_sha, activeTab?.checkAnnotations.status, activeChecks]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Floating mini-player visibility:
   //  - HIDE it whenever the MAIN window gains focus (you've engaged the app).
   //    Interacting with the floating panel focuses the panel, not the main
@@ -2312,6 +2422,7 @@ function App() {
             <PrOverview
               manifest={activeTab.manifest}
               checksStatus={activeChecks ?? null}
+              checkFailures={activeCheckFailures}
               reviewState={activeTab.myReviewState ?? null}
               viewedCount={activeTab.viewedFiles.size}
               unresolvedThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
@@ -2346,6 +2457,7 @@ function App() {
             sidebarView={activeTab.sidebarView}
             onViewChange={handleViewChange}
             commentThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : []}
+            checkFailureCounts={checkFailureCounts}
             commentsOpen={activeTab.commentsOpen ?? false}
             onToggleComments={toggleThreadsView}
             onVisibleFilesChange={handleVisibleFilesChange}
@@ -2362,7 +2474,7 @@ function App() {
                 const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
                 return (
                   <>
-                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} newHighlightKeys={activeTab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} newHighlightKeys={activeTab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} checkAnnotations={selectedFileAnnotations} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
                     <NextFileBar
                       index={idx >= 0 ? idx : 0}
                       total={order.length}

@@ -17,6 +17,8 @@ interface FileSidebarProps {
   onViewChange: (view: SidebarView) => void;
   /** Review threads for the whole PR, used only to size the "Comments (N)" toggle. */
   commentThreads: ReviewThread[];
+  /** Inline CI failure annotation counts by file path, from a loaded CheckFailures. */
+  checkFailureCounts?: Map<string, number>;
   commentsOpen: boolean;
   onToggleComments: () => void;
   /** Emits the visible file paths in manifest order, for keyboard file navigation. */
@@ -182,6 +184,7 @@ function FileItem({
   onSelectFile,
   onToggleViewed,
   showPathHint,
+  checkFailureCount,
 }: {
   file: FileDiff;
   selectedFile: FileDiff | null;
@@ -190,6 +193,7 @@ function FileItem({
   onSelectFile: (f: FileDiff) => void;
   onToggleViewed: (path: string) => void;
   showPathHint?: boolean;
+  checkFailureCount?: number;
 }) {
   const isCritical =
     file.risk_level === "critical" || file.risk_level === "high";
@@ -240,6 +244,14 @@ function FileItem({
             {file.highlights.length}
           </span>
         )}
+        {!!checkFailureCount && checkFailureCount > 0 && (
+          <span
+            className="file-check-failure-count"
+            title={`${checkFailureCount} failing-check annotation${checkFailureCount === 1 ? "" : "s"}`}
+          >
+            {checkFailureCount}
+          </span>
+        )}
         {showPathHint && (
           <span className="file-path-hint">
             {file.path.split("/").slice(-2, -1)[0] || ""}
@@ -263,6 +275,7 @@ function TreeFolder({
   staleViewedFiles,
   onSelectFile,
   onToggleViewed,
+  checkFailureCounts,
 }: {
   node: TreeNode;
   depth: number;
@@ -273,6 +286,7 @@ function TreeFolder({
   staleViewedFiles: Set<string>;
   onSelectFile: (f: FileDiff) => void;
   onToggleViewed: (path: string) => void;
+  checkFailureCounts?: Map<string, number>;
 }) {
   const children = sortedTreeEntries(node);
   return (
@@ -288,6 +302,7 @@ function TreeFolder({
                 isStale={staleViewedFiles.has(child.file.path)}
                 onSelectFile={onSelectFile}
                 onToggleViewed={onToggleViewed}
+                checkFailureCount={checkFailureCounts?.get(child.file.path)}
               />
             </div>
           );
@@ -320,6 +335,7 @@ function TreeFolder({
                 staleViewedFiles={staleViewedFiles}
                 onSelectFile={onSelectFile}
                 onToggleViewed={onToggleViewed}
+                checkFailureCounts={checkFailureCounts}
               />
             )}
           </div>
@@ -345,6 +361,7 @@ export function FileSidebar({
   sidebarView: view,
   onViewChange: setView,
   commentThreads,
+  checkFailureCounts,
   commentsOpen,
   onToggleComments,
   onVisibleFilesChange,
@@ -634,6 +651,7 @@ export function FileSidebar({
                       onSelectFile={onSelectFile}
                       onToggleViewed={onToggleViewed}
                       showPathHint
+                      checkFailureCount={checkFailureCounts?.get(file.path)}
                     />
                   ))}
                   </>)}
@@ -664,6 +682,7 @@ export function FileSidebar({
                       onSelectFile={onSelectFile}
                       onToggleViewed={onToggleViewed}
                       showPathHint
+                      checkFailureCount={checkFailureCounts?.get(file.path)}
                     />
                   ))}
                   </>)}
@@ -693,6 +712,7 @@ export function FileSidebar({
                     onSelectFile={onSelectFile}
                     onToggleViewed={onToggleViewed}
                     showPathHint
+                    checkFailureCount={checkFailureCounts?.get(file.path)}
                   />
                 ))}
               </div>
@@ -717,6 +737,7 @@ export function FileSidebar({
                     onSelectFile={onSelectFile}
                     onToggleViewed={onToggleViewed}
                     showPathHint
+                    checkFailureCount={checkFailureCounts?.get(file.path)}
                   />
                 ))}
               </div>
@@ -734,6 +755,7 @@ export function FileSidebar({
               staleViewedFiles={staleViewedFiles}
               onSelectFile={onSelectFile}
               onToggleViewed={onToggleViewed}
+              checkFailureCounts={checkFailureCounts}
             />
           </div>
         )}

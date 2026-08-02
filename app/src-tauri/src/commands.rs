@@ -5,7 +5,7 @@ use marrow_core::chat_history::{self, StoredChat};
 use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
-use marrow_core::types::{CommitDiff, MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use marrow_core::types::{CheckFailures, CommitDiff, MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
 use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
 use marrow_core::dismissed_highlights::{self, DismissedHighlights};
@@ -445,6 +445,24 @@ pub async fn get_commit_diff(pr_ref: String, sha: String) -> Result<CommitDiff, 
     let github = github_client();
     let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_ref)?;
     github.get_commit_diff(&parsed.owner, &parsed.repo, &sha).await
+}
+
+/// One file's contents at a ref, fetched on demand for jump targets in files
+/// whose contents weren't part of the manifest (e.g. NOT_RELEVANT files).
+#[command]
+pub async fn get_file_content(pr_ref: String, path: String, ref_sha: String) -> Result<String, String> {
+    let github = github_client();
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_ref)?;
+    github.get_file_content(&parsed.owner, &parsed.repo, &path, &ref_sha).await
+}
+
+/// Inline annotations from the head commit's failed check runs, fetched on
+/// demand when the CI failures view opens.
+#[command]
+pub async fn get_check_annotations(pr_ref: String, head_sha: String) -> Result<CheckFailures, String> {
+    let github = github_client();
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_ref)?;
+    github.get_check_annotations(&parsed.owner, &parsed.repo, &head_sha).await
 }
 
 #[command]
