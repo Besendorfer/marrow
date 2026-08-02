@@ -280,6 +280,8 @@ function parseBlocks(segment: string): Block[] {
  * schemas documented in `CHAT_UI_ACTIONS` (crates/core/src/chat.rs). Anything
  * that doesn't match a known action renders as a plain code block instead of
  * a chip, same as unparseable JSON. */
+// Kept in sync BY HAND with CHAT_UI_ACTIONS (crates/core/src/chat.rs) and
+// the ChatAction union (types.ts) — edit all three together.
 function isChatAction(x: unknown): x is ChatAction {
   if (!x || typeof x !== "object") return false;
   const a = x as Record<string, unknown>;

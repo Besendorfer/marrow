@@ -203,6 +203,8 @@ export type ChatStreamEvent =
  * JSON block (see `CHAT_UI_ACTIONS` in `crates/core/src/chat.rs`, the single
  * source of truth for the protocol). Mirrors the schemas documented there —
  * keep the two in sync by hand. */
+// Kept in sync BY HAND with CHAT_UI_ACTIONS (crates/core/src/chat.rs) and
+// isChatAction (components/RichText.tsx) — edit all three together.
 export type ChatAction =
   | { action: "open_file"; path: string; line?: number }
   | { action: "open_overview" }

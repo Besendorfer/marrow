@@ -51,6 +51,7 @@ Notes:
 - **macOS-only by design**: `macOSPrivateApi`, `objc2`/`tauri-nspanel` deps under `cfg(target_os = "macos")`, Developer ID signing in `tauri.conf.json`. Don't gate desktop features on cross-platform support; the CLI is the cross-platform surface.
 - **Mini-player is fragile**: the floating window is a non-activating NSPanel driven by polling `NSApplication.isActive` (no webview focus event exists for app reactivation). Read the comments in `lib.rs` and `docs/mini-player.md` before touching show/hide logic — many past regressions here (see git log).
 - **Generated / ignored**: `app/dist/`, `app/src-tauri/target/`, `app/src-tauri/gen/`, `browser-extension/dist/`. Never edit these. `Cargo.lock` IS tracked (binary crates) — commit its changes.
+- **Chat action protocol is triplicated**: `CHAT_UI_ACTIONS` (`crates/core/src/chat.rs`), the `ChatAction` union (`app/src/types.ts`), and `isChatAction` (`app/src/components/RichText.tsx`) must stay in sync by hand — sync markers at each site.
 - **PR-ref regex is quadruplicated**: `browser-extension/content.js`, the bookmarklet in `app/src/components/SettingsModal.tsx`, `crates/core/src/pr_parser.rs`, and `app/src/utils.ts` must stay in sync — a comment in `content.js` marks this.
 - **User state lives in `~/.config/marrow/`** (config with plaintext API keys, manifest cache, viewed/dismissed state). Treat it as real user data — never clear it in tests or "cleanup".
 - Vite ignores `**/src-tauri/**` in its watcher; Rust edits are picked up by the Tauri CLI, not Vite.

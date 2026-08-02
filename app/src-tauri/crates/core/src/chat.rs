@@ -68,6 +68,10 @@ Guidelines:
 /// of just describing it. The frontend (RichText.tsx) recognizes a fenced
 /// code block whose language is exactly `marrow-action`, executes the JSON
 /// object once its fence completes, and renders it as a chip rather than code.
+// The action protocol is TRIPLICATED by hand: this prompt section, the
+// `ChatAction` union in app/src/types.ts, and the `isChatAction` validator in
+// app/src/components/RichText.tsx. Adding or changing an action means editing
+// all three, or the model will emit blocks the chips silently reject.
 const CHAT_UI_ACTIONS: &str = r#"You can control the review app by emitting a fenced code block with the language `marrow-action` containing exactly one JSON object. The app executes it once and renders it as a chip instead of raw JSON — never describe the JSON in prose, just emit the block.
 
 Available actions (the complete list — never invent others):
