@@ -152,12 +152,48 @@ fn extract_tool_json(visible: &str) -> String {
     body.join("\n")
 }
 
+/// Strip GitHub search qualifiers that would widen a model-supplied query
+/// beyond the PR's repo (`repo:`, `org:`, `user:`) — the executor appends its
+/// own `repo:` scope, and model input must not be able to add more. Search
+/// qualifiers OR together, so a prompt-injected `repo:other/repo` would
+/// otherwise reach anything the token can read.
+fn sanitize_search_query(q: &str) -> String {
+    q.split_whitespace()
+        .filter(|t| {
+            let t = t.to_ascii_lowercase();
+            !(t.starts_with("repo:") || t.starts_with("org:") || t.starts_with("user:"))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Reject model-supplied repo paths that could rewrite the API request:
+/// absolute paths, `.`/`..` segments (endpoint traversal), backslashes, and
+/// the URL metacharacters `?`/`#` (which would displace the `ref` query that
+/// pins reads to the PR head).
+fn validate_repo_path(path: &str) -> Result<(), String> {
+    if path.starts_with('/')
+        || path.contains('\\')
+        || path.contains('?')
+        || path.contains('#')
+        || path.split('/').any(|seg| seg == "." || seg == "..")
+    {
+        return Err(format!("invalid path: {path}"));
+    }
+    Ok(())
+}
+
 /// Run one tool call against the GitHub API. Never returns `Err` — API
 /// failures become a text result the model can read and recover from, same
-/// as any other tool output, rather than failing the whole chat turn.
+/// as any other tool output, rather than failing the whole chat turn. Paths
+/// and queries are model-controlled: they are validated/sanitized here so a
+/// prompt-injected tool call can't reach outside the PR's repo at its head.
 async fn execute_tool(github: &GithubClient, t: &RepoToolTarget, call: &ToolCall) -> String {
     let result = match call {
         ToolCall::ReadFile { path } => {
+            if let Err(e) = validate_repo_path(path) {
+                return truncate(&format!("Tool error: {e}"), TOOL_RESULT_BUDGET);
+            }
             match github.get_file_content(&t.owner, &t.repo, path, &t.head_sha).await {
                 Ok(content) if content.is_empty() => {
                     format!("File not found (or empty) at PR head: {path}")
@@ -167,6 +203,13 @@ async fn execute_tool(github: &GithubClient, t: &RepoToolTarget, call: &ToolCall
             }
         }
         ToolCall::SearchCode { query } => {
+            let query = &sanitize_search_query(query);
+            if query.is_empty() {
+                return truncate(
+                    "Tool error: the query was empty after removing repo/org/user qualifiers (search is always scoped to this PR's repo).",
+                    TOOL_RESULT_BUDGET,
+                );
+            }
             match github.search_code(&t.owner, &t.repo, query).await {
                 Ok((hits, _)) if hits.is_empty() => {
                     format!("No code-search results for \"{query}\" in {}/{}.", t.owner, t.repo)
@@ -188,6 +231,11 @@ async fn execute_tool(github: &GithubClient, t: &RepoToolTarget, call: &ToolCall
             }
         }
         ToolCall::ListDir { path } => {
+            if !path.is_empty() {
+                if let Err(e) = validate_repo_path(path) {
+                    return truncate(&format!("Tool error: {e}"), TOOL_RESULT_BUDGET);
+                }
+            }
             match github.list_dir(&t.owner, &t.repo, path, &t.head_sha).await {
                 Ok(entries) => {
                     let where_ = if path.is_empty() { "repo root" } else { path.as_str() };
@@ -471,6 +519,24 @@ mod tests {
     }
 
     // ── status_label ─────────────────────────────────────────────────────
+    #[test]
+    fn sanitize_strips_scope_widening_qualifiers() {
+        assert_eq!(sanitize_search_query("fn truncate repo:other/repo"), "fn truncate");
+        assert_eq!(sanitize_search_query("ORG:evil USER:x needle"), "needle");
+        assert_eq!(sanitize_search_query("repo:a/b"), "");
+        assert_eq!(sanitize_search_query("plain query"), "plain query");
+    }
+
+    #[test]
+    fn validate_repo_path_rejects_request_rewrites() {
+        for bad in ["/etc", "a/../b", "..", ".", "a\\b", "src?ref=main", "src#frag", "./a"] {
+            assert!(validate_repo_path(bad).is_err(), "{bad} should be rejected");
+        }
+        for good in ["src/lib.rs", "docs/mini-player.md", "a/b/c.txt", "with space.md"] {
+            assert!(validate_repo_path(good).is_ok(), "{good} should be accepted");
+        }
+    }
+
     // execute_tool's formatting paths need network and can't be unit-tested
     // without a mock — status_label covers the same match arms without one.
 
