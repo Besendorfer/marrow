@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import hljs from "highlight.js";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
-import type { ChatAction } from "../types";
+import type { ChatAction, ChatCard } from "../types";
+import { ChatCardView, isChatCard } from "./ChatCards";
 
 /** Render a fenced code block with highlight.js.
  *
@@ -367,6 +368,32 @@ function actionChipLabel(a: ChatAction): string {
   }
 }
 
+/** A dim, dashed pill shown in place of an unclosed ```marrow-action or
+ * ```marrow-card fence while it's still streaming in — swapped for the real
+ * chip/card once the fence closes. Shared so both protocols render the same
+ * "still arriving" affordance. */
+function PendingFencePill({ label }: { label: string }) {
+  return (
+    <span className="chat-action-chip chat-action-chip--pending">
+      {label}
+    </span>
+  );
+}
+
+/** Parse and validate a ```marrow-card fence's JSON body against the schemas
+ * `isChatCard` checks (see `ChatCards.tsx`) — kept there rather than inline
+ * since App.tsx never needs it (cards are pure rendering, unlike actions).
+ * `null` on unparseable JSON or a shape matching neither schema; the caller
+ * falls back to a plain code block in that case. */
+function tryParseChatCard(raw: string): ChatCard | null {
+  try {
+    const parsed = JSON.parse(raw);
+    return isChatCard(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A clickable chip rendered in place of a completed ```marrow-action fence.
  * Neutral/clickable when `status` is absent (not yet run, or a restored
  * history message); ✓/✗ once it has been executed. `blockIndex` is this
@@ -451,11 +478,7 @@ export function RichText({
             case "fence": {
               if (b.lang === "marrow-action") {
                 if (!b.closed) {
-                  return (
-                    <span key={key} className="chat-action-chip chat-action-chip--pending">
-                      action…
-                    </span>
-                  );
+                  return <PendingFencePill key={key} label="action…" />;
                 }
                 const localIndex = actionPtr++;
                 const blockIndex = blockIndexOffset + localIndex;
@@ -473,6 +496,16 @@ export function RichText({
                   );
                 }
                 // Unparseable / unrecognized — fall back to a plain code block.
+              }
+              if (b.lang === "marrow-card") {
+                if (!b.closed) {
+                  return <PendingFencePill key={key} label="card…" />;
+                }
+                const card = tryParseChatCard(b.code.trim());
+                if (card) {
+                  return <ChatCardView key={key} card={card} onOpenFile={onOpenFile} />;
+                }
+                // Invalid JSON/shape — fall back to a plain code block.
               }
               return <CodeBlock key={key} lang={b.lang} code={b.code} />;
             }

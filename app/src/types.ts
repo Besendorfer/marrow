@@ -215,6 +215,26 @@ export type ChatAction =
   | { action: "set_view_mode"; mode: DiffViewMode }
   | { action: "show_comments"; open: boolean };
 
+/** A structured answer card the chat model can emit as a fenced ```marrow-card
+ * JSON block (see `CHAT_ANSWER_CARDS` in `crates/core/src/chat.rs`, the single
+ * source of truth for the protocol). Mirrors the schemas documented there —
+ * keep the two in sync by hand. Pure rendering — no execution, unlike
+ * `ChatAction`. */
+// Kept in sync BY HAND with CHAT_ANSWER_CARDS (crates/core/src/chat.rs) and
+// isChatCard (components/ChatCards.tsx) — edit all three together.
+export type ChatCardCell = string | { text: string; path?: string; line?: number };
+
+export interface ChatCardListItem {
+  text: string;
+  detail?: string;
+  path?: string;
+  line?: number;
+}
+
+export type ChatCard =
+  | { type: "table"; title?: string; columns: string[]; rows: ChatCardCell[][] }
+  | { type: "list"; title?: string; items: ChatCardListItem[] };
+
 export type NoteResolutionState = "fixed" | "intentional" | "noise";
 
 /** How/why an AI note was resolved. Mirrors `NoteResolution` in
