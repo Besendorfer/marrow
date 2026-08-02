@@ -54,6 +54,16 @@ export function isChatCard(x: unknown): x is ChatCard {
 }
 
 
+/** Normalize a body row to exactly the header's width: the validator
+ * tolerates ragged rows (model output), but rendering them ragged misaligns
+ * the whole table — pad short rows with empty cells, drop extras beyond the
+ * declared columns. Exported for the protocol test suite. */
+export function normalizeRow(row: ChatCardCell[], width: number): ChatCardCell[] {
+  const out = row.slice(0, width);
+  while (out.length < width) out.push("");
+  return out;
+}
+
 /** Which render cap fired, as footer copy — "first 50 rows" on a 9-column
  * overflow would lie, so each cap names itself. Empty string when nothing was
  * cut. Exported for the protocol test suite. */
@@ -102,7 +112,7 @@ function TableCard({ card, onOpenFile }: { card: Extract<ChatCard, { type: "tabl
           <tbody>
             {rows.map((row, i) => (
               <tr key={i}>
-                {row.slice(0, MAX_COLS).map((cell, j) => (
+                {normalizeRow(row, columns.length).map((cell, j) => (
                   <td key={j}>
                     <CardCell cell={cell} onOpenFile={onOpenFile} />
                   </td>

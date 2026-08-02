@@ -6,7 +6,7 @@
 // `bun test` from app/.
 import { describe, expect, test } from "bun:test";
 import { isChatAction, parseActionFences, parseChatActionFences } from "./RichText";
-import { isChatCard, tableTruncationNote } from "./ChatCards";
+import { isChatCard, normalizeRow, tableTruncationNote } from "./ChatCards";
 import type { ChatAction } from "../types";
 
 // ── isChatAction ─────────────────────────────────────────────────────────────
@@ -169,6 +169,16 @@ describe("parseActionFences / parseChatActionFences", () => {
 });
 
 // ── table truncation footer copy ─────────────────────────────────────────────
+
+describe("normalizeRow", () => {
+  test("pads short rows and drops extras to the header width", () => {
+    expect(normalizeRow(["a"], 3)).toEqual(["a", "", ""]);
+    expect(normalizeRow(["a", "b", "c", "d"], 2)).toEqual(["a", "b"]);
+    expect(normalizeRow([], 2)).toEqual(["", ""]);
+    const cell = { text: "t", path: "x.ts" };
+    expect(normalizeRow([cell], 1)).toEqual([cell]); // objects pass through
+  });
+});
 
 describe("tableTruncationNote", () => {
   test("names the cap that actually fired", () => {
