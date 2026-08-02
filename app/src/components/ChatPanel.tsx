@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatState } from "../types";
-import { RichText } from "./RichText";
+import type { ChatAction, ChatState } from "../types";
+import { RichText, parseActionFences } from "./RichText";
+
+/** A message's ```marrow-action execution statuses, keyed as RichText expects
+ * (`${blockIndex}:${JSON.stringify(action)}`). See `chatActionStatuses` in
+ * App.tsx for how the outer, per-message map is built. */
+type ActionStatusMap = Record<string, "done" | "failed">;
 
 interface ChatPanelProps {
   chat: ChatState;
@@ -15,6 +20,13 @@ interface ChatPanelProps {
   onToggleWholePr: (value: boolean) => void;
   /** Jump to a file (and, when supported, a line) mentioned in an answer. */
   onOpenFile?: (path: string, line?: number) => void;
+  /** Run a ```marrow-action chip's action; `msgKey` identifies which message
+   * (or the in-progress "streaming" turn) the chip belongs to, so the caller
+   * can record the resulting status under the right bucket. */
+  onRunAction?: (msgKey: string, a: ChatAction, blockIndex: number) => void;
+  /** Action statuses for every message + the streaming turn, keyed by msgKey
+   * ("msg-<index>" or "streaming"). */
+  actionStatuses?: Record<string, ActionStatusMap>;
 }
 
 /** A dim divider marking a gap where the AI used tools / thought between
@@ -34,18 +46,44 @@ function ThoughtDivider({ seconds }: { seconds: number }) {
  * dim "Thought for Xs" dividers) and renders the text spans between them as
  * minimal Markdown.
  */
-function ChatMarkdown({ content, filePaths, onOpenFile }: { content: string; filePaths: string[]; onOpenFile?: (path: string, line?: number) => void }) {
+function ChatMarkdown({
+  content,
+  filePaths,
+  onOpenFile,
+  onRunAction,
+  actionStatuses,
+}: {
+  content: string;
+  filePaths: string[];
+  onOpenFile?: (path: string, line?: number) => void;
+  onRunAction?: (a: ChatAction, blockIndex: number) => void;
+  actionStatuses?: ActionStatusMap;
+}) {
   // Capturing split → [text, secs, text, secs, text, …].
   const parts = content.split(/\[\[thought:(\d+)\]\]/g);
+  // Each text part gets its own RichText call, but action-block indices must
+  // stay contiguous across the whole message (App's auto-exec effect numbers
+  // blocks over the full, unsplit streamingText) — track a running offset.
+  let blockIndexOffset = 0;
   return (
     <>
-      {parts.map((part, i) =>
-        i % 2 === 1 ? (
-          <ThoughtDivider key={i} seconds={Number(part)} />
-        ) : part ? (
-          <RichText key={i} content={part} filePaths={filePaths} onOpenFile={onOpenFile} />
-        ) : null,
-      )}
+      {parts.map((part, i) => {
+        if (i % 2 === 1) return <ThoughtDivider key={i} seconds={Number(part)} />;
+        if (!part) return null;
+        const offset = blockIndexOffset;
+        blockIndexOffset += parseActionFences(part).length;
+        return (
+          <RichText
+            key={i}
+            content={part}
+            filePaths={filePaths}
+            onOpenFile={onOpenFile}
+            onRunAction={onRunAction}
+            actionStatuses={actionStatuses}
+            blockIndexOffset={offset}
+          />
+        );
+      })}
     </>
   );
 }
@@ -60,6 +98,8 @@ export function ChatPanel({
   onClear,
   onToggleWholePr,
   onOpenFile,
+  onRunAction,
+  actionStatuses,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -149,7 +189,17 @@ export function ChatPanel({
               )}
             </div>
             <div className="chat-msg-body">
-              {m.role === "assistant" ? <ChatMarkdown content={m.content} filePaths={filePaths} onOpenFile={onOpenFile} /> : <span className="chat-user-text">{m.content}</span>}
+              {m.role === "assistant" ? (
+                <ChatMarkdown
+                  content={m.content}
+                  filePaths={filePaths}
+                  onOpenFile={onOpenFile}
+                  onRunAction={onRunAction ? (a, blockIndex) => onRunAction(`msg-${i}`, a, blockIndex) : undefined}
+                  actionStatuses={actionStatuses?.[`msg-${i}`]}
+                />
+              ) : (
+                <span className="chat-user-text">{m.content}</span>
+              )}
             </div>
           </div>
         ))}
@@ -157,7 +207,15 @@ export function ChatPanel({
           <div className="chat-msg chat-msg-assistant">
             <div className="chat-msg-role">AI</div>
             <div className="chat-msg-body">
-              {chat.streamingText && <ChatMarkdown content={chat.streamingText} filePaths={filePaths} onOpenFile={onOpenFile} />}
+              {chat.streamingText && (
+                <ChatMarkdown
+                  content={chat.streamingText}
+                  filePaths={filePaths}
+                  onOpenFile={onOpenFile}
+                  onRunAction={onRunAction ? (a, blockIndex) => onRunAction("streaming", a, blockIndex) : undefined}
+                  actionStatuses={actionStatuses?.["streaming"]}
+                />
+              )}
               {chat.streamingStatus ? (
                 <span className="chat-working"><span className="chat-working-spinner" aria-hidden="true">↻</span> {chat.streamingStatus}</span>
               ) : chat.streamingText ? (

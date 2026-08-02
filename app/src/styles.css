@@ -6415,6 +6415,45 @@ mark.search-highlight-current {
   white-space: nowrap;
 }
 
+/* Chat ```marrow-action chips (issue #166) — a chip replaces the JSON, one
+ * per completed action fence; neutral/clickable until run, then ✓/✗. */
+.chat-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--accent-bg);
+  color: var(--accent-strong);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  margin: 2px 0;
+  cursor: pointer;
+}
+.chat-action-chip:hover {
+  color: var(--accent-strong-hover);
+  border-color: var(--accent-strong);
+}
+.chat-action-chip-icon { font-size: 11px; }
+.chat-action-chip--done {
+  background: var(--diff-add-bg);
+  color: var(--diff-add-text);
+  border-color: var(--diff-add-text);
+}
+.chat-action-chip--failed {
+  background: var(--diff-remove-bg);
+  color: var(--diff-remove-text);
+  border-color: var(--diff-remove-text);
+}
+.chat-action-chip--pending {
+  color: var(--text-muted);
+  background: var(--chip-bg);
+  border-style: dashed;
+  font-style: italic;
+  cursor: default;
+}
+
 /* ─── RichText block-level markdown (PR descriptions, chat answers) ─────── */
 .rt-h { font-weight: 600; color: var(--text-primary); margin: var(--space-3) 0 var(--space-1); line-height: 1.3; }
 .rt-h:first-child { margin-top: 0; }

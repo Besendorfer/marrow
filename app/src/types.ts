@@ -199,6 +199,20 @@ export type ChatStreamEvent =
   | { type: "done"; content: string }
   | { type: "error"; message: string };
 
+/** A view-control action the chat model can emit as a fenced ```marrow-action
+ * JSON block (see `CHAT_UI_ACTIONS` in `crates/core/src/chat.rs`, the single
+ * source of truth for the protocol). Mirrors the schemas documented there —
+ * keep the two in sync by hand. */
+export type ChatAction =
+  | { action: "open_file"; path: string; line?: number }
+  | { action: "open_overview" }
+  | { action: "next_file" }
+  | { action: "prev_file" }
+  | { action: "open_commit"; sha: string }
+  | { action: "set_hunk_filter"; filter: "all" | "high" | "medium" }
+  | { action: "set_view_mode"; mode: DiffViewMode }
+  | { action: "show_comments"; open: boolean };
+
 export type NoteResolutionState = "fixed" | "intentional" | "noise";
 
 /** How/why an AI note was resolved. Mirrors `NoteResolution` in
