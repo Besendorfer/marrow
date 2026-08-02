@@ -53,6 +53,16 @@ export function isChatCard(x: unknown): x is ChatCard {
   }
 }
 
+
+/** Which render cap fired, as footer copy — "first 50 rows" on a 9-column
+ * overflow would lie, so each cap names itself. Empty string when nothing was
+ * cut. Exported for the protocol test suite. */
+export function tableTruncationNote(rowCount: number, colCount: number): string {
+  return [rowCount > MAX_ROWS && `first ${MAX_ROWS} rows`, colCount > MAX_COLS && `first ${MAX_COLS} columns`]
+    .filter(Boolean)
+    .join(", ");
+}
+
 /** A single table cell: a jump button when it carries a `path`, plain text
  * otherwise. Mirrors the `chat-file-link` affordance RichText uses for inline
  * file mentions. */
@@ -76,12 +86,7 @@ function CardCell({ cell, onOpenFile }: { cell: ChatCardCell; onOpenFile?: (path
 function TableCard({ card, onOpenFile }: { card: Extract<ChatCard, { type: "table" }>; onOpenFile?: (path: string, line?: number) => void }) {
   const columns = card.columns.slice(0, MAX_COLS);
   const rows = card.rows.slice(0, MAX_ROWS);
-  const rowsCut = card.rows.length > MAX_ROWS;
-  const colsCut = card.columns.length > MAX_COLS;
-  // Say which cap actually fired — "first 50 rows" on a 9-column overflow lies.
-  const truncNote = [rowsCut && `first ${MAX_ROWS} rows`, colsCut && `first ${MAX_COLS} columns`]
-    .filter(Boolean)
-    .join(", ");
+  const truncNote = tableTruncationNote(card.rows.length, card.columns.length);
   return (
     <div className="chat-card">
       {card.title && <div className="chat-card-title">{card.title}</div>}

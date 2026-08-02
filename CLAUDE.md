@@ -10,6 +10,7 @@ All app commands run from `app/`. Use **Bun**, not npm.
 - `bun run tauri dev` — full app in dev (starts Vite on :1420 via `beforeDevCommand`, rebuilds Rust on change)
 - `bun run dev` — Vite only. The UI loads but every `invoke()` fails outside the Tauri shell — use for CSS/layout work only.
 - `bun run build` — `tsc && vite build`. **This is the TypeScript typecheck** (no separate lint/typecheck script).
+- `bun test` — frontend unit tests (chat protocol invariants in `src/components/chatProtocol.test.ts`); Rust tests via `cargo test -p marrow-core`.
 - `bun run tauri build` — full signed macOS bundle → `app/src-tauri/target/release/bundle/macos/Marrow.app`. Slow; needs the signing identity — don't run to "verify" a change, use `cargo check` + `bun run build`.
 - `cargo check` (from `app/src-tauri/`) — Rust typecheck for the whole workspace (desktop crate + `crates/core` + `crates/cli`)
 - `cargo run -p marrow-cli -- review <pr>` (from `app/src-tauri/`) — run the terminal app

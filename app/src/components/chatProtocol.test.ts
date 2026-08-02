@@ -1,0 +1,180 @@
+// Unit tests for the chat protocol layer (issue #166): the marrow-action /
+// marrow-card fence parsers and validators. These are the pure-function
+// invariants that keep transcript chips honest — most critically, that the
+// execute side (App's streaming effect) and the render side (ChatMarkdown)
+// always agree on block indices. First bun-test suite in the repo; run with
+// `bun test` from app/.
+import { describe, expect, test } from "bun:test";
+import { isChatAction, parseActionFences, parseChatActionFences } from "./RichText";
+import { isChatCard, tableTruncationNote } from "./ChatCards";
+import type { ChatAction } from "../types";
+
+// ── isChatAction ─────────────────────────────────────────────────────────────
+
+describe("isChatAction", () => {
+  test("accepts every documented action shape", () => {
+    const valid = [
+      { action: "open_file", path: "app/src/App.tsx" },
+      { action: "open_file", path: "app/src/App.tsx", line: 42 },
+      { action: "open_overview" },
+      { action: "next_file" },
+      { action: "prev_file" },
+      { action: "open_commit", sha: "abc1234" },
+      { action: "set_hunk_filter", filter: "all" },
+      { action: "set_hunk_filter", filter: "high" },
+      { action: "set_hunk_filter", filter: "medium" },
+      { action: "set_view_mode", mode: "split" },
+      { action: "set_view_mode", mode: "unified" },
+      { action: "show_comments", open: true },
+    ];
+    for (const a of valid) expect(isChatAction(a)).toBe(true);
+  });
+
+  test("rejects near-misses without throwing", () => {
+    const invalid = [
+      null,
+      undefined,
+      "open_file",
+      [],
+      {},
+      { action: "open_file" }, // missing path
+      { action: "open_file", path: 7 },
+      { action: "open_file", path: "x", line: "42" }, // line must be number
+      { action: "open_commit" }, // missing sha
+      { action: "set_hunk_filter", filter: "med" }, // "med" is not a value
+      { action: "set_view_mode", mode: "side-by-side" },
+      { action: "show_comments", open: "yes" },
+      { action: "resolve_note", key: "x" }, // mutating actions don't exist
+    ];
+    for (const a of invalid) expect(isChatAction(a)).toBe(false);
+  });
+});
+
+// ── isChatCard ───────────────────────────────────────────────────────────────
+
+describe("isChatCard", () => {
+  const table = {
+    type: "table",
+    title: "Files",
+    columns: ["File", "Adds"],
+    rows: [["a.ts", "12"], [{ text: "b.ts", path: "src/b.ts", line: 3 }, "4"]],
+  };
+  const list = {
+    type: "list",
+    items: [{ text: "one" }, { text: "two", detail: "d", path: "src/a.ts", line: 9 }],
+  };
+
+  test("accepts both documented schemas", () => {
+    expect(isChatCard(table)).toBe(true);
+    expect(isChatCard(list)).toBe(true);
+    expect(isChatCard({ type: "list", items: [] })).toBe(true); // empty is valid
+  });
+
+  test("caps are a render concern, not validation", () => {
+    const huge = {
+      type: "table",
+      columns: Array.from({ length: 20 }, (_, i) => `c${i}`),
+      rows: Array.from({ length: 200 }, () => Array.from({ length: 20 }, () => "x")),
+    };
+    expect(isChatCard(huge)).toBe(true);
+  });
+
+  test("rejects malformed payloads without throwing", () => {
+    const invalid = [
+      null,
+      "table",
+      [],
+      { type: "table", columns: ["a"], rows: [["ok"], "not-a-row"] },
+      { type: "table", columns: [1, 2], rows: [] },
+      { type: "table", items: [{ text: "wrong container" }] }, // list body on table
+      { type: "table", columns: ["a"], rows: [[{ path: "x.ts" }]] }, // cell missing text
+      { type: "table", columns: ["a"], rows: [[{ text: "t", line: "3" }]] }, // line as string
+      { type: "list", items: [{ detail: "no text" }] },
+      { type: "list", items: "not-an-array" },
+      { type: "chart", series: [] }, // unknown type
+      { type: "list", items: [], title: 7 }, // title must be a string
+    ];
+    for (const c of invalid) expect(isChatCard(c)).toBe(false);
+  });
+});
+
+// ── fence parsing: the block-index invariant ─────────────────────────────────
+
+const fence = (lang: string, body: string) => "```" + lang + "\n" + body + "\n```";
+const ACTION_A: ChatAction = { action: "open_overview" };
+const ACTION_B: ChatAction = { action: "set_view_mode", mode: "unified" };
+const CARD = { type: "list", items: [{ text: "x" }] };
+
+describe("parseActionFences / parseChatActionFences", () => {
+  test("returns only closed marrow-action fences, in order", () => {
+    const text = [
+      "Some prose.",
+      fence("marrow-action", JSON.stringify(ACTION_A)),
+      fence("rust", "fn main() {}"), // ordinary code fence — ignored
+      fence("marrow-card", JSON.stringify(CARD)), // card — never an action
+      fence("marrow-action", JSON.stringify(ACTION_B)),
+    ].join("\n");
+    const fences = parseActionFences(text);
+    expect(fences.length).toBe(2);
+    expect(fences[0].action).toEqual(ACTION_A);
+    expect(fences[1].action).toEqual(ACTION_B);
+  });
+
+  test("an interleaved card fence must not shift action block indices", () => {
+    // The execute side keys statuses by index into THIS array; if a card fence
+    // ever counted as an action block, chips would show the wrong outcomes.
+    const without = parseActionFences(
+      [fence("marrow-action", JSON.stringify(ACTION_A)), fence("marrow-action", JSON.stringify(ACTION_B))].join("\n")
+    );
+    const withCard = parseActionFences(
+      [
+        fence("marrow-action", JSON.stringify(ACTION_A)),
+        fence("marrow-card", JSON.stringify(CARD)),
+        fence("marrow-action", JSON.stringify(ACTION_B)),
+      ].join("\n")
+    );
+    expect(withCard.map((f) => f.action)).toEqual(without.map((f) => f.action));
+  });
+
+  test("an unclosed fence is not executed-parseable", () => {
+    const text = "prose\n```marrow-action\n" + JSON.stringify(ACTION_A); // no closing fence
+    expect(parseActionFences(text).length).toBe(0);
+  });
+
+  test("invalid JSON or unknown action yields action: null (chip falls back)", () => {
+    const text = [
+      fence("marrow-action", "{ not json"),
+      fence("marrow-action", JSON.stringify({ action: "explode" })),
+    ].join("\n");
+    const fences = parseActionFences(text);
+    expect(fences.length).toBe(2);
+    expect(fences[0].action).toBeNull();
+    expect(fences[1].action).toBeNull();
+  });
+
+  test("thought markers do not desync the chat-side parse", () => {
+    // ChatMarkdown splits on [[thought:N]] before rendering; the executor uses
+    // parseChatActionFences to segment identically. A divider between fences
+    // must leave the same actions in the same order.
+    const text = [
+      fence("marrow-action", JSON.stringify(ACTION_A)),
+      "[[thought:1]]",
+      "some deliberation",
+      "[[thought:1]]",
+      fence("marrow-action", JSON.stringify(ACTION_B)),
+    ].join("\n");
+    const fences = parseChatActionFences(text);
+    expect(fences.map((f) => f.action)).toEqual([ACTION_A, ACTION_B]);
+  });
+});
+
+// ── table truncation footer copy ─────────────────────────────────────────────
+
+describe("tableTruncationNote", () => {
+  test("names the cap that actually fired", () => {
+    expect(tableTruncationNote(51, 3)).toBe("first 50 rows");
+    expect(tableTruncationNote(10, 9)).toBe("first 8 columns");
+    expect(tableTruncationNote(60, 9)).toBe("first 50 rows, first 8 columns");
+    expect(tableTruncationNote(50, 8)).toBe(""); // at the caps exactly — nothing cut
+  });
+});

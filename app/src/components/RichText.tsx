@@ -283,7 +283,7 @@ function parseBlocks(segment: string): Block[] {
  * a chip, same as unparseable JSON. */
 // Kept in sync BY HAND with CHAT_UI_ACTIONS (crates/core/src/chat.rs) and
 // the ChatAction union (types.ts) — edit all three together.
-function isChatAction(x: unknown): x is ChatAction {
+export function isChatAction(x: unknown): x is ChatAction {
   if (!x || typeof x !== "object") return false;
   const a = x as Record<string, unknown>;
   switch (a.action) {
