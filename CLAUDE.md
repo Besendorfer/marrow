@@ -10,6 +10,7 @@ All app commands run from `app/`. Use **Bun**, not npm.
 - `bun run tauri dev` — full app in dev (starts Vite on :1420 via `beforeDevCommand`, rebuilds Rust on change)
 - `bun run dev` — Vite only. The UI loads but every `invoke()` fails outside the Tauri shell — use for CSS/layout work only.
 - `bun run build` — `tsc && vite build`. **This is the TypeScript typecheck** (no separate lint/typecheck script).
+- `bun test` — frontend unit tests (chat protocol invariants in `src/components/chatProtocol.test.ts`); Rust tests via `cargo test -p marrow-core`.
 - `bun run tauri build` — full signed macOS bundle → `app/src-tauri/target/release/bundle/macos/Marrow.app`. Slow; needs the signing identity — don't run to "verify" a change, use `cargo check` + `bun run build`.
 - `cargo check` (from `app/src-tauri/`) — Rust typecheck for the whole workspace (desktop crate + `crates/core` + `crates/cli`)
 - `cargo run -p marrow-cli -- review <pr>` (from `app/src-tauri/`) — run the terminal app
@@ -51,7 +52,7 @@ Notes:
 - **macOS-only by design**: `macOSPrivateApi`, `objc2`/`tauri-nspanel` deps under `cfg(target_os = "macos")`, Developer ID signing in `tauri.conf.json`. Don't gate desktop features on cross-platform support; the CLI is the cross-platform surface.
 - **Mini-player is fragile**: the floating window is a non-activating NSPanel driven by polling `NSApplication.isActive` (no webview focus event exists for app reactivation). Read the comments in `lib.rs` and `docs/mini-player.md` before touching show/hide logic — many past regressions here (see git log).
 - **Generated / ignored**: `app/dist/`, `app/src-tauri/target/`, `app/src-tauri/gen/`, `browser-extension/dist/`. Never edit these. `Cargo.lock` IS tracked (binary crates) — commit its changes.
-- **Chat action protocol is triplicated**: `CHAT_UI_ACTIONS` (`crates/core/src/chat.rs`), the `ChatAction` union (`app/src/types.ts`), and `isChatAction` (`app/src/components/RichText.tsx`) must stay in sync by hand — sync markers at each site.
+- **Chat action protocol is triplicated**: `CHAT_UI_ACTIONS` (`crates/core/src/chat.rs`), the `ChatAction` union (`app/src/types.ts`), and `isChatAction` (`app/src/components/RichText.tsx`) must stay in sync by hand — sync markers at each site. The `marrow-card` answer-card protocol (issue #166) is triplicated the same way, across its own three sites: `CHAT_ANSWER_CARDS` (`crates/core/src/chat.rs`), the `ChatCard` union (`app/src/types.ts`), and `isChatCard` (`app/src/components/ChatCards.tsx`).
 - **PR-ref regex is quadruplicated**: `browser-extension/content.js`, the bookmarklet in `app/src/components/SettingsModal.tsx`, `crates/core/src/pr_parser.rs`, and `app/src/utils.ts` must stay in sync — a comment in `content.js` marks this.
 - **User state lives in `~/.config/marrow/`** (config with plaintext API keys, manifest cache, viewed/dismissed state). Treat it as real user data — never clear it in tests or "cleanup".
 - Vite ignores `**/src-tauri/**` in its watcher; Rust edits are picked up by the Tauri CLI, not Vite.

@@ -71,7 +71,9 @@ Guidelines:
 // The action protocol is TRIPLICATED by hand: this prompt section, the
 // `ChatAction` union in app/src/types.ts, and the `isChatAction` validator in
 // app/src/components/RichText.tsx. Adding or changing an action means editing
-// all three, or the model will emit blocks the chips silently reject.
+// all three, or the model will emit blocks the chips silently reject. The
+// `marrow-card` protocol just below is triplicated the same way, across its
+// own three sites — see the comment on CHAT_ANSWER_CARDS.
 const CHAT_UI_ACTIONS: &str = r#"You can control the review app by emitting a fenced code block with the language `marrow-action` containing exactly one JSON object. The app executes it once and renders it as a chip instead of raw JSON — never describe the JSON in prose, just emit the block.
 
 Available actions (the complete list — never invent others):
@@ -91,14 +93,43 @@ Usage rules:
 - Never invent a path — only use files listed under FILES IN SCOPE.
 - One JSON object per fence; use separate fences for multiple actions."#;
 
+/// Documents the `marrow-card` fenced-block protocol: a way for the model to
+/// present a tabular or enumerated answer as a structured, renderable card
+/// instead of prose or a Markdown table. The frontend (RichText.tsx, via
+/// ChatCards.tsx) recognizes a fenced code block whose language is exactly
+/// `marrow-card`, parses its one JSON object, and renders a table or list
+/// widget in its place — pure rendering, never executed like an action.
+// The card protocol is TRIPLICATED by hand, the same way the action protocol
+// above is: this prompt section, the `ChatCard` union in app/src/types.ts,
+// and the `isChatCard` validator in app/src/components/ChatCards.tsx. Adding
+// or changing a schema means editing all three, or the app will silently
+// fall back to rendering a plain code block.
+const CHAT_ANSWER_CARDS: &str = r#"When an answer is naturally a table or a list of things, present it as a fenced code block with the language `marrow-card` containing exactly one JSON object. The app renders it as a structured card instead of raw JSON — never describe the JSON in prose, just emit the block.
+
+Two schemas (v1 — the only two):
+- Table: {"type":"table","title":"<optional>","columns":["Col A","Col B"],"rows":[["cell","cell"],...]}
+- List: {"type":"list","title":"<optional>","items":[{"text":"...","detail":"<optional>","path":"<optional>","line":<optional number>},...]}
+
+A table cell is either a plain string or {"text":"...","path":"<optional>","line":<optional number>} when it should jump to a file location.
+
+Usage rules:
+- Use a card when the answer is naturally tabular or an enumeration — files affected by something, a list of locations, a comparison across options.
+- One JSON object per fence.
+- Put a short sentence BEFORE the card saying what it shows — never repeat the card's contents in prose afterward.
+- Only use `path` values for files listed under FILES IN SCOPE — never invent one.
+- Keep tables to at most 20 rows and 5 columns.
+- A plain conversational answer needs no card — don't force one."#;
+
 /// Assemble the system prompt: the assistant instructions, the UI-actions
-/// protocol, then the PR title, AI summary, and the in-scope file diffs
-/// (budget-bounded).
+/// protocol, the answer-cards protocol, then the PR title, AI summary, and
+/// the in-scope file diffs (budget-bounded).
 pub fn build_chat_system(ctx: &ChatContext) -> String {
     let mut out = String::with_capacity(4096);
     out.push_str(CHAT_SYSTEM_PREAMBLE);
     out.push_str("\n\n--- UI ACTIONS ---\n\n");
     out.push_str(CHAT_UI_ACTIONS);
+    out.push_str("\n\n--- ANSWER CARDS ---\n\n");
+    out.push_str(CHAT_ANSWER_CARDS);
     out.push_str("\n\n--- PR CONTEXT ---\n\n");
     out.push_str(&format!("PR Title: {}\n", ctx.pr_title));
     if !ctx.summary.trim().is_empty() {
@@ -193,6 +224,15 @@ mod tests {
     }
 
     #[test]
+    fn system_documents_answer_cards() {
+        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None));
+        assert!(sys.contains("ANSWER CARDS"));
+        assert!(sys.contains("marrow-card"));
+        assert!(sys.contains(r#"{"type":"table""#));
+        assert!(sys.contains(r#"{"type":"list""#));
+    }
+
+    #[test]
     fn system_includes_title_summary_and_diff() {
         let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None));
         assert!(sys.contains("Test PR"));
@@ -217,10 +257,12 @@ mod tests {
                 .collect(),
         };
         let sys = build_chat_system(&ctx);
-        // Preamble + UI-actions guide + context, but bounded well under the
-        // sum of all inputs. The fixed-overhead margin covers the constant
-        // instructional text (preamble, UI actions protocol, section labels).
-        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 2500);
+        // Preamble + UI-actions guide + answer-cards guide + context, but
+        // bounded well under the sum of all inputs. The fixed-overhead margin
+        // covers the constant instructional text (preamble, UI actions
+        // protocol, answer cards protocol, section labels) — bumped when the
+        // answer-cards protocol (issue #166 stage 2) was added.
+        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 3800);
     }
 
     #[test]
