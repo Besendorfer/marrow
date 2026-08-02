@@ -48,6 +48,10 @@ const BRIEF_ME_PROMPT =
   "Merge related changes into one line. Skip filler like 'low risk' or 'mechanical change' — silence means fine. " +
   "End with one line: where to spend my review time. If I want depth on a stop, I'll ask.";
 
+/** Ceiling on marrow-action blocks auto-executed per streaming turn — the
+ * backstop behind the prompt's "at most a few actions per reply". */
+const MAX_AUTO_ACTIONS_PER_TURN = 6;
+
 /** A fresh, closed chat panel for a new tab. */
 function emptyChatState(): ChatState {
   return { messages: [], status: "idle", streamingText: "", streamingStatus: null, includeWholePr: false, open: false };
@@ -1253,6 +1257,11 @@ function App() {
     const executed = chatExecutedActionsRef.current[tabId] ?? (chatExecutedActionsRef.current[tabId] = new Set());
     fences.forEach((entry, blockIndex) => {
       if (!entry.action) return;
+      // The prompt says "at most a few actions per reply", but the prompt
+      // isn't enforcement: cap auto-execution per turn so a runaway reply
+      // can't thrash the view. Blocks past the cap render as neutral
+      // click-to-run chips instead.
+      if (executed.size >= MAX_AUTO_ACTIONS_PER_TURN) return;
       const key = `${blockIndex}:${JSON.stringify(entry.action)}`;
       if (executed.has(key)) return;
       executed.add(key);
