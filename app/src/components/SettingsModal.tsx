@@ -141,6 +141,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             placeholder="claude-sonnet-4-6 or arn:aws:bedrock:..."
             spellCheck={false}
           />
+          <p className="settings-hint">
+            Chat can send repository code beyond the diff to your configured AI provider.
+          </p>
 
           {!model.trim().startsWith("arn:") && (
             <>

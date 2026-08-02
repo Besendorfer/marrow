@@ -651,6 +651,15 @@ pub struct ChatTurnDto {
     pub content: String,
 }
 
+/// Repo identity for the chat's read-only repo tools (issue #150) — present
+/// when the frontend wants tool use; absent falls back to diff-only chat.
+#[derive(Debug, Deserialize)]
+pub struct ChatRepoDto {
+    pub owner: String,
+    pub repo: String,
+    pub head_sha: String,
+}
+
 /// A chat request: a unique id (so the stream can be cancelled), the grounding
 /// context, the conversation so far, and the new user message.
 #[derive(Debug, Deserialize)]
@@ -660,6 +669,8 @@ pub struct ChatRequest {
     #[serde(default)]
     pub history: Vec<ChatTurnDto>,
     pub message: String,
+    #[serde(default)]
+    pub repo: Option<ChatRepoDto>,
 }
 
 /// Streaming events sent back over the IPC channel while a chat answer is
@@ -699,7 +710,11 @@ pub async fn chat_send(
         }
     };
 
-    let system = build_chat_system(&request.context);
+    // Tool use needs both repo identity from the frontend AND a GitHub token
+    // to call the API with — either missing falls back to diff-only chat.
+    let token = resolve_github_token(&settings);
+    let tools = request.repo.as_ref().filter(|_| token.is_some());
+    let system = build_chat_system(&request.context, tools.is_some());
     let mut turns: Vec<ChatTurn> = request
         .history
         .iter()
@@ -709,9 +724,9 @@ pub async fn chat_send(
 
     // Register a cancellation token so `chat_cancel` can abort this stream. The
     // std Mutex guard must be dropped before any await (it isn't Send).
-    let token = CancellationToken::new();
+    let cancel_token = CancellationToken::new();
     let request_id = request.request_id.clone();
-    state.chat_cancels.lock().unwrap().insert(request_id.clone(), token.clone());
+    state.chat_cancels.lock().unwrap().insert(request_id.clone(), cancel_token.clone());
 
     let update_channel = channel.clone();
     let mut on_update = move |u: marrow_core::ai::StreamUpdate| {
@@ -723,17 +738,33 @@ pub async fn chat_send(
     };
 
     // Race the streaming call against cancellation. On cancel, the select drops
-    // the `invoke_chat_stream` future — closing the HTTP/Bedrock stream (and
-    // killing the `claude` child, which is spawned with kill_on_drop) — and we
-    // send nothing further. The frontend keeps the partial answer it streamed.
+    // the underlying future — closing the HTTP/Bedrock stream (and killing the
+    // `claude` child, which is spawned with kill_on_drop) — and we send nothing
+    // further. The frontend keeps the partial answer it streamed. One select
+    // covers the plain single-shot call and the tool-agent loop identically by
+    // choosing the branch inside an async block, so cancellation semantics stay
+    // the same either way.
     tokio::select! {
-        result = backend.invoke_chat_stream(&system, &turns, &mut on_update) => {
+        result = async {
+            match tools {
+                Some(repo) => {
+                    let github = GithubClient::new(token);
+                    let target = marrow_core::chat_agent::RepoToolTarget {
+                        owner: repo.owner.clone(),
+                        repo: repo.repo.clone(),
+                        head_sha: repo.head_sha.clone(),
+                    };
+                    marrow_core::chat_agent::run_chat_agent(&backend, &github, &target, &system, turns, &mut on_update).await
+                }
+                None => backend.invoke_chat_stream(&system, &turns, &mut on_update).await,
+            }
+        } => {
             match result {
                 Ok(content) => { let _ = channel.send(ChatStreamEvent::Done { content }); }
                 Err(message) => { let _ = channel.send(ChatStreamEvent::Error { message }); }
             }
         }
-        _ = token.cancelled() => {
+        _ = cancel_token.cancelled() => {
             // Aborted by the user; the partial answer already lives on the frontend.
         }
     }

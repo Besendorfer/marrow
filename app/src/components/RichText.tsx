@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import hljs from "highlight.js";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
-import type { ChatAction, ChatCard } from "../types";
+import type { ChatAction, ChatCard, ChatToolCall } from "../types";
 import { ChatCardView, isChatCard } from "./ChatCards";
 
 /** Render a fenced code block with highlight.js.
@@ -306,6 +306,28 @@ export function isChatAction(x: unknown): x is ChatAction {
   }
 }
 
+/** Runtime shape check for a parsed ```marrow-tool payload — mirrors the
+ * schemas documented in `CHAT_REPO_TOOLS` (crates/core/src/chat.rs). Unlike
+ * `isChatAction`, a match here never triggers execution — the backend has
+ * already run the tool by the time the fence reaches the frontend; this only
+ * decides whether to render a chip or fall back to a plain code block. */
+// Kept in sync BY HAND with CHAT_REPO_TOOLS (crates/core/src/chat.rs) and
+// ChatToolCall (types.ts) — edit all three together.
+export function isChatToolCall(x: unknown): x is ChatToolCall {
+  if (!x || typeof x !== "object") return false;
+  const t = x as Record<string, unknown>;
+  switch (t.tool) {
+    case "read_file":
+      return typeof t.path === "string" && t.path.length > 0;
+    case "search_code":
+      return typeof t.query === "string" && t.query.length > 0;
+    case "list_dir":
+      return typeof t.path === "string";
+    default:
+      return false;
+  }
+}
+
 /** Extract every CLOSED ```marrow-action fence from `text`, in appearance
  * order — reusing `parseBlocks` so this always segments text identically to
  * RichText's own rendering (no separate regex to drift out of sync). This is
@@ -365,6 +387,22 @@ function actionChipLabel(a: ChatAction): string {
       return `${a.mode} view`;
     case "show_comments":
       return a.open ? "Show comments" : "Hide comments";
+  }
+}
+
+/** Human label for a chat-tool chip. */
+export function toolChipLabel(t: ChatToolCall): string {
+  switch (t.tool) {
+    case "read_file": {
+      const base = t.path.split("/").pop() || t.path;
+      return `Read ${base}`;
+    }
+    case "search_code": {
+      const query = t.query.length > 32 ? `${t.query.slice(0, 32)}…` : t.query;
+      return `Searched “${query}”`;
+    }
+    case "list_dir":
+      return `Listed ${t.path || "repo root"}`;
   }
 }
 
@@ -504,6 +542,28 @@ export function RichText({
                 const card = tryParseChatCard(b.code.trim());
                 if (card) {
                   return <ChatCardView key={key} card={card} onOpenFile={onOpenFile} />;
+                }
+                // Invalid JSON/shape — fall back to a plain code block.
+              }
+              if (b.lang === "marrow-tool") {
+                if (!b.closed) {
+                  return <PendingFencePill key={key} label="Looking…" />;
+                }
+                let call: ChatToolCall | null = null;
+                try {
+                  const parsed = JSON.parse(b.code.trim());
+                  if (isChatToolCall(parsed)) call = parsed;
+                } catch {
+                  // Unparseable — call stays null, falls back to a code block.
+                }
+                if (call) {
+                  // Non-interactive: the backend already executed this tool
+                  // call before the fence ever reached the frontend.
+                  return (
+                    <span key={key} className="chat-action-chip chat-action-chip--tool">
+                      {toolChipLabel(call)}
+                    </span>
+                  );
                 }
                 // Invalid JSON/shape — fall back to a plain code block.
               }

@@ -5,9 +5,9 @@
 // always agree on block indices. First bun-test suite in the repo; run with
 // `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { isChatAction, parseActionFences, parseChatActionFences } from "./RichText";
+import { isChatAction, isChatToolCall, parseActionFences, parseChatActionFences, toolChipLabel } from "./RichText";
 import { isChatCard, normalizeRow, tableTruncationNote } from "./ChatCards";
-import type { ChatAction } from "../types";
+import type { ChatAction, ChatToolCall } from "../types";
 
 // ── isChatAction ─────────────────────────────────────────────────────────────
 
@@ -47,6 +47,53 @@ describe("isChatAction", () => {
       { action: "resolve_note", key: "x" }, // mutating actions don't exist
     ];
     for (const a of invalid) expect(isChatAction(a)).toBe(false);
+  });
+});
+
+// ── isChatToolCall ───────────────────────────────────────────────────────────
+
+describe("isChatToolCall", () => {
+  test("accepts the three documented shapes", () => {
+    const valid = [
+      { tool: "read_file", path: "app/src/App.tsx" },
+      { tool: "search_code", query: "fn foo" },
+      { tool: "list_dir", path: "app/src" },
+      { tool: "list_dir", path: "" }, // empty path = repo root, allowed
+    ];
+    for (const t of valid) expect(isChatToolCall(t)).toBe(true);
+  });
+
+  test("rejects near-misses without throwing", () => {
+    const invalid = [
+      null,
+      undefined,
+      "read_file",
+      [],
+      {},
+      { tool: "read_file" }, // missing path
+      { tool: "read_file", path: 7 }, // wrong type
+      { tool: "read_file", path: "" }, // empty path not allowed for read_file
+      { tool: "search_code" }, // missing query
+      { tool: "search_code", query: "" }, // empty query not allowed
+      { tool: "list_dir" }, // missing path (no default at the type-guard level)
+      { tool: "delete_repo", path: "x" }, // unknown tool
+      { action: "open_file", path: "x" }, // marrow-action shape, not a tool
+    ];
+    for (const t of invalid) expect(isChatToolCall(t)).toBe(false);
+  });
+});
+
+describe("toolChipLabel", () => {
+  test("labels each tool, including root-listing and long-query ellipsis", () => {
+    expect(toolChipLabel({ tool: "read_file", path: "app/src/App.tsx" })).toBe("Read App.tsx");
+    expect(toolChipLabel({ tool: "search_code", query: "fn foo" })).toBe("Searched “fn foo”");
+    expect(toolChipLabel({ tool: "list_dir", path: "app/src" })).toBe("Listed app/src");
+    expect(toolChipLabel({ tool: "list_dir", path: "" })).toBe("Listed repo root");
+
+    const longQuery = "x".repeat(50);
+    const label = toolChipLabel({ tool: "search_code", query: longQuery } as ChatToolCall);
+    expect(label).toContain("…");
+    expect(label.length).toBeLessThan(longQuery.length);
   });
 });
 
@@ -134,6 +181,18 @@ describe("parseActionFences / parseChatActionFences", () => {
       ].join("\n")
     );
     expect(withCard.map((f) => f.action)).toEqual(without.map((f) => f.action));
+  });
+
+  test("a marrow-tool fence is never picked up as an action", () => {
+    // Tool fences are backend-executed and frontend-rendered only — they
+    // must not shift action block indices any more than a card fence does.
+    const text = [
+      fence("marrow-tool", JSON.stringify({ tool: "list_dir", path: "" })),
+      fence("marrow-action", JSON.stringify(ACTION_A)),
+    ].join("\n");
+    const fences = parseActionFences(text);
+    expect(fences.length).toBe(1);
+    expect(fences[0].action).toEqual(ACTION_A);
   });
 
   test("an unclosed fence is not executed-parseable", () => {

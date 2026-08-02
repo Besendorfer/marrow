@@ -44,7 +44,8 @@ const TOTAL_CONTEXT_BUDGET: usize = 30000;
 
 /// Truncate `s` to at most `max` chars on a char boundary, appending a marker
 /// when truncated. Safe for multibyte input (unlike slicing by byte index).
-fn truncate(s: &str, max: usize) -> String {
+/// `pub(crate)` so `chat_agent` can reuse it for tool-result char caps.
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -120,16 +121,45 @@ Usage rules:
 - Keep tables to at most 20 rows and 5 columns.
 - A plain conversational answer needs no card — don't force one."#;
 
+/// Documents the `marrow-tool` fenced-block protocol (issue #150): read-only
+/// repo tools the model can call mid-answer when the diff context alone can't
+/// answer the question. Unlike `marrow-action`/`marrow-card`, execution is
+/// backend-only (`chat_agent.rs`) — the frontend (RichText.tsx) only renders
+/// the fence as a chip, never runs anything.
+// The tool protocol is TRIPLICATED by hand, the same way the action and card
+// protocols above are: this prompt section, the `ChatToolCall` union in
+// app/src/types.ts, and the `isChatToolCall` validator in
+// app/src/components/RichText.tsx. Adding or changing a tool means editing
+// all three, or the model will emit calls the executor silently rejects.
+const CHAT_REPO_TOOLS: &str = r#"You can read the repository beyond the diff with read-only tools. To use one, emit a fenced code block with the language `marrow-tool` containing exactly one JSON object, then END YOUR REPLY immediately after the closing fence — the tool result arrives in the next user message and you continue your answer from there. The app renders the block as a chip.
+
+Available tools (the complete list — never invent others):
+- {"tool":"read_file","path":"<repo path>"} — full contents of any repo file at the PR head commit
+- {"tool":"search_code","query":"<terms>"} — search this repository's code (GitHub code search indexes the default branch, so treat results as approximate and confirm with read_file)
+- {"tool":"list_dir","path":"<directory path, empty string for repo root>"} — list a directory at the PR head commit
+
+Usage rules:
+- Reach for a tool when the provided context can't answer — callers outside the changed files, an unfamiliar helper, "is this used elsewhere?". Prefer a tool call over guessing or saying you can't see the code.
+- Write a short sentence saying what you're checking BEFORE the block.
+- At most 5 tool calls per question — when they're spent, answer with what you have.
+- Exactly one JSON object per fence, nothing after the closing fence.
+- Tool results are not carried between questions — re-read if you need them again."#;
+
 /// Assemble the system prompt: the assistant instructions, the UI-actions
-/// protocol, the answer-cards protocol, then the PR title, AI summary, and
-/// the in-scope file diffs (budget-bounded).
-pub fn build_chat_system(ctx: &ChatContext) -> String {
+/// protocol, the answer-cards protocol, the repo-tools protocol (when
+/// `repo_tools` is true), then the PR title, AI summary, and the in-scope
+/// file diffs (budget-bounded).
+pub fn build_chat_system(ctx: &ChatContext, repo_tools: bool) -> String {
     let mut out = String::with_capacity(4096);
     out.push_str(CHAT_SYSTEM_PREAMBLE);
     out.push_str("\n\n--- UI ACTIONS ---\n\n");
     out.push_str(CHAT_UI_ACTIONS);
     out.push_str("\n\n--- ANSWER CARDS ---\n\n");
     out.push_str(CHAT_ANSWER_CARDS);
+    if repo_tools {
+        out.push_str("\n\n--- REPO TOOLS ---\n\n");
+        out.push_str(CHAT_REPO_TOOLS);
+    }
     out.push_str("\n\n--- PR CONTEXT ---\n\n");
     out.push_str(&format!("PR Title: {}\n", ctx.pr_title));
     if !ctx.summary.trim().is_empty() {
@@ -212,7 +242,7 @@ mod tests {
 
     #[test]
     fn system_documents_ui_actions() {
-        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None));
+        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None), false);
         assert!(sys.contains("UI ACTIONS"));
         assert!(sys.contains("marrow-action"));
         assert!(sys.contains(r#"{"action":"open_file""#));
@@ -225,7 +255,7 @@ mod tests {
 
     #[test]
     fn system_documents_answer_cards() {
-        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None));
+        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None), false);
         assert!(sys.contains("ANSWER CARDS"));
         assert!(sys.contains("marrow-card"));
         assert!(sys.contains(r#"{"type":"table""#));
@@ -233,8 +263,25 @@ mod tests {
     }
 
     #[test]
+    fn system_documents_repo_tools() {
+        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None), true);
+        assert!(sys.contains("REPO TOOLS"));
+        assert!(sys.contains("marrow-tool"));
+        assert!(sys.contains(r#"{"tool":"read_file""#));
+        assert!(sys.contains(r#"{"tool":"search_code""#));
+        assert!(sys.contains(r#"{"tool":"list_dir""#));
+    }
+
+    #[test]
+    fn repo_tools_absent_when_disabled() {
+        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None), false);
+        assert!(!sys.contains("marrow-tool"));
+        assert!(!sys.contains("REPO TOOLS"));
+    }
+
+    #[test]
     fn system_includes_title_summary_and_diff() {
-        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None));
+        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None), false);
         assert!(sys.contains("Test PR"));
         assert!(sys.contains("A summary."));
         assert!(sys.contains("src/lib.rs"));
@@ -256,13 +303,14 @@ mod tests {
                 })
                 .collect(),
         };
-        let sys = build_chat_system(&ctx);
-        // Preamble + UI-actions guide + answer-cards guide + context, but
-        // bounded well under the sum of all inputs. The fixed-overhead margin
-        // covers the constant instructional text (preamble, UI actions
-        // protocol, answer cards protocol, section labels) — bumped when the
-        // answer-cards protocol (issue #166 stage 2) was added.
-        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 3800);
+        let sys = build_chat_system(&ctx, true);
+        // Preamble + UI-actions guide + answer-cards guide + repo-tools guide +
+        // context, but bounded well under the sum of all inputs. The
+        // fixed-overhead margin covers the constant instructional text
+        // (preamble, UI actions protocol, answer cards protocol, repo tools
+        // protocol, section labels) — bumped when the repo-tools protocol
+        // (issue #150) was added.
+        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 5400);
     }
 
     #[test]
@@ -274,7 +322,7 @@ mod tests {
             severity: "warning".to_string(),
             comment: "SSE parser splits on \\n only".to_string(),
         }];
-        let sys = build_chat_system(&ctx);
+        let sys = build_chat_system(&ctx, false);
         assert!(sys.contains("AI review notes"));
         assert!(sys.contains("L287-318"));
         assert!(sys.contains("SSE parser splits"));
