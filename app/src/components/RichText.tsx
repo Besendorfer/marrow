@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import hljs from "highlight.js";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
+import type { ChatAction } from "../types";
 
 /** Render a fenced code block with highlight.js.
  *
@@ -196,7 +197,7 @@ type Block =
   | { kind: "quote"; lines: string[] }
   | { kind: "list"; ordered: boolean; items: { text: string; task?: "done" | "todo" }[] }
   | { kind: "hr" }
-  | { kind: "fence"; lang?: string; code: string }
+  | { kind: "fence"; lang?: string; code: string; closed: boolean }
   | { kind: "para"; lines: string[] };
 
 const HEADING_RE = /^(#{1,4})\s+(.*)$/;
@@ -223,9 +224,12 @@ function parseBlocks(segment: string): Block[] {
         code.push(lines[i]);
         i++;
       }
-      i++; // consume the closing fence (or run off the end — unterminated
-      // fences render as code anyway, which also suits streaming chat text).
-      blocks.push({ kind: "fence", lang: f[1] || undefined, code: code.join("\n") });
+      // Whether we stopped on a closing fence line or ran off the end of the
+      // text (streaming chat mid-block) — unterminated fences still render as
+      // code (or, for marrow-action, a pending pill; see RichText below).
+      const closed = i < lines.length;
+      i++; // consume the closing fence (a no-op past the end).
+      blocks.push({ kind: "fence", lang: f[1] || undefined, code: code.join("\n"), closed });
       continue;
     }
     const h = line.match(HEADING_RE);
@@ -272,6 +276,127 @@ function parseBlocks(segment: string): Block[] {
   return blocks;
 }
 
+/** Runtime shape check for a parsed ```marrow-action payload — mirrors the
+ * schemas documented in `CHAT_UI_ACTIONS` (crates/core/src/chat.rs). Anything
+ * that doesn't match a known action renders as a plain code block instead of
+ * a chip, same as unparseable JSON. */
+// Kept in sync BY HAND with CHAT_UI_ACTIONS (crates/core/src/chat.rs) and
+// the ChatAction union (types.ts) — edit all three together.
+function isChatAction(x: unknown): x is ChatAction {
+  if (!x || typeof x !== "object") return false;
+  const a = x as Record<string, unknown>;
+  switch (a.action) {
+    case "open_file":
+      return typeof a.path === "string" && (a.line === undefined || typeof a.line === "number");
+    case "open_overview":
+    case "next_file":
+    case "prev_file":
+      return true;
+    case "open_commit":
+      return typeof a.sha === "string";
+    case "set_hunk_filter":
+      return a.filter === "all" || a.filter === "high" || a.filter === "medium";
+    case "set_view_mode":
+      return a.mode === "split" || a.mode === "unified";
+    case "show_comments":
+      return typeof a.open === "boolean";
+    default:
+      return false;
+  }
+}
+
+/** Extract every CLOSED ```marrow-action fence from `text`, in appearance
+ * order — reusing `parseBlocks` so this always segments text identically to
+ * RichText's own rendering (no separate regex to drift out of sync). This is
+ * the single source of truth for `blockIndex` assignment, shared by
+ * RichText's chip rendering and App's streaming auto-execution effect.
+ * Tolerant JSON parse: `action` is null when the block's content isn't valid
+ * JSON or isn't a recognized action — callers fall back to raw-code / no-op. */
+export function parseActionFences(text: string): { json: string; action: ChatAction | null }[] {
+  const cleaned = text.replace(/<!--[\s\S]*?-->/g, "");
+  const out: { json: string; action: ChatAction | null }[] = [];
+  for (const b of parseBlocks(cleaned)) {
+    if (b.kind !== "fence" || b.lang !== "marrow-action" || !b.closed) continue;
+    const raw = b.code.trim();
+    let action: ChatAction | null = null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (isChatAction(parsed)) action = parsed;
+    } catch {
+      // Unparseable — action stays null, block renders/counts as a miss.
+    }
+    out.push({ json: raw, action });
+  }
+  return out;
+}
+
+/** Same as `parseActionFences`, but first splits on `[[thought:N]]` dividers
+ * exactly like ChatMarkdown does before handing text to RichText — so a
+ * `marrow-action` fence numbers identically whether it's read here (App's
+ * streaming auto-exec effect, scanning the raw message) or during rendering
+ * (ChatMarkdown, which renders each split part through its own RichText
+ * call). Splitting first means a divider landing inside a fence corrupts
+ * that fence's parse the same way on both sides — instead of the two
+ * disagreeing about where blocks start, which would misalign a status key
+ * from its chip. */
+export function parseChatActionFences(text: string): { json: string; action: ChatAction | null }[] {
+  return text.split(/\[\[thought:\d+\]\]/g).flatMap(parseActionFences);
+}
+
+/** Human label for a chat-action chip. */
+function actionChipLabel(a: ChatAction): string {
+  switch (a.action) {
+    case "open_file": {
+      const base = a.path.split("/").pop() || a.path;
+      return `Open ${base}${a.line ? `:${a.line}` : ""}`;
+    }
+    case "open_overview":
+      return "Back to overview";
+    case "next_file":
+      return "Next file";
+    case "prev_file":
+      return "Previous file";
+    case "open_commit":
+      return `Open commit ${a.sha.slice(0, 7)}`;
+    case "set_hunk_filter":
+      return `Filter hunks: ${a.filter}`;
+    case "set_view_mode":
+      return `${a.mode} view`;
+    case "show_comments":
+      return a.open ? "Show comments" : "Hide comments";
+  }
+}
+
+/** A clickable chip rendered in place of a completed ```marrow-action fence.
+ * Neutral/clickable when `status` is absent (not yet run, or a restored
+ * history message); ✓/✗ once it has been executed. `blockIndex` is this
+ * fence's position among the CLOSED marrow-action fences in the containing
+ * message (see `parseActionFences`) — passed back on click so the caller can
+ * record the status under the same key it looks status up with. */
+function ActionChip({
+  action,
+  blockIndex,
+  status,
+  onRunAction,
+}: {
+  action: ChatAction;
+  blockIndex: number;
+  status?: "done" | "failed";
+  onRunAction?: (a: ChatAction, blockIndex: number) => void;
+}) {
+  const icon = status === "done" ? "✓" : status === "failed" ? "✗" : "→";
+  return (
+    <button
+      type="button"
+      className={`chat-action-chip${status ? ` chat-action-chip--${status}` : ""}`}
+      onClick={() => onRunAction?.(action, blockIndex)}
+    >
+      <span className="chat-action-chip-icon" aria-hidden="true">{icon}</span>
+      {actionChipLabel(action)}
+    </button>
+  );
+}
+
 /** Inline nodes for multiple source lines, preserving single newlines as
  * breaks (GitHub renders PR-body newlines hard, like comments). */
 function renderLines(lines: string[], filePaths: string[], onOpenFile?: (path: string, line?: number) => void): React.ReactNode[] {
@@ -282,11 +407,40 @@ function renderLines(lines: string[], filePaths: string[], onOpenFile?: (path: s
 }
 
 /** Minimal GitHub-flavored markdown: fenced code (highlighted), headings,
- * lists with task boxes, quotes, rules, links, inline code/bold. Deliberately
- * small — the project has no Markdown dep; unknown syntax degrades to text. */
-export function RichText({ content, filePaths = [], onOpenFile }: { content: string; filePaths?: string[]; onOpenFile?: (path: string, line?: number) => void }) {
+ * lists with task boxes, quotes, rules, links, inline code/bold, and
+ * ```marrow-action fences (rendered as clickable chips, see ActionChip).
+ * Deliberately small — the project has no Markdown dep; unknown syntax
+ * degrades to text. */
+export function RichText({
+  content,
+  filePaths = [],
+  onOpenFile,
+  onRunAction,
+  actionStatuses,
+  blockIndexOffset = 0,
+}: {
+  content: string;
+  filePaths?: string[];
+  onOpenFile?: (path: string, line?: number) => void;
+  /** Chip click handler for a ```marrow-action block; `blockIndex` is its
+   * position among this message's closed action fences (see ActionChip). */
+  onRunAction?: (a: ChatAction, blockIndex: number) => void;
+  /** Execution status for this message's action blocks, keyed by
+   * `${blockIndex}:${JSON.stringify(action)}`. Absent entries render neutral. */
+  actionStatuses?: Record<string, "done" | "failed">;
+  /** Added to the blockIndex assigned to each action fence in this render —
+   * lets a caller (ChatMarkdown) that splits one message into several
+   * RichText calls (around `[[thought:N]]` dividers) keep indices contiguous
+   * across the whole message instead of restarting at 0 per segment. */
+  blockIndexOffset?: number;
+}) {
   // PR templates are full of HTML comments — never render them.
   const cleaned = content.replace(/<!--[\s\S]*?-->/g, "");
+  const actionFences = useMemo(() => parseActionFences(cleaned), [cleaned]);
+  // Running pointer into actionFences, advanced once per closed marrow-action
+  // fence encountered below — parseBlocks and parseActionFences segment the
+  // same `cleaned` text identically, so this stays in lockstep.
+  let actionPtr = 0;
   // Split on fenced code blocks, keeping the fences as delimiters.
   return (
     <>
@@ -294,8 +448,34 @@ export function RichText({ content, filePaths = [], onOpenFile }: { content: str
         return parseBlocks(cleaned).map((b, j) => {
           const key = `b-${j}`;
           switch (b.kind) {
-            case "fence":
+            case "fence": {
+              if (b.lang === "marrow-action") {
+                if (!b.closed) {
+                  return (
+                    <span key={key} className="chat-action-chip chat-action-chip--pending">
+                      action…
+                    </span>
+                  );
+                }
+                const localIndex = actionPtr++;
+                const blockIndex = blockIndexOffset + localIndex;
+                const entry = actionFences[localIndex];
+                if (entry?.action) {
+                  const statusKey = `${blockIndex}:${JSON.stringify(entry.action)}`;
+                  return (
+                    <ActionChip
+                      key={key}
+                      action={entry.action}
+                      blockIndex={blockIndex}
+                      status={actionStatuses?.[statusKey]}
+                      onRunAction={onRunAction}
+                    />
+                  );
+                }
+                // Unparseable / unrecognized — fall back to a plain code block.
+              }
               return <CodeBlock key={key} lang={b.lang} code={b.code} />;
+            }
             case "heading":
               return <div key={key} className={`rt-h rt-h--${b.level}`}>{renderInline(b.text, filePaths, onOpenFile)}</div>;
             case "hr":

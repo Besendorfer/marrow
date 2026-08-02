@@ -21,13 +21,14 @@ import { ToastContainer, createToast, type ToastData } from "./components/Toast"
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
 import { WelcomeSetup } from "./components/WelcomeSetup";
 import { ChatPanel } from "./components/ChatPanel";
+import { parseChatActionFences } from "./components/RichText";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, ChatAction, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey } from "./utils";
 import type { ReviewSession } from "./hooks/useActivityFeed";
 
@@ -46,6 +47,10 @@ const BRIEF_ME_PROMPT =
   "Hard limits: at most 7 lines, roughly 25 words each, no sub-bullets, no headings, no code snippets, no restating the diff. " +
   "Merge related changes into one line. Skip filler like 'low risk' or 'mechanical change' — silence means fine. " +
   "End with one line: where to spend my review time. If I want depth on a stop, I'll ask.";
+
+/** Ceiling on marrow-action blocks auto-executed per streaming turn — the
+ * backstop behind the prompt's "at most a few actions per reply". */
+const MAX_AUTO_ACTIONS_PER_TURN = 6;
 
 /** A fresh, closed chat panel for a new tab. */
 function emptyChatState(): ChatState {
@@ -116,6 +121,14 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [checksMap, setChecksMap] = useState<Record<string, PrChecksStatus>>({});
+  // Chat ```marrow-action chip statuses (issue #166): tabId -> message key
+  // ("msg-<index>" for a finalized message, "streaming" for the in-progress
+  // turn) -> `${blockIndex}:${JSON.stringify(action)}` -> outcome. Session-
+  // only — never persisted alongside chat history.
+  const [chatActionStatuses, setChatActionStatuses] = useState<Record<string, Record<string, Record<string, "done" | "failed">>>>({});
+  // Per-tab set of action-block keys already auto-executed during the current
+  // streaming turn, so a block that already ran isn't re-run on the next delta.
+  const chatExecutedActionsRef = useRef<Record<string, Set<string>>>({});
   const [checksDismissed, setChecksDismissed] = useState<Record<string, boolean>>({});
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
   const updateStatusRef = useRef(updateStatus.state);
@@ -335,8 +348,10 @@ function App() {
   }
 
   // ── Keyboard shortcuts (ported from the CLI/TUI; see useKeyboardShortcuts) ──
-  function selectAdjacentFile(delta: 1 | -1) {
-    if (!activeTab?.manifest || !activeTab.selectedFile) return;
+  // Returns whether it actually navigated, so callers that report outcomes
+  // (chat action chips) don't claim success for an edge-of-list no-op.
+  function selectAdjacentFile(delta: 1 | -1): boolean {
+    if (!activeTab?.manifest || !activeTab.selectedFile) return false;
     const order = visibleOrderRef.current.length
       ? visibleOrderRef.current
       : activeTab.manifest.files.map((f) => f.path);
@@ -345,11 +360,12 @@ function App() {
     if (i === -1) {
       // Current file is filtered out of the list — jump to the first visible one.
       const first = byPath(order[0]);
-      if (first) setSelectedFile(first);
-      return;
+      if (first) { setSelectedFile(first); return true; }
+      return false;
     }
     const next = byPath(order[Math.min(Math.max(i + delta, 0), order.length - 1)]);
-    if (next && next.path !== activeTab.selectedFile.path) setSelectedFile(next);
+    if (next && next.path !== activeTab.selectedFile.path) { setSelectedFile(next); return true; }
+    return false;
   }
 
   function selectAdjacentTab(delta: 1 | -1) {
@@ -941,6 +957,18 @@ function App() {
     const tab = tabsRef.current.find((t) => t.id === tabId);
     const messages: ChatMessage[] = [...(tab?.chat.messages ?? []), { role: "assistant", content }];
     updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, messages, status: "idle", streamingText: "", streamingStatus: null } }));
+    // The just-finished turn's action statuses were recorded under the
+    // "streaming" bucket — move them to this message's own key (its index in
+    // the now-final array) so its chips keep showing ✓/✗ after finalize.
+    const msgKey = `msg-${messages.length - 1}`;
+    setChatActionStatuses((prev) => {
+      const streaming = prev[tabId]?.streaming;
+      if (!streaming) return prev;
+      const nextForTab = { ...prev[tabId] };
+      delete nextForTab.streaming;
+      nextForTab[msgKey] = streaming;
+      return { ...prev, [tabId]: nextForTab };
+    });
     try {
       const { owner, repo, number } = parsePrUrl(prUrl);
       invoke("save_chat_history", { owner, repo, prNumber: number, state: { messages } }).catch(() => {});
@@ -967,6 +995,9 @@ function App() {
 
     chatCancelRef.current[tabId] = false;
     chatRequestIdRef.current[tabId] = requestId;
+    // A fresh turn starts a fresh action-block execution window.
+    chatExecutedActionsRef.current[tabId] = new Set();
+    setChatActionStatuses((prev) => ({ ...prev, [tabId]: { ...prev[tabId], streaming: {} } }));
     updateTab(tabId, (t) => ({
       ...t,
       chat: { ...t.chat, messages: [...t.chat.messages, userMsg], status: "streaming", streamingText: "", streamingStatus: null, error: undefined },
@@ -1022,6 +1053,12 @@ function App() {
       const requestId = chatRequestIdRef.current[tab.id];
       if (requestId) invoke("chat_cancel", { requestId }).catch(() => {});
     }
+    delete chatExecutedActionsRef.current[tab.id];
+    setChatActionStatuses((prev) => {
+      const copy = { ...prev };
+      delete copy[tab.id];
+      return copy;
+    });
     updateTab(tab.id, (t) => ({ ...t, chat: { ...t.chat, messages: [], status: "idle", streamingText: "", error: undefined } }));
     try {
       const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
@@ -1052,19 +1089,26 @@ function App() {
     updateTab(activeTabId, (t) => ({ ...t, chat: { ...t.chat, includeWholePr: value } }));
   }
 
+  /** Resolve a file mention (exact path, or a unique suffix match) against a
+   * manifest's files — shared by handleChatOpenFile and the chat-action
+   * dispatcher so both agree on what counts as a resolvable path. */
+  function resolveManifestFile(files: FileDiff[], path: string): FileDiff | undefined {
+    return (
+      files.find((f) => f.path === path) ??
+      (() => {
+        const suffixMatches = files.filter((f) => f.path.endsWith("/" + path));
+        return suffixMatches.length === 1 ? suffixMatches[0] : undefined;
+      })()
+    );
+  }
+
   /** Resolve a file mention (exact path, or a unique suffix match against the
    * manifest), select it, and reveal the given head line — expanding its hunk
    * if collapsed. Serves chat citations, top-risk rows, and check-failure rows. */
   async function handleChatOpenFile(path: string, line?: number) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return;
-    const files = tab.manifest.files;
-    let target =
-      files.find((f) => f.path === path) ??
-      (() => {
-        const suffixMatches = files.filter((f) => f.path.endsWith("/" + path));
-        return suffixMatches.length === 1 ? suffixMatches[0] : undefined;
-      })();
+    let target = resolveManifestFile(tab.manifest.files, path);
     if (!target) return;
     if (line != null && !target.head_content && target.diff_type !== "removed") {
       // Jump targets in files whose contents weren't fetched at analysis time
@@ -1121,6 +1165,109 @@ function App() {
       if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
     });
   }, [selectedFilePath]);
+
+  // ---- Chat ```marrow-action view-control blocks (issue #166) ----
+
+  /** Run one chat-emitted view-control action against the active tab. No
+   * mutating actions here — everything is navigation/view state. Returns
+   * whether the action resolved (e.g. the file/commit it names actually
+   * exists) so the caller can render a done/failed chip. */
+  function executeChatAction(a: ChatAction): boolean {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return false;
+    switch (a.action) {
+      case "open_file": {
+        if (!resolveManifestFile(tab.manifest.files, a.path)) return false;
+        handleChatOpenFile(a.path, a.line);
+        return true;
+      }
+      case "open_overview":
+        updateTab(tab.id, (t) => ({ ...t, selectedFile: null }));
+        return true;
+      case "next_file":
+        return selectAdjacentFile(1);
+      case "prev_file":
+        return selectAdjacentFile(-1);
+      case "open_commit": {
+        const commits = tab.manifest.commits;
+        const exact = commits.find((c) => c.sha === a.sha);
+        // A prefix must be unambiguous — resolving to "whichever came first"
+        // could open the wrong commit while reporting success.
+        const prefixed = commits.filter((c) => c.sha.startsWith(a.sha));
+        const match = exact ?? (prefixed.length === 1 ? prefixed[0] : undefined);
+        if (!match) return false;
+        handleViewCommit(match);
+        return true;
+      }
+      case "set_hunk_filter":
+        setHunkFilter(a.filter);
+        return true;
+      case "set_view_mode":
+        setViewMode(a.mode);
+        return true;
+      case "show_comments":
+        // Chat and Comments are mutually exclusive right-dock panels (see
+        // toggleThreadsView) — opening comments from here closes chat too.
+        updateTab(tab.id, (t) => ({
+          ...t,
+          commentsOpen: a.open,
+          chat: a.open ? { ...t.chat, open: false } : t.chat,
+        }));
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /** Execute a chat action chip's click (or the streaming auto-exec effect
+   * below), and record its done/failed status under the message it belongs
+   * to. `msgKey` is "msg-<index>" for a finalized message or "streaming" for
+   * the in-progress turn; `blockIndex` is the action's position among that
+   * message's closed marrow-action fences (see RichText's parseActionFences). */
+  function runChatAction(tabId: string, msgKey: string, a: ChatAction, blockIndex: number) {
+    const ok = executeChatAction(a);
+    const key = `${blockIndex}:${JSON.stringify(a)}`;
+    setChatActionStatuses((prev) => ({
+      ...prev,
+      [tabId]: {
+        ...prev[tabId],
+        [msgKey]: { ...prev[tabId]?.[msgKey], [key]: ok ? "done" : "failed" },
+      },
+    }));
+  }
+
+  /** Auto-execute newly-completed ```marrow-action fences as they stream in.
+   * Runs each action-block key at most once per streaming turn (tracked in
+   * chatExecutedActionsRef, cleared when a new turn starts — see
+   * handleChatSend) and records its outcome under the "streaming" bucket,
+   * which finalizeChat then migrates to the finished message's own key. */
+  useEffect(() => {
+    // Deliberately active-tab-only: actions drive the CURRENT view, so a
+    // stream finishing in a background tab must not yank the user around.
+    // Switching back mid-stream catches up (this effect re-fires); a turn that
+    // completed while backgrounded leaves its chips neutral-and-clickable,
+    // same as restored history.
+    if (!activeTab || activeTab.chat.status !== "streaming" || !activeTab.chat.streamingText) return;
+    const tabId = activeTab.id;
+    // Split on [[thought:N]] dividers before scanning, matching exactly how
+    // ChatMarkdown renders this same text (see parseChatActionFences) — so a
+    // divider landing inside a fence can't make the two sides disagree about
+    // block indices.
+    const fences = parseChatActionFences(activeTab.chat.streamingText);
+    const executed = chatExecutedActionsRef.current[tabId] ?? (chatExecutedActionsRef.current[tabId] = new Set());
+    fences.forEach((entry, blockIndex) => {
+      if (!entry.action) return;
+      // The prompt says "at most a few actions per reply", but the prompt
+      // isn't enforcement: cap auto-execution per turn so a runaway reply
+      // can't thrash the view. Blocks past the cap render as neutral
+      // click-to-run chips instead.
+      if (executed.size >= MAX_AUTO_ACTIONS_PER_TURN) return;
+      const key = `${blockIndex}:${JSON.stringify(entry.action)}`;
+      if (executed.has(key)) return;
+      executed.add(key);
+      runChatAction(tabId, "streaming", entry.action, blockIndex);
+    });
+  }, [activeTab?.id, activeTab?.chat.status, activeTab?.chat.streamingText]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Set by briefMe below; consumed once the chat-open/whole-PR state it just
   // requested has actually committed (handleChatSend reads tabsRef, which
@@ -1868,6 +2015,12 @@ function App() {
       delete copy[tabId];
       return copy;
     });
+    setChatActionStatuses((prev) => {
+      const copy = { ...prev };
+      delete copy[tabId];
+      return copy;
+    });
+    delete chatExecutedActionsRef.current[tabId];
     if (next.length === 0) {
       // Closing the last *review* tab drops back to a fresh opener tab so the tab
       // bar (and a way to open a PR) is always present. But closing the last tab
@@ -2507,6 +2660,8 @@ function App() {
               onClear={handleChatClear}
               onToggleWholePr={handleChatToggleWholePr}
               onOpenFile={handleChatOpenFile}
+              onRunAction={(msgKey, a, blockIndex) => runChatAction(activeTab.id, msgKey, a, blockIndex)}
+              actionStatuses={chatActionStatuses[activeTab.id]}
             />
           )}
           {activeTab.commentsOpen && (

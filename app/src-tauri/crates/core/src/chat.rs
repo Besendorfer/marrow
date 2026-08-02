@@ -63,11 +63,42 @@ Guidelines:
 - Use Markdown. Put code in fenced code blocks.
 - You are reviewing, not writing the PR — don't propose to make edits; explain, assess risk, and surface what's worth a closer look."#;
 
-/// Assemble the system prompt: the assistant instructions followed by the PR
-/// title, AI summary, and the in-scope file diffs (budget-bounded).
+/// Documents the `marrow-action` fenced-block protocol: a way for the model to
+/// drive the app's view (open a file, flip a filter, hop to a commit) instead
+/// of just describing it. The frontend (RichText.tsx) recognizes a fenced
+/// code block whose language is exactly `marrow-action`, executes the JSON
+/// object once its fence completes, and renders it as a chip rather than code.
+// The action protocol is TRIPLICATED by hand: this prompt section, the
+// `ChatAction` union in app/src/types.ts, and the `isChatAction` validator in
+// app/src/components/RichText.tsx. Adding or changing an action means editing
+// all three, or the model will emit blocks the chips silently reject.
+const CHAT_UI_ACTIONS: &str = r#"You can control the review app by emitting a fenced code block with the language `marrow-action` containing exactly one JSON object. The app executes it once and renders it as a chip instead of raw JSON — never describe the JSON in prose, just emit the block.
+
+Available actions (the complete list — never invent others):
+- {"action":"open_file","path":"<repo path>","line":<optional number>} — open a changed file, optionally at a head line
+- {"action":"open_overview"} — back to the PR overview
+- {"action":"next_file"} — the next file in review order
+- {"action":"prev_file"} — the previous file in review order
+- {"action":"open_commit","sha":"<sha or prefix>"} — open a commit in commit scope
+- {"action":"set_hunk_filter","filter":"all|high|medium"} — set the hunk significance filter
+- {"action":"set_view_mode","mode":"split|unified"} — set the diff layout
+- {"action":"show_comments","open":true|false} — open or close the comments panel
+
+Usage rules:
+- Act only when the user asks to see/navigate/show something, or it clearly helps them get there — a plain answer needs no actions.
+- At most a few actions per reply.
+- Put the action block AFTER the sentence explaining what you're doing, never instead of it.
+- Never invent a path — only use files listed under FILES IN SCOPE.
+- One JSON object per fence; use separate fences for multiple actions."#;
+
+/// Assemble the system prompt: the assistant instructions, the UI-actions
+/// protocol, then the PR title, AI summary, and the in-scope file diffs
+/// (budget-bounded).
 pub fn build_chat_system(ctx: &ChatContext) -> String {
     let mut out = String::with_capacity(4096);
     out.push_str(CHAT_SYSTEM_PREAMBLE);
+    out.push_str("\n\n--- UI ACTIONS ---\n\n");
+    out.push_str(CHAT_UI_ACTIONS);
     out.push_str("\n\n--- PR CONTEXT ---\n\n");
     out.push_str(&format!("PR Title: {}\n", ctx.pr_title));
     if !ctx.summary.trim().is_empty() {
@@ -149,6 +180,19 @@ mod tests {
     }
 
     #[test]
+    fn system_documents_ui_actions() {
+        let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None));
+        assert!(sys.contains("UI ACTIONS"));
+        assert!(sys.contains("marrow-action"));
+        assert!(sys.contains(r#"{"action":"open_file""#));
+        assert!(sys.contains(r#"{"action":"open_overview"}"#));
+        assert!(sys.contains(r#"{"action":"open_commit""#));
+        assert!(sys.contains(r#"{"action":"set_hunk_filter""#));
+        assert!(sys.contains(r#"{"action":"set_view_mode""#));
+        assert!(sys.contains(r#"{"action":"show_comments""#));
+    }
+
+    #[test]
     fn system_includes_title_summary_and_diff() {
         let sys = build_chat_system(&ctx_with("@@ -1 +1 @@\n-old\n+new\n", None));
         assert!(sys.contains("Test PR"));
@@ -173,8 +217,10 @@ mod tests {
                 .collect(),
         };
         let sys = build_chat_system(&ctx);
-        // Preamble + context, but bounded well under the sum of all inputs.
-        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 2000);
+        // Preamble + UI-actions guide + context, but bounded well under the
+        // sum of all inputs. The fixed-overhead margin covers the constant
+        // instructional text (preamble, UI actions protocol, section labels).
+        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 2500);
     }
 
     #[test]
