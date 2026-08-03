@@ -6453,6 +6453,15 @@ mark.search-highlight-current {
   font-style: italic;
   cursor: default;
 }
+/* A ```marrow-tool chip (issue #150): the backend already executed the tool
+ * by the time this renders, so it's inert — dimmer than the actionable chip
+ * and never clickable. */
+.chat-action-chip--tool,
+.chat-action-chip--tool:hover {
+  color: var(--text-muted);
+  border-color: var(--chip-border);
+  cursor: default;
+}
 
 /* Chat ```marrow-card answer cards (issue #166 stage 2) — a table or list
  * rendered in place of the JSON, styled like the overview cards but sized

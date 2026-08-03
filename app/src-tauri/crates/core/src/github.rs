@@ -16,6 +16,49 @@ struct ContentsResponse {
     encoding: Option<String>,
 }
 
+/// One entry of a directory listing from the contents API.
+pub struct DirEntry {
+    pub name: String,
+    pub entry_type: String,
+    pub size: u64,
+}
+
+#[derive(Deserialize)]
+struct RawDirEntry {
+    name: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+    #[serde(default)]
+    size: u64,
+}
+
+/// One hit from repo-scoped code search: the file path plus up to a few
+/// text-match fragments (GitHub only indexes the default branch).
+pub struct CodeSearchHit {
+    pub path: String,
+    pub fragments: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct CodeSearchResponse {
+    #[serde(default)]
+    total_count: u32,
+    items: Vec<CodeSearchItem>,
+}
+
+#[derive(Deserialize)]
+struct CodeSearchItem {
+    path: String,
+    #[serde(default)]
+    text_matches: Vec<CodeSearchTextMatch>,
+}
+
+#[derive(Deserialize)]
+struct CodeSearchTextMatch {
+    #[serde(default)]
+    fragment: String,
+}
+
 #[derive(Deserialize)]
 struct GithubUser {
     login: String,
@@ -866,6 +909,71 @@ impl GithubClient {
             Some(content) => Ok(content),
             None => Ok(String::new()),
         }
+    }
+
+    /// Search this repository's code (GitHub only indexes the default
+    /// branch, so results are approximate for a PR's head — the chat agent's
+    /// tool prompt tells the model to confirm with `get_file_content`).
+    /// Returns (hits, server-reported total).
+    pub async fn search_code(
+        &self,
+        owner: &str,
+        repo: &str,
+        query: &str,
+    ) -> Result<(Vec<CodeSearchHit>, u32), String> {
+        let url = format!(
+            "https://api.github.com/search/code?q={}&per_page=10",
+            urlencoding::encode(&format!("{query} repo:{owner}/{repo}"))
+        );
+        let resp = self
+            .send_checked(&url, "application/vnd.github.text-match+json")
+            .await?;
+        let search: CodeSearchResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse code search results: {}", e))?;
+        let hits = search
+            .items
+            .into_iter()
+            .map(|item| CodeSearchHit {
+                path: item.path,
+                fragments: item.text_matches.into_iter().map(|m| m.fragment).collect(),
+            })
+            .collect();
+        Ok((hits, search.total_count))
+    }
+
+    /// List a directory's entries at `ref_sha` via the contents API. `path`
+    /// empty means the repo root. Mirrors `get_file_content`'s URL building —
+    /// paths pass through unencoded.
+    pub async fn list_dir(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        ref_sha: &str,
+    ) -> Result<Vec<DirEntry>, String> {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
+            owner, repo, path, ref_sha
+        );
+
+        let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
+        let value: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse directory listing: {}", e))?;
+
+        let entries: Vec<RawDirEntry> = match value {
+            serde_json::Value::Array(_) => serde_json::from_value(value)
+                .map_err(|e| format!("Failed to parse directory listing: {}", e))?,
+            _ => return Err(format!("not a directory: {}", path)),
+        };
+
+        Ok(entries
+            .into_iter()
+            .map(|e| DirEntry { name: e.name, entry_type: e.entry_type, size: e.size })
+            .collect())
     }
 
     pub async fn get_authenticated_user(&self) -> Result<String, String> {

@@ -6,6 +6,7 @@ pub mod activity;
 pub mod ai;
 pub mod bedrock;
 pub mod chat;
+pub mod chat_agent;
 pub mod chat_history;
 pub mod checks_dismiss;
 pub mod config;

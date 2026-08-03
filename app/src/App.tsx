@@ -1023,7 +1023,22 @@ function App() {
 
     invoke("chat_send", {
       channel,
-      request: { request_id: requestId, context: { pr_title: manifest.pr_title, summary: manifest.summary, files }, history, message },
+      request: {
+        request_id: requestId,
+        context: { pr_title: manifest.pr_title, summary: manifest.summary, files },
+        history,
+        message,
+        // Repo identity for the read-only repo tools (issue #150); absent
+        // (rather than throwing) falls back to diff-only chat server-side.
+        repo: (() => {
+          try {
+            const { owner, repo } = parsePrUrl(manifest.pr_url);
+            return { owner, repo, head_sha: manifest.head_sha };
+          } catch {
+            return undefined;
+          }
+        })(),
+      },
     }).catch((err) => {
       if (chatCancelRef.current[tabId] || chatRequestIdRef.current[tabId] !== requestId) return;
       updateTab(tabId, (t) => ({ ...t, chat: { ...t.chat, status: "idle", streamingText: "", error: String(err) } }));

@@ -235,6 +235,19 @@ export type ChatCard =
   | { type: "table"; title?: string; columns: string[]; rows: ChatCardCell[][] }
   | { type: "list"; title?: string; items: ChatCardListItem[] };
 
+/** A read-only repo tool call the chat model can emit as a fenced
+ * ```marrow-tool JSON block (see `CHAT_REPO_TOOLS` in `crates/core/src/chat.rs`,
+ * the single source of truth for the protocol). Mirrors the schemas
+ * documented there — keep the two in sync by hand. Execution is
+ * backend-only (chat_agent.rs) — the frontend only renders the fence as a
+ * chip, unlike `ChatAction`. */
+// Kept in sync BY HAND with CHAT_REPO_TOOLS (crates/core/src/chat.rs) and
+// isChatToolCall (components/RichText.tsx) — edit all three together.
+export type ChatToolCall =
+  | { tool: "read_file"; path: string }
+  | { tool: "search_code"; query: string }
+  | { tool: "list_dir"; path: string };
+
 export type NoteResolutionState = "fixed" | "intentional" | "noise";
 
 /** How/why an AI note was resolved. Mirrors `NoteResolution` in
