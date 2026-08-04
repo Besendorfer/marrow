@@ -265,8 +265,9 @@ export interface NoteResolution {
 
 export type SidebarView = "groups" | "category" | "tree";
 
-/** Which of the PR view's three persistent lenses is showing (issue #170). */
-export type PrLens = "overview" | "files" | "commits";
+/** Which of the PR view's persistent lenses is showing (issue #170; Checks
+ * added in issue #175). */
+export type PrLens = "overview" | "files" | "commits" | "checks";
 
 export type DiffViewMode = "split" | "unified";
 

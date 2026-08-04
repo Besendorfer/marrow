@@ -180,6 +180,7 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
         case "1": h.onSetLens("overview"); break;
         case "2": h.onSetLens("files"); break;
         case "3": h.onSetLens("commits"); break;
+        case "4": h.onSetLens("checks"); break;
         case "V": h.onToggleViewed(); break;
         case "T": h.onToggleThreads(); break;
         case "F5": h.onRefresh(); e.preventDefault(); break;

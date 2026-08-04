@@ -1,5 +1,27 @@
+import type { CheckRunInfo, PrChecksStatus } from "./types";
+
 export function getFileName(path: string): string {
   return path.split("/").pop() || path;
+}
+
+/** Whether a check run counts as failing. GitHub conclusions arrive
+ * uppercase (see the CiChip comment in PrOverview.tsx). Mirrors Rust's
+ * `failing_conclusion` (github.rs) — failure/timed_out/action_required,
+ * deliberately NOT cancelled (a user-initiated stop's partial annotations
+ * are noise) — so a run this badges as failing always has annotations to
+ * show, never a "N ✗" pointing at an empty Checks lens. Single source of
+ * truth reused by the overview CI chip, the header lens badge, and the
+ * Checks lens (issue #175). */
+export function isFailingCheck(check: CheckRunInfo): boolean {
+  return (
+    check.conclusion === "FAILURE" ||
+    check.conclusion === "TIMED_OUT" ||
+    check.conclusion === "ACTION_REQUIRED"
+  );
+}
+
+export function countFailingChecks(checks: PrChecksStatus): number {
+  return checks.check_runs.filter(isFailingCheck).length;
 }
 
 // djb2 string hash → unsigned base36, for compact stable keys.

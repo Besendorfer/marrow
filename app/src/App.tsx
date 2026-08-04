@@ -13,6 +13,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { PrOverview } from "./components/PrOverview";
 import { CommitsLens } from "./components/CommitsLens";
+import { ChecksLens } from "./components/ChecksLens";
 import { NextFileBar } from "./components/NextFileBar";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
@@ -29,7 +30,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, ChatAction, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures, PrLens, ChangeGroup } from "./types";
-import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey } from "./utils";
+import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey, isFailingCheck } from "./utils";
 import type { ReviewSession } from "./hooks/useActivityFeed";
 
 /** An empty "open a PR" tab — no loaded PR, not mid-fetch, no error. */
@@ -284,7 +285,13 @@ function App() {
     return map;
   }, [annotationsByPath]);
   const selectedFileAnnotations = (selectedFilePath && annotationsByPath?.get(selectedFilePath)) || [];
-  const activeCheckFailures = activeTab?.checkAnnotations.status === "loaded" ? activeTab.checkAnnotations.failures : null;
+  // Paths in the active PR's diff — the Checks lens uses this to tell a
+  // jumpable annotation from a run-level one anchored outside the diff
+  // (e.g. `.github`), same distinction the old Overview card made via byPath.
+  const diffFilePaths = useMemo(
+    () => new Set(activeTab?.manifest?.files.map((f) => f.path) ?? []),
+    [activeTab?.manifest]
+  );
 
   // Opening from the "Recently analyzed" cache: if the PR's head moved, the
   // backend would silently run a full AI re-analysis — surface that first.
@@ -590,7 +597,7 @@ function App() {
                 }
                 // A session written before lenses existed (or a malformed
                 // value) falls back to "overview" rather than failing restore.
-                if (entry.lens === "files" || entry.lens === "commits") {
+                if (entry.lens === "files" || entry.lens === "commits" || entry.lens === "checks") {
                   tab.lens = entry.lens;
                 }
                 // Restoring straight into the Files lens without a selected
@@ -2283,15 +2290,17 @@ function App() {
 
   // Fetch inline CI failure annotations for the active tab once its checks are
   // loaded with at least one failing run — GraphQL conclusions arrive UPPERCASE
-  // (see the CiChip comment in PrOverview). Guarded by tab id + head_sha so a
-  // stale resolve (tab closed, or refreshed onto a new head in the meantime)
-  // never lands on the wrong state.
+  // (see the CiChip comment in PrOverview) — or once the user enters the
+  // Checks lens directly (issue #175), where the fetch is a cheap no-op on a
+  // green PR (empty annotations). Guarded by tab id + head_sha so a stale
+  // resolve (tab closed, or refreshed onto a new head in the meantime) never
+  // lands on the wrong state.
   useEffect(() => {
     if (!activeTab?.manifest) return;
     if (activeTab.checkAnnotations.status !== "idle") return;
     if (!activeChecks) return;
-    const hasFailure = activeChecks.check_runs.some((c) => c.conclusion === "FAILURE");
-    if (!hasFailure) return;
+    const hasFailure = activeChecks.check_runs.some(isFailingCheck);
+    if (!hasFailure && activeTab.lens !== "checks") return;
 
     const tabId = activeTab.id;
     const prRef = activeTab.manifest.pr_url;
@@ -2306,7 +2315,7 @@ function App() {
       .catch((err) => {
         updateTab(tabId, (t) => (t.manifest && t.manifest.head_sha === headSha ? { ...t, checkAnnotations: { status: "error", message: String(err) } } : t));
       });
-  }, [activeTab?.id, activeTab?.manifest?.pr_url, activeTab?.manifest?.head_sha, activeTab?.checkAnnotations.status, activeChecks]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeTab?.id, activeTab?.manifest?.pr_url, activeTab?.manifest?.head_sha, activeTab?.checkAnnotations.status, activeChecks, activeTab?.lens]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Floating mini-player visibility:
   //  - HIDE it whenever the MAIN window gains focus (you've engaged the app).
@@ -2551,6 +2560,7 @@ function App() {
         onSetLens={(lens) => { if (activeTabId) setLens(activeTabId, lens); }}
         filesCount={filesLensCount}
         commitsCount={commitsLensCount}
+        checksState={activeChecks ?? null}
         onSettingsClick={() => setSettingsOpen(true)}
         manifest={activeTab?.manifest ?? null}
         showHunkSignificance={showHunkSignificance}
@@ -2679,11 +2689,18 @@ function App() {
               onSelectCommit={(c) => handleViewCommit(c)}
               onViewCumulativeDiff={() => { if (activeTabId) setLens(activeTabId, "files"); }}
             />
+          ) : activeTab.lens === "checks" ? (
+            <ChecksLens
+              checks={activeChecks ?? null}
+              annotations={activeTab.checkAnnotations}
+              diffPaths={diffFilePaths}
+              headSha={activeTab.manifest.head_sha}
+              onOpenAt={handleChatOpenFile}
+            />
           ) : activeTab.lens === "overview" ? (
             <PrOverview
               manifest={activeTab.manifest}
               checksStatus={activeChecks ?? null}
-              checkFailures={activeCheckFailures}
               reviewState={activeTab.myReviewState ?? null}
               viewedCount={activeTab.viewedFiles.size}
               unresolvedThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
@@ -2695,6 +2712,7 @@ function App() {
               onOpenAt={handleChatOpenFile}
               onBriefMe={briefMe}
               onViewCommit={handleViewCommit}
+              onOpenChecks={() => { if (activeTabId) setLens(activeTabId, "checks"); }}
               newHighlightKeys={
                 // Dismissing a new note removes it from the chip immediately —
                 // a dead "1 new AI note" pointing at a hidden note is worse
