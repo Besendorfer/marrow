@@ -532,8 +532,10 @@ export function FileSidebar({
     onVisibleFilesChange?.(navigableOrder);
   }, [navigableOrder, onVisibleFilesChange]);
 
-  const viewedCount = viewedFiles.size;
-  const staleCount = staleViewedFiles.size;
+  // Scope the counts to the (possibly group-filtered) list, not the whole PR —
+  // otherwise "N/M viewed" can exceed M while a group filter is active.
+  const viewedCount = files.reduce((n, f) => n + (viewedFiles.has(f.path) ? 1 : 0), 0);
+  const staleCount = files.reduce((n, f) => n + (staleViewedFiles.has(f.path) ? 1 : 0), 0);
   const totalCount = files.length;
   const unresolvedCommentCount = useMemo(
     () => commentThreads.filter((t) => !t.is_resolved).length,
