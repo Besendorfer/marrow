@@ -1204,8 +1204,16 @@ function App() {
       }
     }
     if (line != null && target.path === tab.selectedFile?.path && target.head_content === tab.selectedFile?.head_content) {
-      // Already viewing the file — the mounted DiffViewer can jump directly.
-      if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
+      if (tab.lens === "files") {
+        // Already viewing the file — the mounted DiffViewer can jump directly.
+        if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
+      } else {
+        // Right file, wrong lens: this fast path predates the lens switcher
+        // and used to reveal into a hidden canvas. Switch to Files and let
+        // the pending-reveal effect jump once the viewer mounts.
+        pendingRevealLineRef.current = line;
+        updateTab(tab.id, (t) => ({ ...t, lens: "files" }));
+      }
       return;
     }
     pendingRevealLineRef.current = line ?? null;
@@ -1227,7 +1235,9 @@ function App() {
     requestAnimationFrame(() => {
       if (diffViewerRef.current?.revealLine(line) === false) notifyLineOutsideDiff(line);
     });
-  }, [selectedFilePath]);
+    // Lens is a dep so a reveal deferred by the same-file-wrong-lens path in
+    // handleChatOpenFile fires when the Files lens (re)mounts the viewer.
+  }, [selectedFilePath, activeTab?.lens]);
 
   // ---- Chat ```marrow-action view-control blocks (issue #166) ----
 
