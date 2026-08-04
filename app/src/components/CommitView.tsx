@@ -11,11 +11,13 @@ interface CommitViewProps {
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
   repoBaseUrl: string;
-  onBack: () => void;
   onNewer: () => void;
   onOlder: () => void;
   hasNewer: boolean;
   hasOlder: boolean;
+  /** "View cumulative diff" chip in the meta row — hops to the Files lens
+   * (issue #170; this scope no longer has a "back" exit of its own). */
+  onViewCumulativeDiff: () => void;
 }
 
 /** Classifies a raw patch line by its leading character, mapping onto the
@@ -109,11 +111,11 @@ export function CommitView({
   selectedPath,
   onSelectFile,
   repoBaseUrl,
-  onBack,
   onNewer,
   onOlder,
   hasNewer,
   hasOlder,
+  onViewCumulativeDiff,
 }: CommitViewProps) {
   const commitUrl = `${repoBaseUrl}/commit/${commit.sha}`;
   const selectedFile = diff?.files.find((f) => f.path === selectedPath) ?? null;
@@ -121,9 +123,6 @@ export function CommitView({
   return (
     <>
       <aside className="file-sidebar commit-view-sidebar">
-        <button className="sidebar-overview-link" onClick={onBack}>
-          ← Back to review
-        </button>
         <div className="commit-view-identity">
           <div className="commit-view-nav">
             <button className="commit-view-nav-btn" onClick={onNewer} disabled={!hasNewer}>
@@ -136,6 +135,10 @@ export function CommitView({
           <span className="commit-view-sha">{commit.sha.slice(0, 7)}</span>
           <p className="commit-view-headline">{commit.message_headline}</p>
           <div className="commit-view-meta">
+            <span className="scope-pill">◉ This commit only</span>
+            <button type="button" className="overview-chip commit-view-cumulative" onClick={onViewCumulativeDiff}>
+              View cumulative diff
+            </button>
             {commit.author_login && (
               <span className="commit-view-author">
                 <Avatar login={commit.author_login} size={16} /> {commit.author_login}

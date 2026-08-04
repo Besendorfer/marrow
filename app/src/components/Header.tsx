@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
-import type { ReviewManifest, Tab, CommentThreadsState, MyReviewState } from "../types";
+import type { ReviewManifest, Tab, CommentThreadsState, MyReviewState, PrLens } from "../types";
 
 function useClickOutside(
   ref: React.RefObject<HTMLElement | null>,
@@ -38,7 +38,12 @@ interface HeaderProps {
   onCloseTab: (id: string) => void;
   onNewReview: () => void;
   viewedCount: number;
-  staleCount: number;
+  /** Which PR lens (Overview/Files/Commits, issue #170) the switcher shows active. */
+  lens: PrLens;
+  onSetLens: (lens: PrLens) => void;
+  /** Files segment count — relevant files, falling back to total when 0 relevant. */
+  filesCount: number;
+  commitsCount: number;
   onSettingsClick: () => void;
   manifest: ReviewManifest | null;
   showHunkSignificance: boolean;
@@ -64,7 +69,10 @@ export function Header({
   onCloseTab,
   onNewReview,
   viewedCount,
-  staleCount,
+  lens,
+  onSetLens,
+  filesCount,
+  commitsCount,
   onSettingsClick,
   manifest,
   showHunkSignificance,
@@ -133,12 +141,6 @@ export function Header({
       {manifest && (
         <div className="header-toolbar">
           <div className="header-left">
-            <span className="file-count">
-              {viewedCount}/{totalCount} reviewed
-              {staleCount > 0 && (
-                <span className="stale-badge">{staleCount} changed</span>
-              )}
-            </span>
             {(myReviewState ? myReviewState.draft : manifest.draft) && !myReviewState?.is_merged && (
               <span className="pr-badge pr-badge--draft" title="This PR is a draft">Draft</span>
             )}
@@ -155,9 +157,7 @@ export function Header({
                 {REVIEW_STATUS_SYMBOL.approved} Approved
               </span>
             )}
-            <div className="progress-bar">
-              <div className="progress-fill" style={{ width: `${progress}%` }} />
-            </div>
+            <LensSwitcher lens={lens} onSetLens={onSetLens} filesCount={filesCount} commitsCount={commitsCount} filesProgress={progress} />
             {onRefresh && (
               <button
                 className={`refresh-button${isRefreshing ? " refreshing" : ""}`}
@@ -195,6 +195,51 @@ export function Header({
         </div>
       )}
     </header>
+  );
+}
+
+/** The PR-view lens switcher (issue #170) — same segmented-control grammar as
+ * the Split/Unified toggle, sized for the header. Files absorbs the old
+ * header progress bar as a hairline under its label; Overview no longer
+ * disappears when you dive into a file, and the "← Overview" escape hatch
+ * dissolves into this. */
+function LensSwitcher({
+  lens,
+  onSetLens,
+  filesCount,
+  commitsCount,
+  filesProgress,
+}: {
+  lens: PrLens;
+  onSetLens: (lens: PrLens) => void;
+  filesCount: number;
+  commitsCount: number;
+  filesProgress: number;
+}) {
+  return (
+    <div className="lens-switcher">
+      <button
+        className={`seg-item${lens === "overview" ? " active" : ""}`}
+        onClick={() => onSetLens("overview")}
+      >
+        Overview
+      </button>
+      <button
+        className={`seg-item${lens === "files" ? " active" : ""}`}
+        onClick={() => onSetLens("files")}
+      >
+        Files <span className="seg-count">{filesCount}</span>
+        <span className="seg-progress">
+          <span className="seg-progress-fill" style={{ width: `${filesProgress}%` }} />
+        </span>
+      </button>
+      <button
+        className={`seg-item${lens === "commits" ? " active" : ""}`}
+        onClick={() => onSetLens("commits")}
+      >
+        Commits <span className="seg-count">{commitsCount}</span>
+      </button>
+    </div>
   );
 }
 

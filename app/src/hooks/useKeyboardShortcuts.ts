@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { PrLens } from "../types";
 
 /**
  * Global keyboard shortcuts for the review GUI, ported from the CLI/TUI
@@ -49,6 +50,8 @@ export interface ShortcutHandlers {
   onTogglePalette: () => void;
   /** Toggle the conversational diff Q&A panel (Cmd/Ctrl+J). */
   onToggleChat: () => void;
+  /** Switch the PR view lens (1/2/3 — issue #170). */
+  onSetLens: (lens: PrLens) => void;
 }
 
 export interface ShortcutOptions {
@@ -173,6 +176,10 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
       switch (e.key) {
         case "]": h.onNextFile(); break;
         case "[": h.onPrevFile(); break;
+        // PR view lenses (issue #170) — spatial order left to right.
+        case "1": h.onSetLens("overview"); break;
+        case "2": h.onSetLens("files"); break;
+        case "3": h.onSetLens("commits"); break;
         case "V": h.onToggleViewed(); break;
         case "T": h.onToggleThreads(); break;
         case "F5": h.onRefresh(); e.preventDefault(); break;

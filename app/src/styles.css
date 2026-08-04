@@ -310,31 +310,6 @@ body {
   min-width: 0;
 }
 
-.file-count {
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
-  padding: 2px 8px;
-  border-radius: 10px;
-  flex-shrink: 0;
-}
-
-.progress-bar {
-  width: 80px;
-  height: 4px;
-  background: var(--bg-tertiary);
-  border-radius: 2px;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.progress-fill {
-  height: 100%;
-  background: var(--diff-add-text);
-  border-radius: 2px;
-  transition: width 0.3s ease;
-}
-
 .header-right {
   display: flex;
   align-items: center;
@@ -458,6 +433,78 @@ body {
   color: var(--text-primary);
 }
 
+/* ─── PR view lens switcher (issue #170) ─────────────────────────────────
+   Same segmented-control grammar as .view-toggle, sized for the header —
+   pill container, filled active segment. Class names/values match the
+   design mockup verbatim (.seg-item, .seg-count, .seg-progress). */
+.lens-switcher {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 3px;
+}
+
+.seg-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 14px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.seg-item:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.seg-item.active {
+  background: var(--accent-strong);
+  color: var(--white);
+}
+
+.seg-count {
+  font: 500 11px/1 var(--font-mono);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  padding: 3px 7px;
+}
+
+.seg-item.active .seg-count {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: transparent;
+  color: inherit;
+}
+
+/* Reviewed-progress hairline, absorbed from the old header progress bar. */
+.seg-progress {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.seg-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--white);
+}
+
 .github-link {
   color: var(--accent);
   text-decoration: none;
@@ -478,6 +525,20 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Change-group deep link scope (issue #170) — reuses .overview-chip's
+   grammar for a dismissible pill above the file list. */
+.sidebar-group-filter {
+  display: flex;
+  width: calc(100% - 24px);
+  margin: 10px 12px 0;
+  cursor: pointer;
+}
+
+.sidebar-group-filter:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
 }
 
 .sidebar-header {
@@ -1270,8 +1331,9 @@ tr.cursor-selected td {
 
 .commit-view-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin-top: 6px;
   font-size: 11.5px;
   color: var(--text-secondary);
@@ -1357,6 +1419,111 @@ tr.cursor-selected td {
 
 .commit-view-patch > div {
   padding: 0 12px;
+}
+
+.commit-view-cumulative {
+  cursor: pointer;
+}
+
+/* Static scope indicator in CommitView's meta row ("◉ This commit only"),
+   issue #170 — accent-tinted like .overview-chip--new-notes, but never
+   clickable (that's what the adjacent "View cumulative diff" chip is for). */
+.scope-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+/* ─── Commits lens (issue #170) — rail of every commit, mirroring the file
+   sidebar's quiet-row + selected grammar; CommitView (above) is its main
+   pane. ──────────────────────────────────────────────────────────────── */
+.commits-lens-rail {
+  width: 360px;
+  min-width: 360px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.commits-lens-rail-head {
+  padding: var(--space-3) 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-weight: 650;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.commits-lens-rail-count {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.commits-lens-rail-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.commits-lens-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  padding: 12px 16px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.commits-lens-row:hover {
+  background: var(--bg-tertiary);
+}
+
+.commits-lens-row.selected {
+  background: var(--accent-bg);
+  box-shadow: inset 2px 0 0 var(--accent-strong);
+}
+
+.commits-lens-row-msg {
+  font-weight: 550;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.commits-lens-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.commits-lens-row-sha {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.commits-lens-row-stats {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
 }
 
 /* ─── PR Opener ─────────────────────────────────────────────────────────── */
@@ -5401,30 +5568,6 @@ mark.search-highlight-current {
 .next-bar-finish--ready:hover {
   background: var(--accent-strong-hover);
   border-color: transparent;
-}
-
-.sidebar-overview-link {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 8px 16px;
-  background: none;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 12.5px;
-  font-weight: 500;
-  font-family: var(--font-sans);
-  cursor: pointer;
-}
-
-.sidebar-overview-link:hover {
-  color: var(--text-primary);
-  background: var(--bg-tertiary);
-}
-
-.sidebar-overview-link.active {
-  color: var(--accent);
 }
 
 /* ─── Review queue home (opener tab) ──────────────────────────────────── */

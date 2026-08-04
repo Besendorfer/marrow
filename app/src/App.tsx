@@ -12,7 +12,7 @@ import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { PrOverview } from "./components/PrOverview";
-import { CommitView } from "./components/CommitView";
+import { CommitsLens } from "./components/CommitsLens";
 import { NextFileBar } from "./components/NextFileBar";
 import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
@@ -28,7 +28,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, ChatAction, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, ChatAction, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures, PrLens, ChangeGroup } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey } from "./utils";
 import type { ReviewSession } from "./hooks/useActivityFeed";
 
@@ -84,18 +84,18 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  // Commit scope (issue #147): while set, CommitView replaces the sidebar +
-  // diff pane for the active tab with a single commit's file list + a
-  // read-only patch view. commitScopePath is the selected file within that
-  // commit; the diff fetch's loading/error state is tracked alongside it. A
-  // session-only cache (never invalidated — commit diffs are immutable)
-  // keyed by sha avoids refetching on reopen.
-  const [commitScope, setCommitScope] = useState<PrCommit | null>(null);
-  const [commitScopePath, setCommitScopePath] = useState<string | null>(null);
+  // Commit scope (issue #147, per-tab as of #170): which commit the Commits
+  // lens is showing lives on the tab itself (tab.selectedCommit) so it can't
+  // leak across tabs. The fetched diff, its loading/error state, and the
+  // session-only cache (never invalidated — commit diffs are immutable) keyed
+  // by sha stay App-level, shared across tabs.
   const [commitDiffLoading, setCommitDiffLoading] = useState(false);
   const [commitDiffError, setCommitDiffError] = useState<string | null>(null);
   const [commitDiff, setCommitDiff] = useState<CommitDiff | null>(null);
   const commitDiffCacheRef = useRef(new Map<string, CommitDiff>());
+  // In-flight `${tabId}:${sha}` fetches, so the resync effect (on tab switch)
+  // and an interactive commit click never both issue the same request.
+  const commitDiffFetchingRef = useRef(new Set<string>());
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   // Cached PR whose head moved — re-analyzing costs an AI pass, so confirm.
@@ -228,13 +228,28 @@ function App() {
   const activeChecks = activeTab ? checksMap[activeTab.id] : undefined;
   const showChecksModal = !!activeTab && !!activeTab.manifest && !!activeChecks && activeChecks.overall_state !== "success" && !checksDismissed[activeTab.manifest.pr_url];
 
-  // Commit scope is layered per-tab state, not part of Tab itself — clear it
-  // on every active-tab change (click, keyboard cycle, new/opened PR, deep
-  // link) so a commit view from one tab never carries over onto another.
+  // commitDiff/commitDiffLoading/commitDiffError are single App-level slots
+  // (not per-tab — see the state declarations above), so switching tabs must
+  // resync them to whatever the newly-active tab's Commits lens should show:
+  // serve the cached diff, kick off a fetch on a cache miss, or clear the
+  // slots so a later entry into the lens starts clean. Also fires when the
+  // active tab's own lens/selectedCommit changes (entering/leaving Commits,
+  // or picking a different commit) so it stays one code path with clicks.
   useEffect(() => {
-    setCommitScope(null);
-    setCommitScopePath(null);
-  }, [activeTabId]);
+    if (!activeTab || activeTab.lens !== "commits" || !activeTab.selectedCommit) {
+      setCommitDiff(null);
+      setCommitDiffLoading(false);
+      setCommitDiffError(null);
+      return;
+    }
+    loadCommitDiff(activeTab.id, activeTab.selectedCommit);
+  }, [activeTabId, activeTab?.lens, activeTab?.selectedCommit]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lens switcher segment counts (issue #170). Files count mirrors the
+  // relevant/fallback-to-total rule buildChatFiles uses for whole-PR chat scope.
+  const relevantFileCount = activeTab?.manifest?.files.filter((f) => f.classification === "RELEVANT").length ?? 0;
+  const filesLensCount = activeTab?.manifest ? (relevantFileCount > 0 ? relevantFileCount : activeTab.manifest.files.length) : 0;
+  const commitsLensCount = activeTab?.manifest?.commits.length ?? 0;
 
   const selectedFilePath = activeTab?.selectedFile?.path ?? null;
   const fileSearchMatches = useMemo(
@@ -294,18 +309,21 @@ function App() {
   // The review order is the sidebar's visible order (falls back to relevant
   // files in manifest order before the sidebar reports in). The sidebar is
   // unmounted while the overview shows, so the ref can hold another tab's
-  // paths — anything not in this manifest is dropped before use.
-  function guidedOrder(): string[] {
-    if (!activeTab?.manifest) return [];
-    const inManifest = new Set(activeTab.manifest.files.map((f) => f.path));
-    const visible = visibleOrderRef.current.filter((p) => inManifest.has(p));
+  // paths — anything not in this manifest is dropped before use. Defaults to
+  // activeTab (the common case); setLens takes an explicit tab so it works
+  // correctly even when called for a tab that isn't (yet) active.
+  function guidedOrder(tab: Tab | null = activeTab): string[] {
+    if (!tab?.manifest) return [];
+    const inManifest = new Set(tab.manifest.files.map((f) => f.path));
+    // visibleOrderRef only ever reflects the mounted (active) tab's sidebar.
+    const visible = tab.id === activeTabId ? visibleOrderRef.current.filter((p) => inManifest.has(p)) : [];
     const candidates = visible.length
       ? visible
-      : activeTab.manifest.files
+      : tab.manifest.files
           .filter((f) => f.classification !== "NOT_RELEVANT")
           .map((f) => f.path);
 
-    const reviewOrder = activeTab.manifest.triage?.review_order;
+    const reviewOrder = tab.manifest.triage?.review_order;
     if (!reviewOrder?.length) return candidates;
 
     const candidateSet = new Set(candidates);
@@ -325,14 +343,14 @@ function App() {
 
   // First unviewed file after `fromIdx` in review order (wrapping), treating
   // `alsoViewed` as already reviewed — used when the current file was just
-  // marked but state hasn't committed yet.
-  function nextUnviewed(order: string[], fromIdx: number, alsoViewed?: string): FileDiff | null {
-    if (!activeTab?.manifest || order.length === 0) return null;
-    const viewed = activeTab.viewedFiles;
+  // marked but state hasn't committed yet. Defaults to activeTab; see guidedOrder.
+  function nextUnviewed(order: string[], fromIdx: number, alsoViewed?: string, tab: Tab | null = activeTab): FileDiff | null {
+    if (!tab?.manifest || order.length === 0) return null;
+    const viewed = tab.viewedFiles;
     for (let step = 1; step <= order.length; step++) {
       const p = order[(fromIdx + step + order.length) % order.length];
       if (!viewed.has(p) && p !== alsoViewed) {
-        return activeTab.manifest.files.find((f) => f.path === p) ?? null;
+        return tab.manifest.files.find((f) => f.path === p) ?? null;
       }
     }
     return null;
@@ -409,7 +427,7 @@ function App() {
       onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
-      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); setPaletteOpen(false); setCommitScope(null); },
+      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); setPaletteOpen(false); },
       // Not during first-run setup — the palette would open invisibly under
       // the welcome card and pop up when setup closes.
       onTogglePalette: () => { if (!welcomeOpen) setPaletteOpen((v) => !v); },
@@ -438,10 +456,11 @@ function App() {
       onResolve: () => diffViewerRef.current?.resolveAtCursor(),
       onReviewPicker: () => { if (activeTab?.manifest) setReviewPickerOpen(true); },
       onToggleChat: () => { if (!welcomeOpen) toggleChatOpen(); },
+      onSetLens: (lens) => { if (activeTabId) setLens(activeTabId, lens); },
     },
     {
       enabled: !!activeTab?.manifest,
-      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen || !!commitScope,
+      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen,
     },
   );
 
@@ -454,6 +473,9 @@ function App() {
       // Land on the overview (summary + change groups), not a file — the
       // "Start review" CTA and sidebar are the ways in.
       selectedFile: null,
+      lens: "overview",
+      selectedCommit: null,
+      groupFilter: null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
@@ -481,6 +503,9 @@ function App() {
       loading: null,
       error: null,
       selectedFile: null,
+      lens: "overview",
+      selectedCommit: null,
+      groupFilter: null,
       viewedFiles: new Set(),
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
@@ -562,6 +587,22 @@ function App() {
                   } else {
                     tab.sidebarView = entry.sidebar_view as SidebarView;
                   }
+                }
+                // A session written before lenses existed (or a malformed
+                // value) falls back to "overview" rather than failing restore.
+                if (entry.lens === "files" || entry.lens === "commits") {
+                  tab.lens = entry.lens;
+                }
+                // Restoring straight into the Files lens without a selected
+                // file (no persisted selection, or it no longer exists) skips
+                // setLens entirely — auto-select guided-first here the same
+                // way, scoped to THIS tab rather than activeTab (guidedOrder/
+                // nextUnviewed both accept an explicit tab for exactly this).
+                if (tab.lens === "files" && !tab.selectedFile) {
+                  const order = guidedOrder(tab);
+                  const firstPath = nextUnviewed(order, -1, undefined, tab)?.path ?? order[0];
+                  const first = firstPath ? manifest.files.find((f) => f.path === firstPath) : undefined;
+                  if (first) tab.selectedFile = first;
                 }
                 return tab;
               } catch {
@@ -1197,7 +1238,8 @@ function App() {
         return true;
       }
       case "open_overview":
-        updateTab(tab.id, (t) => ({ ...t, selectedFile: null }));
+        // selectedFile is left as-is (Files lens returns to where it was).
+        setLens(tab.id, "overview");
         return true;
       case "next_file":
         return selectAdjacentFile(1);
@@ -1211,7 +1253,7 @@ function App() {
         const prefixed = commits.filter((c) => c.sha.startsWith(a.sha));
         const match = exact ?? (prefixed.length === 1 ? prefixed[0] : undefined);
         if (!match) return false;
-        handleViewCommit(match);
+        handleViewCommit(match, tab.id);
         return true;
       }
       case "set_hunk_filter":
@@ -1445,6 +1487,32 @@ function App() {
     setTabs((prev) => prev.map((t) => (t.id === tabId ? updater(t) : t)));
   }
 
+  /** Switch `tabId` to `lens`. The single place lens transitions happen —
+   * switcher clicks, keyboard 1/2/3, deep links, and chat actions all route
+   * through this (or through setSelectedFile/handleViewCommit, which set
+   * their matching lens directly since they already know the target).
+   * Entering Files with nothing selected auto-picks the first unviewed file
+   * in guided order (falling back to the first file); entering Commits with
+   * no commit scoped auto-picks the most recent commit and kicks off its
+   * diff fetch via handleViewCommit. */
+  function setLens(tabId: string, lens: PrLens) {
+    const tab = tabsRef.current.find((t) => t.id === tabId);
+    if (!tab?.manifest) return;
+    if (lens === "files" && !tab.selectedFile) {
+      const order = guidedOrder(tab);
+      const firstPath = nextUnviewed(order, -1, undefined, tab)?.path ?? order[0];
+      const first = firstPath ? tab.manifest.files.find((f) => f.path === firstPath) : undefined;
+      updateTab(tabId, (t) => ({ ...t, lens, selectedFile: first ?? t.selectedFile }));
+      return;
+    }
+    if (lens === "commits" && !tab.selectedCommit) {
+      const commits = tab.manifest.commits;
+      const first = commits[commits.length - 1];
+      if (first) { handleViewCommit(first, tabId); return; }
+    }
+    updateTab(tabId, (t) => ({ ...t, lens }));
+  }
+
   async function handleRefreshPr(tabId?: string) {
     const targetId = tabId ?? activeTabId;
     const tab = tabsRef.current.find((t) => t.id === targetId);
@@ -1515,6 +1583,13 @@ function App() {
         // fetched for the old one — re-fetch is driven by the idle-state effect.
         checkAnnotations: { status: "idle" },
         newHighlightKeys,
+        // A change-group filter naming a group the re-analysis dropped would
+        // otherwise linger invisibly and silently reapply if a same-labeled
+        // group ever came back — clear it rather than carry a dangling scope.
+        groupFilter:
+          tab.groupFilter && (newManifest.change_groups ?? []).some((g) => g.label === tab.groupFilter)
+            ? tab.groupFilter
+            : null,
       };
 
       updateTab(tab.id, () => refreshedTab);
@@ -1567,8 +1642,19 @@ function App() {
     }
   }
 
+  // The single low-level "select a file" primitive — every open-file path
+  // (sidebar clicks, search, chat citations, top-risk rows, next/prev,
+  // guided review) routes through this, so always landing in the Files lens
+  // needs no per-callsite changes (issue #170).
   function setSelectedFile(file: FileDiff) {
-    updateTab(activeTabId,(t) => ({ ...t, selectedFile: file }));
+    updateTab(activeTabId, (t) => ({ ...t, selectedFile: file, lens: "files" }));
+  }
+
+  /** A change-group row on the Overview — scopes the Files sidebar to the
+   * group and opens it at the group's first file (issue #170). */
+  function openGroup(group: ChangeGroup, files: FileDiff[]) {
+    if (!activeTabId || files.length === 0) return;
+    updateTab(activeTabId, (t) => ({ ...t, groupFilter: group.label, lens: "files", selectedFile: files[0] }));
   }
 
   function toggleViewed(filePath: string) {
@@ -1665,62 +1751,68 @@ function App() {
     }
   }
 
-  /** Commit row click in the Commits card (or a Newer/Older nav in CommitView)
-   * — enters/moves commit scope, serving from the session cache when this sha
-   * was already fetched. */
-  async function handleViewCommit(commit: PrCommit) {
-    setCommitScope(commit);
+  /** Load `commit`'s diff for `tabId` into the shared App-level slots —
+   * serving the cache when it hits, and fetching on a miss. The single fetch
+   * path for both an interactive commit click (handleViewCommit) and the
+   * tab-switch resync effect above, so they can't diverge. Only ever writes
+   * the *visible* slots (setCommitDiff/Loading/Error) when `tabId` is still
+   * the active tab at the time — cache writes are unconditional (shas are
+   * immutable, so a background-tab fetch resolving late is still good data
+   * for whenever that tab becomes active again). `commitDiffFetchingRef`
+   * dedupes a request already in flight for this exact tab+sha (the resync
+   * effect and a click can both ask for the same thing in the same tick). */
+  async function loadCommitDiff(tabId: string, commit: PrCommit) {
+    const key = `${tabId}:${commit.sha}`;
     const cached = commitDiffCacheRef.current.get(commit.sha);
     if (cached) {
-      setCommitDiff(cached);
-      setCommitDiffError(null);
-      setCommitDiffLoading(false);
-      setCommitScopePath(cached.files[0]?.path ?? null);
+      if (activeTabIdRef.current === tabId) {
+        setCommitDiff(cached);
+        setCommitDiffError(null);
+        setCommitDiffLoading(false);
+      }
       return;
     }
-    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (activeTabIdRef.current === tabId) {
+      setCommitDiff(null);
+      setCommitDiffError(null);
+      setCommitDiffLoading(true);
+    }
+    if (commitDiffFetchingRef.current.has(key)) return;
+    const tab = tabsRef.current.find((t) => t.id === tabId);
     if (!tab?.manifest) return;
-    setCommitDiff(null);
-    setCommitDiffError(null);
-    setCommitScopePath(null);
-    setCommitDiffLoading(true);
+    commitDiffFetchingRef.current.add(key);
     try {
       const diff = await invoke<CommitDiff>("get_commit_diff", {
         prRef: tab.manifest.pr_url,
         sha: commit.sha,
       });
       commitDiffCacheRef.current.set(commit.sha, diff);
-      // A late resolve after the user switched to another commit (or exited
-      // the scope) must not clobber whatever's now showing.
-      setCommitScope((current) => {
-        if (current?.sha === commit.sha) {
-          setCommitDiff(diff);
-          setCommitDiffLoading(false);
-          setCommitScopePath(diff.files[0]?.path ?? null);
-        }
-        return current;
-      });
+      // A late resolve after the user switched to another commit, or away
+      // from this tab entirely, must not clobber whatever's now showing.
+      const current = tabsRef.current.find((t) => t.id === tabId);
+      if (activeTabIdRef.current === tabId && current?.selectedCommit?.sha === commit.sha) {
+        setCommitDiff(diff);
+        setCommitDiffLoading(false);
+      }
     } catch (err) {
-      setCommitScope((current) => {
-        if (current?.sha === commit.sha) {
-          setCommitDiffError(String(err));
-          setCommitDiffLoading(false);
-        }
-        return current;
-      });
+      const current = tabsRef.current.find((t) => t.id === tabId);
+      if (activeTabIdRef.current === tabId && current?.selectedCommit?.sha === commit.sha) {
+        setCommitDiffError(String(err));
+        setCommitDiffLoading(false);
+      }
+    } finally {
+      commitDiffFetchingRef.current.delete(key);
     }
   }
 
-  /** The commit adjacent to `commit` in `manifest.commits` (oldest-first) —
-   * "newer" walks toward the end of that array, "older" toward the start.
-   * The Commits card displays newest-first (reversed), so this is the
-   * inverse of index adjacency in the card's own render order. */
-  function commitNeighbor(commit: PrCommit, direction: "newer" | "older"): PrCommit | null {
-    const commits = activeTab?.manifest?.commits;
-    if (!commits) return null;
-    const idx = commits.findIndex((c) => c.sha === commit.sha);
-    if (idx === -1) return null;
-    return commits[direction === "newer" ? idx + 1 : idx - 1] ?? null;
+  /** Commit row click (Commits card, Commits lens rail, or a Newer/Older nav)
+   * — enters/moves commit scope on `tabId` (defaulting to the active tab) and
+   * switches it to the Commits lens. Per-tab as of #170: `selectedCommit`
+   * lives on the tab so it can't leak onto another tab's canvas; the fetched
+   * diff itself stays a single App-level slot (see loadCommitDiff above). */
+  function handleViewCommit(commit: PrCommit, tabId: string = activeTabId!) {
+    updateTab(tabId, (t) => ({ ...t, selectedCommit: commit, lens: "commits" }));
+    loadCommitDiff(tabId, commit);
   }
 
   /** File-group header click in the comments panel — jump to the file, no thread scroll. */
@@ -2288,6 +2380,7 @@ function App() {
             pr_url: t.manifest!.pr_url,
             selected_file: t.selectedFile?.path ?? null,
             sidebar_view: t.sidebarView,
+            lens: t.lens,
             // Retired with the comments panel (#144) — kept on the wire type
             // for schema stability, always written null now.
             selected_comment_file: null,
@@ -2360,7 +2453,7 @@ function App() {
   if (activeTab?.manifest) {
     const m = activeTab.manifest;
     paletteCommands.push(
-      { id: "overview", section: "Review", title: "Back to overview", run: () => { if (activeTabId) updateTab(activeTabId, (t) => ({ ...t, selectedFile: null })); } },
+      { id: "overview", section: "Review", title: "Back to overview", run: () => { if (activeTabId) setLens(activeTabId, "overview"); } },
       { id: "next-file", section: "Review", title: "Next file", keys: "]", run: () => selectAdjacentFile(1) },
       { id: "prev-file", section: "Review", title: "Previous file", keys: "[", run: () => selectAdjacentFile(-1) },
       { id: "mark-viewed", section: "Review", title: "Mark file reviewed", keys: "V", run: () => { const p = activeTab.selectedFile?.path; if (p) toggleViewed(p); } },
@@ -2454,7 +2547,10 @@ function App() {
         onCloseTab={closeTab}
         onNewReview={handleNewReview}
         viewedCount={activeTab?.viewedFiles.size ?? 0}
-        staleCount={activeTab?.staleViewedFiles.size ?? 0}
+        lens={activeTab?.lens ?? "overview"}
+        onSetLens={(lens) => { if (activeTabId) setLens(activeTabId, lens); }}
+        filesCount={filesLensCount}
+        commitsCount={commitsLensCount}
         onSettingsClick={() => setSettingsOpen(true)}
         manifest={activeTab?.manifest ?? null}
         showHunkSignificance={showHunkSignificance}
@@ -2571,22 +2667,19 @@ function App() {
           onOpenChange={setSearchOpen}
         />
         <div className="main-content">
-          {commitScope ? (
-            <CommitView
-              commit={commitScope}
+          {activeTab.lens === "commits" ? (
+            <CommitsLens
+              commits={activeTab.manifest.commits}
+              selectedCommit={activeTab.selectedCommit}
               diff={commitDiff}
               loading={commitDiffLoading}
               error={commitDiffError}
-              selectedPath={commitScopePath}
-              onSelectFile={setCommitScopePath}
+              commitDiffCache={commitDiffCacheRef.current}
               repoBaseUrl={repoBaseUrl(activeTab.manifest.pr_url)}
-              onBack={() => setCommitScope(null)}
-              onNewer={() => { const n = commitNeighbor(commitScope, "newer"); if (n) handleViewCommit(n); }}
-              onOlder={() => { const n = commitNeighbor(commitScope, "older"); if (n) handleViewCommit(n); }}
-              hasNewer={commitNeighbor(commitScope, "newer") !== null}
-              hasOlder={commitNeighbor(commitScope, "older") !== null}
+              onSelectCommit={(c) => handleViewCommit(c)}
+              onViewCumulativeDiff={() => { if (activeTabId) setLens(activeTabId, "files"); }}
             />
-          ) : !activeTab.selectedFile ? (
+          ) : activeTab.lens === "overview" ? (
             <PrOverview
               manifest={activeTab.manifest}
               checksStatus={activeChecks ?? null}
@@ -2598,6 +2691,7 @@ function App() {
               startTarget={nextUnviewed(guidedOrder(), -1)}
               onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
               onSelectFile={setSelectedFile}
+              onOpenGroup={openGroup}
               onOpenAt={handleChatOpenFile}
               onBriefMe={briefMe}
               onViewCommit={handleViewCommit}
@@ -2629,7 +2723,8 @@ function App() {
             commentsOpen={activeTab.commentsOpen ?? false}
             onToggleComments={toggleThreadsView}
             onVisibleFilesChange={handleVisibleFilesChange}
-            onShowOverview={() => { if (activeTabId) updateTab(activeTabId, (t) => ({ ...t, selectedFile: null })); }}
+            groupFilter={activeTab.groupFilter}
+            onClearGroupFilter={() => { if (activeTabId) updateTab(activeTabId, (t) => ({ ...t, groupFilter: null })); }}
           />
           <div className="diff-pane">
             {activeTab.selectedFile ? (

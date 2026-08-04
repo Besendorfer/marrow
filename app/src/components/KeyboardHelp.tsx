@@ -18,6 +18,14 @@ interface Section {
 // bindings that actually work — don't advertise TUI keys the GUI doesn't honor yet.
 const SECTIONS: Section[] = [
   {
+    title: "Views",
+    bindings: [
+      { keys: ["1"], label: "Overview" },
+      { keys: ["2"], label: "Files" },
+      { keys: ["3"], label: "Commits" },
+    ],
+  },
+  {
     title: "Navigation",
     bindings: [
       { keys: ["]"], label: "Next file" },
