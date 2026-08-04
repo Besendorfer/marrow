@@ -265,6 +265,9 @@ export interface NoteResolution {
 
 export type SidebarView = "groups" | "category" | "tree";
 
+/** Which of the PR view's three persistent lenses is showing (issue #170). */
+export type PrLens = "overview" | "files" | "commits";
+
 export type DiffViewMode = "split" | "unified";
 
 export type HunkSignificanceFilter = "all" | "high" | "medium" | "low";
@@ -289,6 +292,15 @@ export interface Tab {
   /** last PR ref this tab tried to fetch — lets a failed fetch offer Retry */
   lastPrRef?: string | null;
   selectedFile: FileDiff | null;
+  /** Which of Overview/Files/Commits this tab is showing — persistent per tab
+   * (issue #170), not a global mode. */
+  lens: PrLens;
+  /** The commit shown in the Commits lens, if any. Per-tab so switching tabs
+   * can't leak one PR's commit scope onto another's canvas. */
+  selectedCommit: PrCommit | null;
+  /** Change-group name scoping the Files sidebar (the "Group: <name> ✕" pill),
+   * from a change-group deep link. Null = no filter. */
+  groupFilter: string | null;
   viewedFiles: Set<string>;
   staleViewedFiles: Set<string>;
   /** Keys (see highlightKey) of AI highlights the user has dismissed for this PR. */
@@ -459,6 +471,10 @@ export interface SessionPrEntry {
   selected_file: string | null;
   sidebar_view: SidebarView | null;
   selected_comment_file: string | null;
+  /** Mirrors Rust's `Option<String>` — hand-validated against `PrLens` on
+   * restore rather than typed as `PrLens | null` here (an old session file, or
+   * a future value, could carry anything). */
+  lens?: string | null;
 }
 
 export interface SessionState {

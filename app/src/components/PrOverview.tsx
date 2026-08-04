@@ -18,6 +18,8 @@ interface PrOverviewProps {
   startTarget: FileDiff | null;
   onStartReview: () => void;
   onSelectFile: (f: FileDiff) => void;
+  /** Change-group row click — scopes the Files lens to that group (issue #170). */
+  onOpenGroup: (group: ChangeGroup, files: FileDiff[]) => void;
   /** Keys (see highlightKey) of AI highlights introduced by the most recent
    * refresh's re-analysis — surfaced as a "new AI notes" chip when non-empty. */
   newHighlightKeys?: Set<string>;
@@ -92,11 +94,11 @@ function DescriptionCard({ body }: { body: string }) {
 function GroupRow({
   group,
   files,
-  onSelectFile,
+  onOpenGroup,
 }: {
   group: ChangeGroup;
   files: FileDiff[];
-  onSelectFile: (f: FileDiff) => void;
+  onOpenGroup: (group: ChangeGroup, files: FileDiff[]) => void;
 }) {
   if (files.length === 0) return null;
   const criticalNotes = files.reduce(
@@ -107,7 +109,7 @@ function GroupRow({
     (f) => f.risk_level === "critical" || f.risk_level === "high"
   ).length;
   return (
-    <button className="overview-group" onClick={() => onSelectFile(files[0])}>
+    <button className="overview-group" onClick={() => onOpenGroup(group, files)}>
       <div className="overview-group-main">
         <div className="overview-group-name">{group.label}</div>
         {group.description && (
@@ -295,6 +297,7 @@ export function PrOverview({
   startTarget,
   onStartReview,
   onSelectFile,
+  onOpenGroup,
   newHighlightKeys,
   onOpenAt,
   onBriefMe,
@@ -386,7 +389,7 @@ export function PrOverview({
                 files={g.file_paths
                   .map((p) => byPath.get(p))
                   .filter((f): f is FileDiff => !!f)}
-                onSelectFile={onSelectFile}
+                onOpenGroup={onOpenGroup}
               />
             ))}
           </div>

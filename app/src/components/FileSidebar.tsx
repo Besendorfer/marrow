@@ -23,7 +23,10 @@ interface FileSidebarProps {
   onToggleComments: () => void;
   /** Emits the visible file paths in manifest order, for keyboard file navigation. */
   onVisibleFilesChange?: (paths: string[]) => void;
-  onShowOverview?: () => void;
+  /** Change-group name scoping the file list (a change-group deep link from
+   * the Overview), or null for the full list. */
+  groupFilter?: string | null;
+  onClearGroupFilter?: () => void;
 }
 
 function getMaxHunkSignificance(file: FileDiff): string {
@@ -348,7 +351,7 @@ function TreeFolder({
 /* ─── Main component ────────────────────────────────────────────────────── */
 
 export function FileSidebar({
-  files,
+  files: allFiles,
   changeGroups,
   selectedFile,
   onSelectFile,
@@ -365,8 +368,15 @@ export function FileSidebar({
   commentsOpen,
   onToggleComments,
   onVisibleFilesChange,
-  onShowOverview,
+  groupFilter,
+  onClearGroupFilter,
 }: FileSidebarProps) {
+  // A change-group deep link (issue #170) scopes every view mode to that
+  // group's files — everything below derives from `files`, not the raw prop,
+  // so Groups/Category/Tree and the guided [ / ] order all narrow together.
+  const activeGroup = groupFilter ? changeGroups.find((g) => g.label === groupFilter) : undefined;
+  const files = activeGroup ? allFiles.filter((f) => activeGroup.file_paths.includes(f.path)) : allFiles;
+
   const hasGroups = changeGroups.length > 0;
   const prevHasGroups = useRef(hasGroups);
 
@@ -522,8 +532,10 @@ export function FileSidebar({
     onVisibleFilesChange?.(navigableOrder);
   }, [navigableOrder, onVisibleFilesChange]);
 
-  const viewedCount = viewedFiles.size;
-  const staleCount = staleViewedFiles.size;
+  // Scope the counts to the (possibly group-filtered) list, not the whole PR —
+  // otherwise "N/M viewed" can exceed M while a group filter is active.
+  const viewedCount = files.reduce((n, f) => n + (viewedFiles.has(f.path) ? 1 : 0), 0);
+  const staleCount = files.reduce((n, f) => n + (staleViewedFiles.has(f.path) ? 1 : 0), 0);
   const totalCount = files.length;
   const unresolvedCommentCount = useMemo(
     () => commentThreads.filter((t) => !t.is_resolved).length,
@@ -532,13 +544,9 @@ export function FileSidebar({
 
   return (
     <aside className="file-sidebar">
-      {onShowOverview && (
-        <button
-          className={`sidebar-overview-link${selectedFile === null ? " active" : ""}`}
-          onClick={onShowOverview}
-          title="Back to the PR summary and change groups"
-        >
-          ← Overview
+      {activeGroup && onClearGroupFilter && (
+        <button type="button" className="overview-chip sidebar-group-filter" onClick={onClearGroupFilter}>
+          Group: {activeGroup.label} ✕
         </button>
       )}
       <div className="sidebar-header">
