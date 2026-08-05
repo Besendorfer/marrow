@@ -1953,6 +1953,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   }, [searchQuery, searchMatches, hunks]);
 
   // Apply word-level search highlights into the DOM (marks all matches)
+  /** file+query of the last mark pass — same key means an incremental run. */
+  const lastMarkKeyRef = useRef<string | null>(null);
   useEffect(() => {
     const container = diffContentRef.current;
     if (!container) return;
@@ -1968,9 +1970,20 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       container!.querySelectorAll(".search-match-line").forEach((el) => {
         el.classList.remove("search-match-line");
       });
+      container!.querySelectorAll<HTMLElement>("[data-search-marked]").forEach((el) => {
+        delete el.dataset.searchMarked;
+      });
     }
 
-    clearMarks();
+    // Incremental repaint: a run with the same query/file (the effect also
+    // fires on hunk expansion / whole-file reveal via its deps) only walks
+    // rows that haven't been marked yet — wiping and re-walking every
+    // rendered line per reveal is what made match iteration crawl. A changed
+    // query or file still clears and repaints everything.
+    const markKey = `${file.path} ${searchQuery}`;
+    const incremental = lastMarkKeyRef.current === markKey;
+    if (!incremental) clearMarks();
+    lastMarkKeyRef.current = markKey;
 
     if (!searchQuery || !searchMatches || searchMatches.length === 0) return;
 
@@ -1978,6 +1991,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 
     const pres = container.querySelectorAll<HTMLElement>(".line-content pre");
     for (const pre of pres) {
+      if (incremental && pre.dataset.searchMarked) continue;
+      pre.dataset.searchMarked = "1";
       const row = pre.closest("tr");
       if (!row) continue;
 
@@ -2042,7 +2057,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       if (hasMatch) row.classList.add("search-match-line");
     }
 
-    return clearMarks;
+    // No cleanup return: React runs cleanup before every re-run, which would
+    // wipe the marks the incremental path is preserving. Stale marks are
+    // cleared by the key check above; unmount discards the DOM wholesale.
     // collapsedHunks/fullFile are deps so rows revealed after the initial
     // paint (hunk expansion, whole-file fallback) get their marks too.
   }, [searchMatches, searchQuery, file.path, collapsedHunks, fullFile]);
