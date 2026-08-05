@@ -23,6 +23,7 @@ const SECTIONS: Section[] = [
       { keys: ["1"], label: "Overview" },
       { keys: ["2"], label: "Files" },
       { keys: ["3"], label: "Commits" },
+      { keys: ["4"], label: "Checks" },
     ],
   },
   {

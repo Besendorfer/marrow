@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
-import type { ReviewManifest, Tab, CommentThreadsState, MyReviewState, PrLens } from "../types";
+import { countFailingChecks } from "../utils";
+import type { ReviewManifest, Tab, CommentThreadsState, MyReviewState, PrLens, PrChecksStatus } from "../types";
 
 function useClickOutside(
   ref: React.RefObject<HTMLElement | null>,
@@ -38,12 +39,15 @@ interface HeaderProps {
   onCloseTab: (id: string) => void;
   onNewReview: () => void;
   viewedCount: number;
-  /** Which PR lens (Overview/Files/Commits, issue #170) the switcher shows active. */
+  /** Which PR lens (Overview/Files/Commits/Checks, issue #170, #175) the switcher shows active. */
   lens: PrLens;
   onSetLens: (lens: PrLens) => void;
   /** Files segment count — relevant files, falling back to total when 0 relevant. */
   filesCount: number;
   commitsCount: number;
+  /** Checks segment status, from App's checksMap — null before the first fetch
+   * resolves (issue #175). */
+  checksState: PrChecksStatus | null;
   onSettingsClick: () => void;
   manifest: ReviewManifest | null;
   showHunkSignificance: boolean;
@@ -73,6 +77,7 @@ export function Header({
   onSetLens,
   filesCount,
   commitsCount,
+  checksState,
   onSettingsClick,
   manifest,
   showHunkSignificance,
@@ -157,7 +162,7 @@ export function Header({
                 {REVIEW_STATUS_SYMBOL.approved} Approved
               </span>
             )}
-            <LensSwitcher lens={lens} onSetLens={onSetLens} filesCount={filesCount} commitsCount={commitsCount} filesProgress={progress} />
+            <LensSwitcher lens={lens} onSetLens={onSetLens} filesCount={filesCount} commitsCount={commitsCount} filesProgress={progress} checksState={checksState} />
             {onRefresh && (
               <button
                 className={`refresh-button${isRefreshing ? " refreshing" : ""}`}
@@ -203,19 +208,35 @@ export function Header({
  * header progress bar as a hairline under its label; Overview no longer
  * disappears when you dive into a file, and the "← Overview" escape hatch
  * dissolves into this. */
+/** The Checks segment's badge: no data yet → none; any failing run wins over
+ * a still-running one; all complete and none failing → the passing check
+ * mark. Single spot this precedence is decided (issue #175). */
+function checksBadge(checksState: PrChecksStatus | null): { kind: "ok" | "pending" | "fail"; failing: number } | null {
+  if (!checksState) return null;
+  // Zero runs is "nothing reported", not "passing" — no badge, like no data.
+  if (checksState.check_runs.length === 0) return null;
+  const failing = countFailingChecks(checksState);
+  if (failing > 0) return { kind: "fail", failing };
+  if (checksState.check_runs.some((r) => r.status !== "COMPLETED")) return { kind: "pending", failing: 0 };
+  return { kind: "ok", failing: 0 };
+}
+
 function LensSwitcher({
   lens,
   onSetLens,
   filesCount,
   commitsCount,
   filesProgress,
+  checksState,
 }: {
   lens: PrLens;
   onSetLens: (lens: PrLens) => void;
   filesCount: number;
   commitsCount: number;
   filesProgress: number;
+  checksState: PrChecksStatus | null;
 }) {
+  const badge = checksBadge(checksState);
   return (
     <div className="lens-switcher">
       <button
@@ -238,6 +259,15 @@ function LensSwitcher({
         onClick={() => onSetLens("commits")}
       >
         Commits <span className="seg-count">{commitsCount}</span>
+      </button>
+      <button
+        className={`seg-item${lens === "checks" ? " active" : ""}`}
+        onClick={() => onSetLens("checks")}
+      >
+        Checks
+        {badge?.kind === "ok" && <span className="seg-count seg-ok">✓</span>}
+        {badge?.kind === "pending" && <span className="seg-count seg-pulse">●</span>}
+        {badge?.kind === "fail" && <span className="seg-count seg-fail">{badge.failing} ✗</span>}
       </button>
     </div>
   );
