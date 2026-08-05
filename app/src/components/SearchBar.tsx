@@ -185,14 +185,18 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
     }
   }, [allMatches.length, currentIndex]);
 
-  // Notify parent of highlights
+  // Notify parent of highlights. selectedFile?.path is a dep because the
+  // highlight channel is imperative (issue #178): a global-search file switch
+  // remounts the DiffViewer, and the fresh instance needs the current search
+  // re-applied once its ref attaches (this effect runs post-commit).
   useEffect(() => {
     if (!open || allMatches.length === 0) {
       onClearHighlights();
       return;
     }
     onHighlightMatches(allMatches, currentIndex, effectiveQuery);
-  }, [allMatches, currentIndex, open]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allMatches, currentIndex, open, selectedFile?.path]);
 
   function goNext() {
     if (allMatches.length === 0) return;

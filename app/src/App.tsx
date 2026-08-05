@@ -29,7 +29,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, PrConversationComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, ChatAction, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures, PrLens, ChangeGroup } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, PrConversationComment, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, ChatAction, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures, PrLens, ChangeGroup } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey, isFailingCheck } from "./utils";
 import type { ReviewSession } from "./hooks/useActivityFeed";
 
@@ -117,9 +117,6 @@ function App() {
   const handleVisibleFilesChange = useCallback((paths: string[]) => {
     visibleOrderRef.current = paths;
   }, []);
-  const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
-  const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
-  const [searchQuery, setSearchQuery] = useState("");
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [checksMap, setChecksMap] = useState<Record<string, PrChecksStatus>>({});
   // Chat ```marrow-action chip statuses (issue #166): tabId -> message key
@@ -253,17 +250,6 @@ function App() {
   const commitsLensCount = activeTab?.manifest?.commits.length ?? 0;
 
   const selectedFilePath = activeTab?.selectedFile?.path ?? null;
-  const fileSearchMatches = useMemo(
-    () => searchMatches.filter((m) => m.filePath === selectedFilePath),
-    [searchMatches, selectedFilePath]
-  );
-  const currentSearchMatch = useMemo(
-    () => {
-      const m = searchMatches[searchCurrentIndex];
-      return m?.filePath === selectedFilePath ? m : null;
-    },
-    [searchMatches, searchCurrentIndex, selectedFilePath]
-  );
 
   // Inline CI failure annotations for the active tab, once loaded (see the
   // fetch effect above) — grouped by path so the sidebar badge and the diff
@@ -2903,8 +2889,15 @@ function App() {
           files={activeTab.manifest.files}
           selectedFile={activeTab.selectedFile}
           onSelectFile={setSelectedFile}
-          onHighlightMatches={(matches, idx, q) => { setSearchMatches(matches); setSearchCurrentIndex(idx); setSearchQuery(q); }}
-          onClearHighlights={() => { setSearchMatches([]); setSearchCurrentIndex(0); setSearchQuery(""); }}
+          onHighlightMatches={(matches, idx, q) => {
+            // Imperative channel (issue #178 perf): no state round-trip — a
+            // search keystroke must never re-render the diff row tree.
+            const path = activeTab?.selectedFile?.path ?? null;
+            const inFile = matches.filter((m) => m.filePath === path);
+            const cur = matches[idx]?.filePath === path ? matches[idx] : null;
+            diffViewerRef.current?.applySearch(q, inFile, cur);
+          }}
+          onClearHighlights={() => diffViewerRef.current?.clearSearch()}
           onOpenChange={setSearchOpen}
         />
         <div className="main-content">
@@ -2993,7 +2986,7 @@ function App() {
                 const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
                 return (
                   <>
-                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} newHighlightKeys={activeTab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} checkAnnotations={selectedFileAnnotations} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
+                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} newHighlightKeys={activeTab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} checkAnnotations={selectedFileAnnotations} />
                     <NextFileBar
                       index={idx >= 0 ? idx : 0}
                       total={order.length}
