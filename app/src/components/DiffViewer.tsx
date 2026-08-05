@@ -1768,7 +1768,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 
   function handlePostHighlightAsComment(h: Highlight) {
     if (!onCreateComment) return;
-    openComposer(h.start_line, h.end_line, "RIGHT", `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`);
+    // Just the note text: no severity tag, the posted comment should read as
+    // the reviewer's own words.
+    openComposer(h.start_line, h.end_line, "RIGHT", h.comment);
   }
 
   useEffect(() => {
@@ -2041,7 +2043,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     }
 
     return clearMarks;
-  }, [searchMatches, searchQuery, file.path]);
+    // collapsedHunks/fullFile are deps so rows revealed after the initial
+    // paint (hunk expansion, whole-file fallback) get their marks too.
+  }, [searchMatches, searchQuery, file.path, collapsedHunks, fullFile]);
 
   // Update which mark is the "current" one (lightweight — just swaps classes)
   useEffect(() => {
@@ -2078,11 +2082,17 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
         const row = el.closest("tr");
         if (row) {
           row.scrollIntoView({ block: "center", behavior: "smooth" });
-          break;
+          return;
         }
       }
     }
-  }, [currentMatchInFile]);
+    // Neither a mark nor a visible row: the match sits in a collapsed hunk or
+    // in unchanged code outside the diff (search covers the whole file).
+    // Reveal it — expand the hunk or fall back to the whole-file view — and
+    // let this effect re-run against the fresh rows to promote the mark.
+    revealLine(currentMatchInFile.lineNumber);
+    // collapsedHunks/fullFile re-fire the effect after that reveal renders.
+  }, [currentMatchInFile, collapsedHunks, fullFile]);
 
   const highHunkCount = hunks.filter((h) => h.significance === "high").length;
   const collapsedCount = collapsedHunks.size;
