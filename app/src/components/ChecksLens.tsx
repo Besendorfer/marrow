@@ -15,9 +15,12 @@ interface ChecksLensProps {
   onOpenAt: (path: string, line?: number) => void;
 }
 
-function runState(run: CheckRunInfo): "ok" | "fail" | "pending" {
+function runState(run: CheckRunInfo): "ok" | "fail" | "pending" | "neutral" {
   if (run.status !== "COMPLETED") return "pending";
   if (isFailingCheck(run)) return "fail";
+  // Completed but not a success (cancelled, skipped, neutral): a green check
+  // would overstate — these ran to no verdict, not to "passing".
+  if (run.conclusion !== "SUCCESS") return "neutral";
   return "ok";
 }
 
@@ -54,7 +57,7 @@ function CheckRunRow({
   onSelect: () => void;
 }) {
   const state = runState(run);
-  const glyph = state === "ok" ? "✓" : state === "fail" ? "✗" : "●";
+  const glyph = state === "ok" ? "✓" : state === "fail" ? "✗" : state === "neutral" ? "–" : "●";
   return (
     <div className={`checks-lens-row${selected ? " selected" : ""}${state === "fail" ? " ck-row-fail" : ""}`}>
       <button type="button" className="checks-lens-row-main" onClick={onSelect} title={run.name}>

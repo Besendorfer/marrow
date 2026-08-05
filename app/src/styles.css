@@ -1632,6 +1632,7 @@ tr.cursor-selected td {
 .ck-glyph--ok { color: var(--diff-add-text); }
 .ck-glyph--fail { color: var(--diff-remove-text); }
 .ck-glyph--pending { color: var(--risk-medium); }
+.ck-glyph--neutral { color: var(--text-muted); }
 
 .checks-lens-row-name {
   font-size: 13px;
