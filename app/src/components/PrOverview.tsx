@@ -1,9 +1,11 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { SummaryParagraphs } from "./SummaryParagraphs";
 import { Avatar } from "./ReviewRequestList";
 import { RichText } from "./RichText";
+import { AttentionDigest } from "./AttentionDigest";
+import { buildAllClearSummary, buildDigestEntries } from "./digest";
 import { countFailingChecks, highlightKey, timeAgo } from "../utils";
-import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, TopRisk, PrCommit } from "../types";
+import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, PrCommit } from "../types";
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
@@ -219,24 +221,6 @@ function CommitsCard({
   );
 }
 
-function TopRiskRow({ risk, onOpenAt }: { risk: TopRisk; onOpenAt?: (path: string, line?: number) => void }) {
-  return (
-    <button
-      className="overview-risk-row"
-      onClick={() => onOpenAt?.(risk.path, risk.start_line ?? undefined)}
-    >
-      <div className="overview-risk-row-main">
-        <div className="overview-risk-row-title">{risk.title}</div>
-        <div className="overview-risk-row-detail">{risk.detail}</div>
-      </div>
-      <span className="overview-risk-file">
-        {fileName(risk.path)}
-        {risk.start_line ? `:${risk.start_line}` : ""}
-      </span>
-    </button>
-  );
-}
-
 export function PrOverview({
   manifest,
   checksStatus,
@@ -274,7 +258,14 @@ export function PrOverview({
   const highRisk = relevant.filter(
     (f) => f.risk_level === "critical" || f.risk_level === "high"
   ).length;
-  const topRisks = manifest.triage?.top_risks ?? [];
+  const digestEntries = useMemo(
+    () => buildDigestEntries(manifest, checksStatus),
+    [manifest, checksStatus]
+  );
+  const digestAllClear = useMemo(
+    () => buildAllClearSummary(manifest, checksStatus),
+    [manifest, checksStatus]
+  );
 
   return (
     <div className="pr-overview">
@@ -357,14 +348,12 @@ export function PrOverview({
         )}
       </div>
       <div className="overview-rail">
-        {topRisks.length > 0 && (
-          <div className="overview-card overview-risks">
-            <h4>What to review first</h4>
-            {topRisks.map((risk, i) => (
-              <TopRiskRow key={i} risk={risk} onOpenAt={onOpenAt} />
-            ))}
-          </div>
-        )}
+        <AttentionDigest
+          entries={digestEntries}
+          allClear={digestAllClear}
+          onOpenAt={onOpenAt}
+          onOpenChecks={onOpenChecks}
+        />
         <div className="overview-card">
           <h4>Start reviewing</h4>
           <div className="overview-risk-strip">
