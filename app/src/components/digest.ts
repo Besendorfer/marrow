@@ -21,7 +21,8 @@ export function buildDigestEntries(
 ): DigestEntry[] {
   const entries: DigestEntry[] = [];
   (checks?.check_runs ?? []).forEach((check, i) => {
-    if (check.status !== "COMPLETED") return;
+    // Conclusion-only test, same as countFailingChecks (utils.ts): a run
+    // only carries a failing conclusion once completed, so no status guard.
     if (!isFailingCheck(check)) return;
     // Index in the id: check-run names aren't unique (same guard as ChecksLens).
     entries.push({
