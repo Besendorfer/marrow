@@ -3,7 +3,15 @@
 // the all-clear quiet-line fragments when nothing needs attention.
 import { describe, expect, test } from "bun:test";
 import { buildAllClearSummary, buildDigestEntries } from "./digest";
-import type { CheckRunInfo, PrChecksStatus, ReviewManifest, TopRisk } from "../types";
+import type {
+  CheckRunInfo,
+  PrChecksStatus,
+  RequirementEntry,
+  RequirementsCoverage,
+  ReviewManifest,
+  TestRef,
+  TopRisk,
+} from "../types";
 
 function checkRun(overrides: Partial<CheckRunInfo>): CheckRunInfo {
   return {
@@ -27,6 +35,24 @@ function topRisk(overrides: Partial<TopRisk>): TopRisk {
     start_line: 42,
     ...overrides,
   };
+}
+
+function requirement(overrides: Partial<RequirementEntry>): RequirementEntry {
+  return {
+    text: "Users can reset their password",
+    status: "uncovered",
+    tests: [],
+    note: null,
+    ...overrides,
+  };
+}
+
+function testRef(overrides: Partial<TestRef>): TestRef {
+  return { path: "tests/reset.test.ts", note: null, ...overrides };
+}
+
+function coverage(overrides: Partial<RequirementsCoverage> = {}): RequirementsCoverage {
+  return { requirements: [], orphan_tests: [], ...overrides };
 }
 
 function manifest(overrides: Partial<ReviewManifest> = {}): ReviewManifest {
@@ -86,6 +112,94 @@ describe("buildDigestEntries", () => {
     const entries = buildDigestEntries(m);
     expect(entries.map((e) => e.claim)).toEqual(["First", "Second", "Third"]);
   });
+
+  test("uncovered requirement produces a high entry with no jump", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "uncovered", text: "Login rate-limits after 5 tries", note: null })],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries.length).toBe(1);
+    expect(entries[0]).toMatchObject({
+      severity: "high",
+      claim: "Login rate-limits after 5 tries",
+      source: "coverage",
+      jump: { kind: "none" },
+    });
+  });
+
+  test("partial requirement with tests produces a medium entry jumping to the first test", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [
+          requirement({
+            status: "partial",
+            text: "Password reset email is sent",
+            note: "only the happy path is asserted",
+            tests: [testRef({ path: "tests/reset.test.ts" }), testRef({ path: "tests/reset2.test.ts" })],
+          }),
+        ],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries.length).toBe(1);
+    expect(entries[0]).toMatchObject({
+      severity: "medium",
+      claim: "Password reset email is sent",
+      detail: "only the happy path is asserted",
+      source: "coverage",
+      jump: { kind: "file", path: "tests/reset.test.ts", line: null },
+    });
+  });
+
+  test("partial requirement with no tests produces a medium entry with no jump", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "partial", tests: [] })],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries[0].jump).toEqual({ kind: "none" });
+  });
+
+  test("covered and untestable requirements produce no entries", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "covered" }), requirement({ status: "untestable" })],
+      }),
+    });
+    expect(buildDigestEntries(m)).toEqual([]);
+  });
+
+  test("orphan test produces an info entry with a file jump", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        orphan_tests: [testRef({ path: "tests/logout.test.ts", note: "tests logout, not login" })],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries.length).toBe(1);
+    expect(entries[0]).toMatchObject({
+      severity: "info",
+      claim: "Test without a stated requirement: logout.test.ts",
+      detail: "tests logout, not login",
+      source: "coverage",
+      jump: { kind: "file", path: "tests/logout.test.ts" },
+    });
+  });
+
+  test("entries are ordered CI, then triage, then coverage", () => {
+    const m = manifest({
+      triage: { top_risks: [topRisk({})], review_order: [] },
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "uncovered" })],
+      }),
+    });
+    const c = checks([checkRun({ name: "test", conclusion: "FAILURE" })]);
+    const entries = buildDigestEntries(m, c);
+    expect(entries.map((e) => e.source)).toEqual(["ci", "triage", "coverage"]);
+  });
 });
 
 // ── buildAllClearSummary ─────────────────────────────────────────────────────
@@ -119,5 +233,28 @@ describe("buildAllClearSummary", () => {
   test("pending-but-not-failing checks report CI running", () => {
     const c = checks([checkRun({ status: "IN_PROGRESS", conclusion: null })]);
     expect(buildAllClearSummary(manifest({ triage: null }), c)).toEqual(["CI running"]);
+  });
+
+  test("all requirements covered/untestable adds the coverage fragment after triage", () => {
+    const m = manifest({
+      triage: { top_risks: [], review_order: [] },
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "covered" }), requirement({ status: "untestable" })],
+      }),
+    });
+    expect(buildAllClearSummary(m, null)).toEqual(["no top risks", "requirements covered"]);
+  });
+
+  test("coverage absent yields no requirements fragment", () => {
+    expect(buildAllClearSummary(manifest({ triage: null }), null)).toEqual([]);
+  });
+
+  test("coverage present with an uncovered requirement yields no all-clear fragment", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "uncovered" })],
+      }),
+    });
+    expect(buildAllClearSummary(m, null)).toEqual([]);
   });
 });

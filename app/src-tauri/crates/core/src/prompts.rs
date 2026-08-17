@@ -137,6 +137,97 @@ Respond with ONLY a valid JSON object of this exact shape:
 }
 Do NOT include any text before or after the JSON object. Just the JSON."#;
 
+pub const REQUIREMENTS_COVERAGE_PROMPT: &str = r#"You are a code review assistant checking whether a pull request's stated requirements are backed by tests.
+
+Step 1: Extract the explicit requirements or acceptance criteria stated in the PR title/description ONLY. Never invent or infer a requirement the author didn't state. Skip boilerplate (checklists about code style, formatting, unrelated process items). Extract at most 8 requirements; each must be a short, standalone statement of what the PR is supposed to do or guarantee. If the description states no real requirements, return {"requirements": [], "orphan_tests": []}.
+
+Step 2: For each requirement, judge it ONLY against the provided test-file diffs (you are not shown the implementation, only tests):
+- "covered": a shown test genuinely asserts this requirement.
+- "partial": a shown test touches this requirement but asserts something weaker than stated — say what's missing in "note".
+- "uncovered": no shown test exercises this requirement.
+- "untestable": not verifiable by an automated test (e.g. visual polish, subjective wording).
+
+For each requirement's "tests", list ONLY paths from the test files you were given — never invent a path.
+
+Step 3: List "orphan_tests" — provided test files whose new assertions match none of the extracted requirements. For each, "note" says what it actually tests instead.
+
+Respond with ONLY a valid JSON object of this exact shape:
+{
+  "requirements": [{"text": "...", "status": "covered", "tests": [{"path": "...", "note": "..."}], "note": "..."}],
+  "orphan_tests": [{"path": "...", "note": "..."}]
+}
+Do NOT include any text before or after the JSON object. Just the JSON."#;
+
+/// Path-based test-file detector, mirroring `CLASSIFICATION_PROMPT`'s test-file
+/// glob list. Segment-based (not substring) so e.g. "contest/x.ts" or
+/// "src/attest.rs" don't false-positive on "test".
+pub fn is_test_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let filename = lower.rsplit('/').next().unwrap_or(&lower);
+
+    if filename.contains(".test.") || filename.contains(".spec.") || filename.contains(".e2e.") {
+        return true;
+    }
+
+    lower.split('/').any(|seg| {
+        matches!(
+            seg,
+            "__tests__" | "test" | "tests" | "e2e" | "pact" | "playwright" | "cypress"
+        )
+    })
+}
+
+/// Build the requirements-coverage prompt: PR title/body plus the diffs of
+/// changed test files only (the model judges coverage from tests, never from
+/// implementation). Budgeted like `build_triage_prompt`.
+pub fn build_requirements_coverage_prompt(
+    pr_title: &str,
+    pr_body: &str,
+    test_diffs: &[(String, String)],
+    changed_paths: &[String],
+) -> String {
+    const PER_FILE_BUDGET: usize = 1500;
+    const TOTAL_BUDGET: usize = 20000;
+
+    let body = match truncate_chars(pr_body, 10000) {
+        Some(t) => format!("{}\n... (truncated)", t),
+        None => pr_body.to_string(),
+    };
+
+    let mut diffs = String::new();
+    let mut remaining = TOTAL_BUDGET;
+    if test_diffs.is_empty() {
+        diffs.push_str("(no test files changed in this PR)\n");
+    }
+    for (path, diff) in test_diffs {
+        if remaining == 0 {
+            break;
+        }
+        diffs.push_str(&format!("=== TEST FILE: {} ===\n", path));
+        let cap = PER_FILE_BUDGET.min(remaining);
+        if diff.chars().count() > cap {
+            let snippet: String = diff.chars().take(cap).collect();
+            diffs.push_str(&snippet);
+            diffs.push_str("\n... (truncated)\n");
+            remaining = remaining.saturating_sub(cap);
+        } else {
+            diffs.push_str(diff);
+            remaining = remaining.saturating_sub(diff.chars().count());
+        }
+        diffs.push_str("\n\n");
+    }
+
+    format!(
+        "{}\n\n---\n\nPR Title: {}\n\nPR Description:\n{}\n\nChanged files ({} total):\n{}\n\n=== TEST FILE DIFFS ===\n\n{}",
+        REQUIREMENTS_COVERAGE_PROMPT,
+        pr_title,
+        body,
+        changed_paths.len(),
+        changed_paths.join("\n"),
+        diffs
+    )
+}
+
 /// Build the triage prompt: structured per-file info (path, category, risk,
 /// reason) plus compact diff snippets so the model can reason about contracts and
 /// dependencies for ordering. Diffs are budgeted tighter than the highlight pass
@@ -414,5 +505,24 @@ mod tests {
         );
         assert!(prompt.contains("PR Description:"));
         assert!(prompt.contains("... (truncated)"));
+    }
+
+    #[test]
+    fn is_test_path_matches_known_test_conventions() {
+        assert!(is_test_path("src/foo.test.ts"));
+        assert!(is_test_path("tests/bar.rs"));
+        assert!(is_test_path("__tests__/x.js"));
+        assert!(is_test_path("e2e/y.ts"));
+        assert!(is_test_path("a/b.spec.tsx"));
+        assert!(is_test_path("playwright/checkout.ts"));
+        assert!(is_test_path("cypress/e2e_setup.ts"));
+        assert!(is_test_path("pact/consumer.ts"));
+    }
+
+    #[test]
+    fn is_test_path_does_not_false_positive_on_substrings() {
+        assert!(!is_test_path("src/testing_utils.rs"));
+        assert!(!is_test_path("src/attest.rs"));
+        assert!(!is_test_path("contest/x.ts"));
     }
 }

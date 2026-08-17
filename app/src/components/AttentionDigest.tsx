@@ -16,10 +16,10 @@ function DigestRow({
   function jump() {
     if (entry.jump.kind === "file") onOpenAt?.(entry.jump.path, entry.jump.line ?? undefined);
     else if (entry.jump.kind === "checks") onOpenChecks?.();
-    else onOpenChecks?.(); // MVP: url jumps fall back to the Checks lens.
+    else if (entry.jump.kind === "url") onOpenChecks?.(); // MVP: url jumps fall back to the Checks lens.
   }
-  return (
-    <button className="overview-digest-row" onClick={jump}>
+  const rowContent = (
+    <>
       <span className={`digest-dot digest-dot-${entry.severity}`} />
       <div className="overview-digest-row-main">
         <span className="overview-digest-row-claim">{entry.claim}</span>
@@ -31,6 +31,16 @@ function DigestRow({
           {entry.jump.line ? `:${entry.jump.line}` : ""}
         </span>
       )}
+    </>
+  );
+  // "none" jumps (e.g. an uncovered requirement with no test file to point at)
+  // have no action — render as a plain row instead of a clickable button.
+  if (entry.jump.kind === "none") {
+    return <div className="overview-digest-row">{rowContent}</div>;
+  }
+  return (
+    <button className="overview-digest-row" onClick={jump}>
+      {rowContent}
     </button>
   );
 }

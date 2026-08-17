@@ -5399,7 +5399,9 @@ mark.search-highlight-current {
   border-top: none;
 }
 
-.overview-digest-row:hover .overview-digest-row-claim {
+/* Only interactive rows (buttons) get the hover affordance — "none"-jump
+   rows render as plain divs and must not look clickable. */
+button.overview-digest-row:hover .overview-digest-row-claim {
   color: var(--accent);
 }
 

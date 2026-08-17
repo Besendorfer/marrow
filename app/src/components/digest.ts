@@ -44,6 +44,41 @@ export function buildDigestEntries(
       jump: { kind: "file", path: risk.path, line: risk.start_line },
     });
   });
+  const requirements = manifest.requirements_coverage?.requirements ?? [];
+  requirements.forEach((req, i) => {
+    if (req.status === "uncovered") {
+      entries.push({
+        id: `req:${i}`,
+        severity: "high",
+        claim: req.text,
+        detail: req.note ?? undefined,
+        source: "coverage",
+        jump: { kind: "none" },
+      });
+    } else if (req.status === "partial") {
+      const firstTestPath = req.tests[0]?.path;
+      entries.push({
+        id: `req:${i}`,
+        severity: "medium",
+        claim: req.text,
+        detail: req.note ?? undefined,
+        source: "coverage",
+        jump: firstTestPath ? { kind: "file", path: firstTestPath, line: null } : { kind: "none" },
+      });
+    }
+  });
+  const orphanTests = manifest.requirements_coverage?.orphan_tests ?? [];
+  orphanTests.forEach((test, i) => {
+    const filename = test.path.split("/").pop() ?? test.path;
+    entries.push({
+      id: `orphan:${i}`,
+      severity: "info",
+      claim: `Test without a stated requirement: ${filename}`,
+      detail: test.note ?? undefined,
+      source: "coverage",
+      jump: { kind: "file", path: test.path },
+    });
+  });
   return entries;
 }
 
@@ -64,6 +99,12 @@ export function buildAllClearSummary(
   }
   if (manifest.triage) {
     if (manifest.triage.top_risks.length === 0) fragments.push("no top risks");
+  }
+  if (manifest.requirements_coverage) {
+    const allCovered = manifest.requirements_coverage.requirements.every(
+      (r) => r.status === "covered" || r.status === "untestable"
+    );
+    if (allCovered) fragments.push("requirements covered");
   }
   return fragments;
 }
