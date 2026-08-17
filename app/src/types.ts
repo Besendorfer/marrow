@@ -58,6 +58,31 @@ export interface TriageReport {
   review_order: ReviewOrderItem[];
 }
 
+// ── Attention digest (issue #180) ───────────────────────────────────────────
+// TS-only for now: entries are derived in the frontend from the manifest and
+// checks status (see components/digest.ts). A Rust counterpart arrives when a
+// backend pass emits entries directly (#179 adds a coverage source).
+
+export type DigestSeverity = "critical" | "high" | "medium" | "info";
+
+export type DigestJump =
+  | { kind: "file"; path: string; line?: number | null }
+  | { kind: "checks" }
+  | { kind: "url"; url: string };
+
+export interface DigestEntry {
+  /** Stable key, e.g. "ci:<check name>" / "risk:<index>". */
+  id: string;
+  severity: DigestSeverity;
+  /** One-line headline. */
+  claim: string;
+  /** One sentence max, shown muted. */
+  detail?: string;
+  /** Producing pass; more sources later (#179 coverage). */
+  source: "ci" | "triage";
+  jump: DigestJump;
+}
+
 /** One commit in a PR's commit list (the "commits" tab). */
 export interface PrCommit {
   sha: string;
