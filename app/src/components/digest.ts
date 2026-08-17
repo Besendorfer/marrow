@@ -54,7 +54,9 @@ export function buildAllClearSummary(
   checks?: PrChecksStatus | null
 ): string[] {
   const fragments: string[] = [];
-  if (checks) {
+  // Empty check_runs means no CI is configured — that's an absent signal,
+  // not a green one.
+  if (checks && checks.check_runs.length > 0) {
     const anyFailing = checks.check_runs.some(isFailingCheck);
     const anyPending = checks.check_runs.some((r) => r.status !== "COMPLETED");
     if (!anyFailing) fragments.push(anyPending ? "CI running" : "CI green");

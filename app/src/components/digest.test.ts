@@ -111,6 +111,11 @@ describe("buildAllClearSummary", () => {
     expect(buildAllClearSummary(manifest({ triage: null }), null)).toEqual([]);
   });
 
+  test("empty check_runs (no CI configured) yields no CI fragment", () => {
+    const m = manifest({ triage: { top_risks: [], review_order: [] } });
+    expect(buildAllClearSummary(m, checks([]))).toEqual(["no top risks"]);
+  });
+
   test("pending-but-not-failing checks report CI running", () => {
     const c = checks([checkRun({ status: "IN_PROGRESS", conclusion: null })]);
     expect(buildAllClearSummary(manifest({ triage: null }), c)).toEqual(["CI running"]);
