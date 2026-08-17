@@ -101,9 +101,12 @@ export function buildAllClearSummary(
     if (manifest.triage.top_risks.length === 0) fragments.push("no top risks");
   }
   if (manifest.requirements_coverage) {
-    const allCovered = manifest.requirements_coverage.requirements.every(
-      (r) => r.status === "covered" || r.status === "untestable"
-    );
+    const reqs = manifest.requirements_coverage.requirements;
+    // Guard the vacuous-.every() case locally rather than relying on core's
+    // empty-means-None invariant holding forever.
+    const allCovered =
+      reqs.length > 0 &&
+      reqs.every((r) => r.status === "covered" || r.status === "untestable");
     if (allCovered) fragments.push("requirements covered");
   }
   return fragments;

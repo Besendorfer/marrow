@@ -249,6 +249,11 @@ describe("buildAllClearSummary", () => {
     expect(buildAllClearSummary(manifest({ triage: null }), null)).toEqual([]);
   });
 
+  test("coverage present but empty yields no vacuous fragment", () => {
+    const m = manifest({ triage: null, requirements_coverage: coverage() });
+    expect(buildAllClearSummary(m, null)).toEqual([]);
+  });
+
   test("coverage present with an uncovered requirement yields no all-clear fragment", () => {
     const m = manifest({
       requirements_coverage: coverage({
