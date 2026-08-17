@@ -1,6 +1,22 @@
 import { isFailingCheck } from "../utils";
 import type { CheckRunInfo, DigestEntry, ReviewManifest, PrChecksStatus } from "../types";
 
+/** Per-source tab/row labels for the attention digest (issue #180 follow-up). */
+export const DIGEST_SOURCE_LABEL: Record<DigestEntry["source"], string> = {
+  ci: "CI",
+  triage: "risk",
+  coverage: "spec",
+};
+
+/** Counts entries per source, omitting sources with zero entries. */
+export function countBySource(entries: DigestEntry[]): Partial<Record<DigestEntry["source"], number>> {
+  const counts: Partial<Record<DigestEntry["source"], number>> = {};
+  for (const entry of entries) {
+    counts[entry.source] = (counts[entry.source] ?? 0) + 1;
+  }
+  return counts;
+}
+
 /** Short, jump-worthy wording per failing conclusion — mirrors the CiChip
  * label conventions in PrOverview.tsx. */
 function ciClaim(check: CheckRunInfo): string {

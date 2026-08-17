@@ -2,9 +2,10 @@
 // merge CI failures and triage top-risks into one ranked list, and derive
 // the all-clear quiet-line fragments when nothing needs attention.
 import { describe, expect, test } from "bun:test";
-import { buildAllClearSummary, buildDigestEntries } from "./digest";
+import { buildAllClearSummary, buildDigestEntries, countBySource, DIGEST_SOURCE_LABEL } from "./digest";
 import type {
   CheckRunInfo,
+  DigestEntry,
   PrChecksStatus,
   RequirementEntry,
   RequirementsCoverage,
@@ -261,5 +262,45 @@ describe("buildAllClearSummary", () => {
       }),
     });
     expect(buildAllClearSummary(m, null)).toEqual([]);
+  });
+});
+
+// ── DIGEST_SOURCE_LABEL / countBySource ─────────────────────────────────────
+
+function digestEntry(overrides: Partial<DigestEntry>): DigestEntry {
+  return {
+    id: "x:0",
+    severity: "high",
+    claim: "claim",
+    source: "triage",
+    jump: { kind: "none" },
+    ...overrides,
+  };
+}
+
+describe("DIGEST_SOURCE_LABEL", () => {
+  test("maps all three sources", () => {
+    expect(DIGEST_SOURCE_LABEL).toEqual({ ci: "CI", triage: "risk", coverage: "spec" });
+  });
+});
+
+describe("countBySource", () => {
+  test("counts entries per source", () => {
+    const entries = [
+      digestEntry({ id: "ci:0", source: "ci" }),
+      digestEntry({ id: "ci:1", source: "ci" }),
+      digestEntry({ id: "risk:0", source: "triage" }),
+      digestEntry({ id: "req:0", source: "coverage" }),
+    ];
+    expect(countBySource(entries)).toEqual({ ci: 2, triage: 1, coverage: 1 });
+  });
+
+  test("omits sources with no entries", () => {
+    const entries = [digestEntry({ id: "ci:0", source: "ci" })];
+    expect(countBySource(entries)).toEqual({ ci: 1 });
+  });
+
+  test("empty entries yields an empty object", () => {
+    expect(countBySource([])).toEqual({});
   });
 });

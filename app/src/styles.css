@@ -5380,6 +5380,32 @@ mark.search-highlight-current {
 }
 
 /* ─── Attention digest (issue #180) ───────────────────────────────────── */
+.overview-digest-tabs {
+  display: flex;
+  gap: var(--space-2);
+  margin: -2px 0 10px;
+}
+
+.overview-digest-tab {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-sans);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.overview-digest-tab.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.overview-digest-tab:hover:not(.active) {
+  color: var(--text-primary);
+}
+
 .overview-digest-row {
   display: flex;
   align-items: center;
@@ -5412,6 +5438,22 @@ button.overview-digest-row:hover .overview-digest-row-claim {
   flex-direction: column;
   align-items: flex-start;
   text-align: left;
+}
+
+.overview-digest-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.overview-digest-row-source {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 /* Coverage claims arrive as full requirement sentences — clamp both lines so

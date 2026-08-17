@@ -1,4 +1,11 @@
+import { useState } from "react";
 import type { DigestEntry } from "../types";
+import { DIGEST_SOURCE_LABEL, countBySource } from "./digest";
+
+// Fixed tab order, independent of entries.length ordering — CI first, then
+// risk, then spec, matching buildDigestEntries's own ranking.
+const TAB_ORDER: DigestEntry["source"][] = ["ci", "triage", "coverage"];
+const TAB_LABEL: Record<DigestEntry["source"], string> = { ci: "CI", triage: "Risks", coverage: "Spec" };
 
 function fileName(path: string): string {
   return path.split("/").pop() ?? path;
@@ -22,7 +29,10 @@ function DigestRow({
     <>
       <span className={`digest-dot digest-dot-${entry.severity}`} />
       <div className="overview-digest-row-main">
-        <span className="overview-digest-row-claim">{entry.claim}</span>
+        <div className="overview-digest-row-top">
+          <span className="overview-digest-row-source">{DIGEST_SOURCE_LABEL[entry.source]}</span>
+          <span className="overview-digest-row-claim">{entry.claim}</span>
+        </div>
         {entry.detail && <span className="overview-digest-row-detail">{entry.detail}</span>}
       </div>
       {entry.jump.kind === "file" && (
@@ -60,11 +70,37 @@ export function AttentionDigest({
   onOpenAt?: (path: string, line?: number) => void;
   onOpenChecks?: () => void;
 }) {
+  const [tab, setTab] = useState<"all" | DigestEntry["source"]>("all");
   if (entries.length > 0) {
+    const counts = countBySource(entries);
+    const sources = TAB_ORDER.filter((source) => counts[source]);
+    // Fall back to "all" if the selected tab's source has since emptied out,
+    // rather than setState-during-render.
+    const effectiveTab = tab !== "all" && !counts[tab] ? "all" : tab;
+    const visibleEntries = effectiveTab === "all" ? entries : entries.filter((e) => e.source === effectiveTab);
     return (
       <div className="overview-card">
         <h4>Needs your attention</h4>
-        {entries.map((entry) => (
+        {sources.length >= 2 && (
+          <div className="overview-digest-tabs">
+            <button
+              className={effectiveTab === "all" ? "overview-digest-tab active" : "overview-digest-tab"}
+              onClick={() => setTab("all")}
+            >
+              All ({entries.length})
+            </button>
+            {sources.map((source) => (
+              <button
+                key={source}
+                className={effectiveTab === source ? "overview-digest-tab active" : "overview-digest-tab"}
+                onClick={() => setTab(source)}
+              >
+                {TAB_LABEL[source]} ({counts[source]})
+              </button>
+            ))}
+          </div>
+        )}
+        {visibleEntries.map((entry) => (
           <DigestRow key={entry.id} entry={entry} onOpenAt={onOpenAt} onOpenChecks={onOpenChecks} />
         ))}
       </div>
