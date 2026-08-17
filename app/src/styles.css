@@ -5407,28 +5407,57 @@ mark.search-highlight-current {
 }
 
 .overview-digest-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
   width: 100%;
   padding: 10px 4px;
-  background: none;
-  border: none;
   border-top: 1px solid var(--chip-border);
-  color: inherit;
-  font-family: var(--font-sans);
-  text-align: left;
-  cursor: pointer;
 }
 
 .overview-digest-row:first-of-type {
   border-top: none;
 }
 
-/* Only interactive rows (buttons) get the hover affordance — "none"-jump
-   rows render as plain divs and must not look clickable. */
-button.overview-digest-row:hover .overview-digest-row-claim {
+/* Every row expands on click; the toggle is the whole row surface. */
+.overview-digest-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview-digest-row-toggle:hover .overview-digest-row-claim {
   color: var(--accent);
+}
+
+/* Expanded rows show the full text — the clamp only applies collapsed. */
+.overview-digest-row.expanded .overview-digest-row-claim,
+.overview-digest-row.expanded .overview-digest-row-detail {
+  -webkit-line-clamp: unset;
+}
+
+.overview-digest-row-actions {
+  /* dot width + row gap, so the action aligns with the text column */
+  padding: 6px 0 0 calc(7px + var(--space-3));
+}
+
+.overview-digest-row-action {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.overview-digest-row-action:hover {
+  text-decoration: underline;
 }
 
 .overview-digest-row-main {

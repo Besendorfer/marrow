@@ -7,12 +7,32 @@ import { DIGEST_SOURCE_LABEL, countBySource } from "./digest";
 const TAB_ORDER: DigestEntry["source"][] = ["ci", "triage", "coverage"];
 const TAB_LABEL: Record<DigestEntry["source"], string> = { ci: "CI", triage: "Risks", coverage: "Spec" };
 
+function fileName(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+function jumpLabel(entry: DigestEntry): string | null {
+  if (entry.jump.kind === "file") {
+    const line = entry.jump.line ? `:${entry.jump.line}` : "";
+    return `Open ${fileName(entry.jump.path)}${line}`;
+  }
+  if (entry.jump.kind === "checks" || entry.jump.kind === "url") return "Open checks";
+  return null;
+}
+
+// One interaction model for every row: click toggles the full text open
+// (clamped when collapsed), and navigation is an explicit action button
+// inside the expanded row — never the row click itself.
 function DigestRow({
   entry,
+  expanded,
+  onToggle,
   onOpenAt,
   onOpenChecks,
 }: {
   entry: DigestEntry;
+  expanded: boolean;
+  onToggle: () => void;
   onOpenAt?: (path: string, line?: number) => void;
   onOpenChecks?: () => void;
 }) {
@@ -21,27 +41,27 @@ function DigestRow({
     else if (entry.jump.kind === "checks") onOpenChecks?.();
     else if (entry.jump.kind === "url") onOpenChecks?.(); // MVP: url jumps fall back to the Checks lens.
   }
-  const rowContent = (
-    <>
-      <span className={`digest-dot digest-dot-${entry.severity}`} />
-      <div className="overview-digest-row-main">
-        <div className="overview-digest-row-top">
-          <span className="overview-digest-row-source">{DIGEST_SOURCE_LABEL[entry.source]}</span>
-          <span className="overview-digest-row-claim">{entry.claim}</span>
-        </div>
-        {entry.detail && <span className="overview-digest-row-detail">{entry.detail}</span>}
-      </div>
-    </>
-  );
-  // "none" jumps (e.g. an uncovered requirement with no test file to point at)
-  // have no action — render as a plain row instead of a clickable button.
-  if (entry.jump.kind === "none") {
-    return <div className="overview-digest-row">{rowContent}</div>;
-  }
+  const label = jumpLabel(entry);
   return (
-    <button className="overview-digest-row" onClick={jump}>
-      {rowContent}
-    </button>
+    <div className={expanded ? "overview-digest-row expanded" : "overview-digest-row"}>
+      <button className="overview-digest-row-toggle" aria-expanded={expanded} onClick={onToggle}>
+        <span className={`digest-dot digest-dot-${entry.severity}`} />
+        <div className="overview-digest-row-main">
+          <div className="overview-digest-row-top">
+            <span className="overview-digest-row-source">{DIGEST_SOURCE_LABEL[entry.source]}</span>
+            <span className="overview-digest-row-claim">{entry.claim}</span>
+          </div>
+          {entry.detail && <span className="overview-digest-row-detail">{entry.detail}</span>}
+        </div>
+      </button>
+      {expanded && label && (
+        <div className="overview-digest-row-actions">
+          <button className="overview-digest-row-action" onClick={jump}>
+            {label} →
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -61,6 +81,7 @@ export function AttentionDigest({
   onOpenChecks?: () => void;
 }) {
   const [tab, setTab] = useState<"all" | DigestEntry["source"]>("all");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   if (entries.length > 0) {
     const counts = countBySource(entries);
     const sources = TAB_ORDER.filter((source) => counts[source]);
@@ -91,7 +112,14 @@ export function AttentionDigest({
           </div>
         )}
         {visibleEntries.map((entry) => (
-          <DigestRow key={entry.id} entry={entry} onOpenAt={onOpenAt} onOpenChecks={onOpenChecks} />
+          <DigestRow
+            key={entry.id}
+            entry={entry}
+            expanded={expandedId === entry.id}
+            onToggle={() => setExpandedId(expandedId === entry.id ? null : entry.id)}
+            onOpenAt={onOpenAt}
+            onOpenChecks={onOpenChecks}
+          />
         ))}
       </div>
     );
