@@ -7,10 +7,6 @@ import { DIGEST_SOURCE_LABEL, countBySource } from "./digest";
 const TAB_ORDER: DigestEntry["source"][] = ["ci", "triage", "coverage"];
 const TAB_LABEL: Record<DigestEntry["source"], string> = { ci: "CI", triage: "Risks", coverage: "Spec" };
 
-function fileName(path: string): string {
-  return path.split("/").pop() ?? path;
-}
-
 function DigestRow({
   entry,
   onOpenAt,
@@ -35,12 +31,6 @@ function DigestRow({
         </div>
         {entry.detail && <span className="overview-digest-row-detail">{entry.detail}</span>}
       </div>
-      {entry.jump.kind === "file" && (
-        <span className="overview-risk-file">
-          {fileName(entry.jump.path)}
-          {entry.jump.line ? `:${entry.jump.line}` : ""}
-        </span>
-      )}
     </>
   );
   // "none" jumps (e.g. an uncovered requirement with no test file to point at)
