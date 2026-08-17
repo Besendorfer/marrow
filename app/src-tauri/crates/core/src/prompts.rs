@@ -1,5 +1,8 @@
 use crate::types::FileClassification;
 
+// The test-file glob list below is kept in sync BY HAND with `is_test_path`
+// (same file) — the coverage pass uses that matcher to decide which diffs the
+// model judges requirements against.
 pub const CLASSIFICATION_PROMPT: &str = r#"You are a code review assistant. Your job is to classify changed files in a pull request as either RELEVANT or NOT_RELEVANT for a business logic / infrastructure review.
 
 RELEVANT files include:
@@ -158,9 +161,11 @@ Respond with ONLY a valid JSON object of this exact shape:
 }
 Do NOT include any text before or after the JSON object. Just the JSON."#;
 
-/// Path-based test-file detector, mirroring `CLASSIFICATION_PROMPT`'s test-file
-/// glob list. Segment-based (not substring) so e.g. "contest/x.ts" or
-/// "src/attest.rs" don't false-positive on "test".
+/// Path-based test-file detector. Kept in sync BY HAND with
+/// `CLASSIFICATION_PROMPT`'s test-file glob list above — drift silently
+/// changes which files the coverage pass judges against. Segment-based (not
+/// substring) so e.g. "contest/x.ts" or "src/attest.rs" don't false-positive
+/// on "test".
 pub fn is_test_path(path: &str) -> bool {
     let lower = path.to_lowercase();
     let filename = lower.rsplit('/').next().unwrap_or(&lower);
