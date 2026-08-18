@@ -1,6 +1,15 @@
 import { hashString, isFailingCheck } from "../utils";
 import type { CheckRunInfo, DigestEntry, ReviewManifest, PrChecksStatus } from "../types";
 
+/** Resolve-keys hash normalized requirement text so trivial re-extraction
+ * drift (case, whitespace, trailing punctuation) doesn't resurface an
+ * already-addressed spec item. Semantic rewording still changes the key —
+ * accepted residual, the prompt asks for verbatim quotes to minimize it. */
+export function specResolveKey(text: string): string {
+  const normalized = text.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.。]$/, "");
+  return `spec:${hashString(normalized)}`;
+}
+
 /** Per-source tab/row labels for the attention digest (issue #180 follow-up). */
 export const DIGEST_SOURCE_LABEL: Record<DigestEntry["source"], string> = {
   ci: "CI",
@@ -70,7 +79,7 @@ export function buildDigestEntries(
         detail: req.note ?? undefined,
         source: "coverage",
         jump: { kind: "none" },
-        resolveKey: `spec:${hashString(req.text)}`,
+        resolveKey: specResolveKey(req.text),
       });
     } else if (req.status === "partial") {
       const firstTestPath = req.tests[0]?.path;
@@ -81,7 +90,7 @@ export function buildDigestEntries(
         detail: req.note ?? undefined,
         source: "coverage",
         jump: firstTestPath ? { kind: "file", path: firstTestPath, line: null } : { kind: "none" },
-        resolveKey: `spec:${hashString(req.text)}`,
+        resolveKey: specResolveKey(req.text),
       });
     }
   });

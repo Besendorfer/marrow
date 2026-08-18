@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildAllClearSummary, buildDigestEntries, countBySource, DIGEST_SOURCE_LABEL } from "./digest";
 import { hashString } from "../utils";
+import { specResolveKey } from "./digest";
 import type {
   CheckRunInfo,
   DigestEntry,
@@ -130,7 +131,7 @@ describe("buildDigestEntries", () => {
       claim: "Login rate-limits after 5 tries",
       source: "coverage",
       jump: { kind: "none" },
-      resolveKey: `spec:${hashString("Login rate-limits after 5 tries")}`,
+      resolveKey: specResolveKey("Login rate-limits after 5 tries"),
     });
   });
 
@@ -155,7 +156,7 @@ describe("buildDigestEntries", () => {
       detail: "only the happy path is asserted",
       source: "coverage",
       jump: { kind: "file", path: "tests/reset.test.ts", line: null },
-      resolveKey: `spec:${hashString("Password reset email is sent")}`,
+      resolveKey: specResolveKey("Password reset email is sent"),
     });
   });
 
@@ -194,6 +195,13 @@ describe("buildDigestEntries", () => {
       jump: { kind: "file", path: "tests/logout.test.ts" },
       resolveKey: `orphan:${hashString("tests/logout.test.ts")}`,
     });
+  });
+
+  test("resolveKey survives trivial re-extraction drift (case, whitespace, trailing period)", () => {
+    const base = specResolveKey("Users can reset their password");
+    expect(specResolveKey("users can reset  their password.")).toBe(base);
+    expect(specResolveKey("  Users can\treset their password ")).toBe(base);
+    expect(specResolveKey("Users can reset their sessions")).not.toBe(base);
   });
 
   test("resolveKey is stable for identical text regardless of array position", () => {

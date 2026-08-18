@@ -142,7 +142,7 @@ Do NOT include any text before or after the JSON object. Just the JSON."#;
 
 pub const REQUIREMENTS_COVERAGE_PROMPT: &str = r#"You are a code review assistant checking whether a pull request's stated requirements are backed by tests.
 
-Step 1: Extract the explicit requirements or acceptance criteria stated in the PR title/description ONLY. Never invent or infer a requirement the author didn't state. Skip boilerplate (checklists about code style, formatting, unrelated process items). Extract at most 8 requirements; each must be a short, standalone statement of what the PR is supposed to do or guarantee. If the description states no real requirements, return {"requirements": [], "orphan_tests": []}.
+Step 1: Extract the explicit requirements or acceptance criteria stated in the PR title/description ONLY. Never invent or infer a requirement the author didn't state. Skip boilerplate (checklists about code style, formatting, unrelated process items). Extract at most 8 requirements; each must be a short, standalone statement of what the PR is supposed to do or guarantee. Quote each requirement's "text" using the description's own wording as closely as possible (verbatim phrases, not a paraphrase) so re-running this extraction yields identical text. If the description states no real requirements, return {"requirements": [], "orphan_tests": []}.
 
 Step 2: For each requirement, judge it ONLY against the provided test-file diffs (you are not shown the implementation, only tests):
 - "covered": a shown test genuinely asserts this requirement.
