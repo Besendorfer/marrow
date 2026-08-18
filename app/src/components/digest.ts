@@ -1,4 +1,4 @@
-import { isFailingCheck } from "../utils";
+import { hashString, isFailingCheck } from "../utils";
 import type { CheckRunInfo, DigestEntry, ReviewManifest, PrChecksStatus } from "../types";
 
 /** Per-source tab/row labels for the attention digest (issue #180 follow-up). */
@@ -70,6 +70,7 @@ export function buildDigestEntries(
         detail: req.note ?? undefined,
         source: "coverage",
         jump: { kind: "none" },
+        resolveKey: `spec:${hashString(req.text)}`,
       });
     } else if (req.status === "partial") {
       const firstTestPath = req.tests[0]?.path;
@@ -80,6 +81,7 @@ export function buildDigestEntries(
         detail: req.note ?? undefined,
         source: "coverage",
         jump: firstTestPath ? { kind: "file", path: firstTestPath, line: null } : { kind: "none" },
+        resolveKey: `spec:${hashString(req.text)}`,
       });
     }
   });
@@ -93,6 +95,7 @@ export function buildDigestEntries(
       detail: test.note ?? undefined,
       source: "coverage",
       jump: { kind: "file", path: test.path },
+      resolveKey: `orphan:${hashString(test.path)}`,
     });
   });
   return entries;

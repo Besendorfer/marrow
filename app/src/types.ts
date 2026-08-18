@@ -106,6 +106,9 @@ export interface DigestEntry {
   /** Producing pass. */
   source: "ci" | "triage" | "coverage";
   jump: DigestJump;
+  /** Stable text-hash key into the resolved-specs store (see resolved_specs.rs).
+   * Present only on coverage entries — CI/triage rows aren't resolvable. */
+  resolveKey?: string;
 }
 
 /** One commit in a PR's commit list (the "commits" tab). */
@@ -362,6 +365,13 @@ export interface Tab {
   /** Resolution metadata (state + reason) for dismissed highlights, keyed by
    * highlightKey. A dismissed key may have no entry here (plain/legacy dismiss). */
   noteResolutions: Map<string, NoteResolution>;
+  /** Keys (see DigestEntry.resolveKey) of coverage-digest spec items the user
+   * has marked addressed for this PR. Resolution never means "covered" —
+   * it's a user acknowledgment, orthogonal to the AI's coverage judgment. */
+  resolvedSpecKeys: Set<string>;
+  /** Resolution metadata (state + reason) for resolved spec items, keyed by
+   * resolveKey. Mirrors noteResolutions' shape/lifecycle. */
+  specResolutions: Map<string, NoteResolution>;
   /** Keys (see highlightKey) of AI highlights newly introduced by the most
    * recent refresh's re-analysis, relative to the manifest it replaced.
    * Transient — not persisted, and undefined outside a just-refreshed tab. */

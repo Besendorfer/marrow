@@ -5444,6 +5444,32 @@ mark.search-highlight-current {
 .overview-digest-row-actions {
   /* dot width + row gap, so the action aligns with the text column */
   padding: 6px 0 0 calc(7px + var(--space-3));
+  display: flex;
+  gap: 12px;
+}
+
+/* Resolved spec items sit in a dimmed tray below the active list — reachable
+   (Restore is one click away) but visually out of the way. */
+.overview-digest-row.resolved {
+  opacity: 0.55;
+}
+
+.overview-digest-showresolved {
+  background: none;
+  border: none;
+  padding: 6px 4px 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.overview-digest-showresolved:hover {
+  color: var(--text-secondary);
+}
+
+.overview-digest-resolved-suffix {
+  color: var(--text-muted);
 }
 
 .overview-digest-row-action {

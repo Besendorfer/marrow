@@ -3,6 +3,7 @@
 // the all-clear quiet-line fragments when nothing needs attention.
 import { describe, expect, test } from "bun:test";
 import { buildAllClearSummary, buildDigestEntries, countBySource, DIGEST_SOURCE_LABEL } from "./digest";
+import { hashString } from "../utils";
 import type {
   CheckRunInfo,
   DigestEntry,
@@ -87,7 +88,9 @@ describe("buildDigestEntries", () => {
     expect(entries.length).toBe(2);
     expect(entries[0].source).toBe("ci");
     expect(entries[0].severity).toBe("critical");
+    expect(entries[0].resolveKey).toBeUndefined();
     expect(entries[1].source).toBe("triage");
+    expect(entries[1].resolveKey).toBeUndefined();
   });
 
   test("cancelled, skipped, and pending runs produce no entries", () => {
@@ -127,6 +130,7 @@ describe("buildDigestEntries", () => {
       claim: "Login rate-limits after 5 tries",
       source: "coverage",
       jump: { kind: "none" },
+      resolveKey: `spec:${hashString("Login rate-limits after 5 tries")}`,
     });
   });
 
@@ -151,6 +155,7 @@ describe("buildDigestEntries", () => {
       detail: "only the happy path is asserted",
       source: "coverage",
       jump: { kind: "file", path: "tests/reset.test.ts", line: null },
+      resolveKey: `spec:${hashString("Password reset email is sent")}`,
     });
   });
 
@@ -187,7 +192,27 @@ describe("buildDigestEntries", () => {
       detail: "tests logout, not login",
       source: "coverage",
       jump: { kind: "file", path: "tests/logout.test.ts" },
+      resolveKey: `orphan:${hashString("tests/logout.test.ts")}`,
     });
+  });
+
+  test("resolveKey is stable for identical text regardless of array position", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [
+          requirement({ status: "uncovered", text: "Padding requirement" }),
+          requirement({ status: "uncovered", text: "Users can reset their password" }),
+        ],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    const first = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "uncovered", text: "Users can reset their password" })],
+      }),
+    });
+    const soloEntries = buildDigestEntries(first);
+    expect(entries[1].resolveKey).toBe(soloEntries[0].resolveKey);
   });
 
   test("entries are ordered CI, then triage, then coverage", () => {

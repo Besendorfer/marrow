@@ -25,7 +25,7 @@ export function countFailingChecks(checks: PrChecksStatus): number {
 }
 
 // djb2 string hash → unsigned base36, for compact stable keys.
-function hashString(s: string): string {
+export function hashString(s: string): string {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
