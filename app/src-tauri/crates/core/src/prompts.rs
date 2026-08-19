@@ -149,6 +149,7 @@ Step 2: For each requirement, judge it ONLY against the provided test-file diffs
 - "partial": a shown test touches this requirement but asserts something weaker than stated — say what's missing in "note".
 - "uncovered": no shown test exercises this requirement.
 - "untestable": not verifiable by an automated test (e.g. visual polish, subjective wording).
+Some diffs may end with "... (truncated)". If truncation is what prevents you from confirming coverage, prefer "partial" with a note saying the diff was cut — never a confident "uncovered".
 
 For each requirement's "tests", list ONLY paths from the test files you were given — never invent a path.
 
