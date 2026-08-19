@@ -4,6 +4,7 @@ use crate::dismissed_highlights;
 use crate::github::GithubClient;
 use crate::manifest_cache;
 use crate::pr_parser::parse_pr_ref;
+use crate::pr_requirements;
 use crate::prompts::{
     build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_requirements_coverage_prompt,
     build_summary_prompt, build_triage_prompt, is_test_path, PriorNote,
@@ -171,10 +172,20 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         // PRs), in parallel. The triage pass (top risks + contract-first order) is
         // gated on size — small PRs don't need a guided path.
         let run_triage = relevant.len() >= TRIAGE_MIN_FILES;
+        // Local requirements override (issue #179 phase 2): a reviewer-supplied
+        // requirements text (see pr_requirements.rs) is authoritative when
+        // present and overrides the body-length gate below — it's the escape
+        // hatch for PRs whose description states no real requirements.
+        let local_requirements = pr_requirements::load_pr_requirements(&parsed.owner, &parsed.repo, parsed.number);
+        let user_requirements_text = local_requirements
+            .as_ref()
+            .map(|r| r.text.as_str())
+            .filter(|t| !t.trim().is_empty());
         // Coverage needs a PR body substantial enough to state real requirements;
         // a missing/near-empty body means nothing to extract, gate stays closed
-        // regardless of whether the PR touched any test files.
-        let run_coverage = coverage_gate(&pr_body);
+        // regardless of whether the PR touched any test files — unless local
+        // requirements text overrides the gate.
+        let run_coverage = coverage_gate(&pr_body) || user_requirements_text.is_some();
         let ai_total: u32 = 3 + if run_triage { 1 } else { 0 } + if run_coverage { 1 } else { 0 };
         emit_progress(app, 4, "Analyzing highlights, summary, grouping, and coverage", FetchStatus::Running, None, Some((0, ai_total)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
@@ -189,7 +200,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             String::new()
         };
         let coverage_prompt = if run_coverage {
-            build_requirements_coverage_prompt(&pr_title, &pr_body, &test_diffs, &file_list)
+            build_requirements_coverage_prompt(&pr_title, &pr_body, &test_diffs, &file_list, user_requirements_text)
         } else {
             String::new()
         };

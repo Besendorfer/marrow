@@ -93,6 +93,7 @@ export type DigestJump =
   | { kind: "file"; path: string; line?: number | null }
   | { kind: "checks" }
   | { kind: "url"; url: string }
+  | { kind: "requirements" }
   | { kind: "none" };
 
 export interface DigestEntry {
@@ -372,6 +373,10 @@ export interface Tab {
   /** Resolution metadata (state + reason) for resolved spec items, keyed by
    * resolveKey. Mirrors noteResolutions' shape/lifecycle. */
   specResolutions: Map<string, NoteResolution>;
+  /** User-provided requirements text (issue #179 phase 2), saved locally and
+   * fed into the next coverage pass as the authoritative extraction source.
+   * `null` when nothing's been saved. */
+  localRequirements: string | null;
   /** Keys (see highlightKey) of AI highlights newly introduced by the most
    * recent refresh's re-analysis, relative to the manifest it replaced.
    * Transient — not persisted, and undefined outside a just-refreshed tab. */

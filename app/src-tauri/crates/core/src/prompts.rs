@@ -142,7 +142,7 @@ Do NOT include any text before or after the JSON object. Just the JSON."#;
 
 pub const REQUIREMENTS_COVERAGE_PROMPT: &str = r#"You are a code review assistant checking whether a pull request's stated requirements are backed by tests.
 
-Step 1: Extract the explicit requirements or acceptance criteria stated in the PR title/description ONLY. Never invent or infer a requirement the author didn't state. Skip boilerplate (checklists about code style, formatting, unrelated process items). Extract at most 8 requirements; each must be a short, standalone statement of what the PR is supposed to do or guarantee. Quote each requirement's "text" using the description's own wording as closely as possible (verbatim phrases, not a paraphrase) so re-running this extraction yields identical text. If the description states no real requirements, return {"requirements": [], "orphan_tests": []}.
+Step 1: Extract the explicit requirements or acceptance criteria. When a "USER-PROVIDED REQUIREMENTS" section is present below, extract from IT — it is authoritative — and use the PR description only as supporting context. Otherwise extract from the PR title/description. Never invent or infer a requirement the author didn't state. Skip boilerplate (checklists about code style, formatting, unrelated process items). Extract at most 8 requirements; each must be a short, standalone statement of what the PR is supposed to do or guarantee. Quote each requirement's "text" using the source's own wording as closely as possible (verbatim phrases, not a paraphrase) so re-running this extraction yields identical text. If the source states no real requirements, return {"requirements": [], "orphan_tests": []}.
 
 Step 2: For each requirement, judge it ONLY against the provided test-file diffs (you are not shown the implementation, only tests):
 - "covered": a shown test genuinely asserts this requirement.
@@ -186,11 +186,19 @@ pub fn is_test_path(path: &str) -> bool {
 /// Build the requirements-coverage prompt: PR title/body plus the diffs of
 /// changed test files only (the model judges coverage from tests, never from
 /// implementation). Budgeted like `build_triage_prompt`.
+///
+/// `user_requirements` is the reviewer's local override (issue #179 phase 2,
+/// see `pr_requirements.rs`) — when present and non-empty it's inserted
+/// ahead of the PR description as the authoritative extraction source (see
+/// `REQUIREMENTS_COVERAGE_PROMPT`'s source-precedence note), letting a
+/// reviewer supply requirements a sparse/missing PR description doesn't
+/// state.
 pub fn build_requirements_coverage_prompt(
     pr_title: &str,
     pr_body: &str,
     test_diffs: &[(String, String)],
     changed_paths: &[String],
+    user_requirements: Option<&str>,
 ) -> String {
     const PER_FILE_BUDGET: usize = 1500;
     const TOTAL_BUDGET: usize = 20000;
@@ -198,6 +206,19 @@ pub fn build_requirements_coverage_prompt(
     let body = match truncate_chars(pr_body, 10000) {
         Some(t) => format!("{}\n... (truncated)", t),
         None => pr_body.to_string(),
+    };
+
+    // Same 10k cap as the PR body — user-provided text gets no exemption
+    // from the prompt budget discipline.
+    let user_requirements_section = match user_requirements {
+        Some(text) if !text.trim().is_empty() => {
+            let capped = match truncate_chars(text, 10000) {
+                Some(t) => format!("{}\n... (truncated)", t),
+                None => text.to_string(),
+            };
+            format!("=== USER-PROVIDED REQUIREMENTS (authoritative) ===\n{}\n\n", capped)
+        }
+        _ => String::new(),
     };
 
     let mut diffs = String::new();
@@ -224,9 +245,10 @@ pub fn build_requirements_coverage_prompt(
     }
 
     format!(
-        "{}\n\n---\n\nPR Title: {}\n\nPR Description:\n{}\n\nChanged files ({} total):\n{}\n\n=== TEST FILE DIFFS ===\n\n{}",
+        "{}\n\n---\n\nPR Title: {}\n\n{}PR Description:\n{}\n\nChanged files ({} total):\n{}\n\n=== TEST FILE DIFFS ===\n\n{}",
         REQUIREMENTS_COVERAGE_PROMPT,
         pr_title,
+        user_requirements_section,
         body,
         changed_paths.len(),
         changed_paths.join("\n"),
@@ -523,6 +545,31 @@ mod tests {
         assert!(is_test_path("playwright/checkout.ts"));
         assert!(is_test_path("cypress/e2e_setup.ts"));
         assert!(is_test_path("pact/consumer.ts"));
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_includes_user_requirements_when_provided() {
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &["a.rs".to_string()],
+            Some("The endpoint must return 404 for unknown ids."),
+        );
+        assert!(prompt.contains("=== USER-PROVIDED REQUIREMENTS (authoritative) ==="));
+        assert!(prompt.contains("The endpoint must return 404 for unknown ids."));
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_omits_user_requirements_when_none() {
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &["a.rs".to_string()],
+            None,
+        );
+        assert!(!prompt.contains("=== USER-PROVIDED REQUIREMENTS (authoritative) ==="));
     }
 
     #[test]

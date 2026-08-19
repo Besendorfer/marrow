@@ -40,14 +40,20 @@ function ciClaim(check: CheckRunInfo): string {
 }
 
 /** Builds the ranked "needs your attention" digest (issue #180) by merging
- * CI failures and triage top-risks into one list. CI entries first, then
- * triage, each group in its producing pass's own order — no further sorting.
- * Cancelled/skipped runs are deliberately NOT surfaced here (see PR #177: a
- * neutral rail glyph, not a failure), and pending/in-progress runs aren't
- * attention items yet either. */
+ * CI failures, triage top-risks, and (issue #179 phase 2) a single aggregate
+ * coverage entry into one list. CI entries first, then triage, then
+ * coverage, each group in its producing pass's own order — no further
+ * sorting. Cancelled/skipped runs are deliberately NOT surfaced here (see PR
+ * #177: a neutral rail glyph, not a failure), and pending/in-progress runs
+ * aren't attention items yet either.
+ *
+ * Per-requirement/orphan-test rows live in the RequirementsCard now, not
+ * here — this digest gets one summary line pointing at that card
+ * (`resolvedSpecKeys` is what "addressed" means for the unaddressed count). */
 export function buildDigestEntries(
   manifest: ReviewManifest,
-  checks?: PrChecksStatus | null
+  checks?: PrChecksStatus | null,
+  resolvedSpecKeys?: Set<string>
 ): DigestEntry[] {
   const entries: DigestEntry[] = [];
   (checks?.check_runs ?? []).forEach((check, i) => {
@@ -75,43 +81,23 @@ export function buildDigestEntries(
     });
   });
   const requirements = manifest.requirements_coverage?.requirements ?? [];
-  requirements.forEach((req, i) => {
-    if (req.status === "uncovered") {
-      entries.push({
-        id: `req:${i}`,
-        severity: "high",
-        claim: req.text,
-        detail: req.note ?? undefined,
-        source: "coverage",
-        jump: { kind: "none" },
-        resolveKey: specResolveKey(req.text),
-      });
-    } else if (req.status === "partial") {
-      const firstTestPath = req.tests[0]?.path;
-      entries.push({
-        id: `req:${i}`,
-        severity: "medium",
-        claim: req.text,
-        detail: req.note ?? undefined,
-        source: "coverage",
-        jump: firstTestPath ? { kind: "file", path: firstTestPath, line: null } : { kind: "none" },
-        resolveKey: specResolveKey(req.text),
-      });
-    }
+  const unaddressed = requirements.filter((req) => {
+    if (req.status !== "uncovered" && req.status !== "partial") return false;
+    return !resolvedSpecKeys?.has(specResolveKey(req.text));
   });
-  const orphanTests = manifest.requirements_coverage?.orphan_tests ?? [];
-  orphanTests.forEach((test, i) => {
-    const filename = test.path.split("/").pop() ?? test.path;
+  if (unaddressed.length > 0) {
+    const anyUncovered = unaddressed.some((r) => r.status === "uncovered");
     entries.push({
-      id: `orphan:${i}`,
-      severity: "info",
-      claim: `Test without a stated requirement: ${filename}`,
-      detail: test.note ?? undefined,
+      id: "coverage:summary",
+      severity: anyUncovered ? "high" : "medium",
+      claim:
+        unaddressed.length === 1
+          ? "1 requirement needs attention"
+          : `${unaddressed.length} requirements need attention`,
       source: "coverage",
-      jump: { kind: "file", path: test.path },
-      resolveKey: `orphan:${hashString(test.path)}`,
+      jump: { kind: "requirements" },
     });
-  });
+  }
   return entries;
 }
 
