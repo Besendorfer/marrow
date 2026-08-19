@@ -165,8 +165,10 @@ export interface DiffViewerHandle {
   revealLine: (line: number) => boolean;
   /** Open the inline comment composer on a line range with a prefilled body —
    * serves chat draft_comment chips. Reveals the end line first (the composer
-   * renders there); the user edits and posts through the normal flow. */
-  openComposer: (startLine: number, endLine: number, side: "LEFT" | "RIGHT", initialBody: string) => void;
+   * renders there); the user edits and posts through the normal flow. Returns
+   * false — without opening — when the line can't be revealed, so a bogus
+   * anchor fails the chip instead of opening the composer somewhere odd. */
+  openComposer: (startLine: number, endLine: number, side: "LEFT" | "RIGHT", initialBody: string) => boolean;
 }
 
 /** Small keyboard-driven reply box, shown when `r` is pressed on a thread line. */
@@ -1758,9 +1760,10 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   // Open the comment composer pre-filled with an editable draft — the reviewer
   // tweaks, then sends. Shared by the AI-note "post as comment" flow (issue #73)
   // and chat draft_comment chips (issue #185, via the imperative handle).
-  function openComposer(startLine: number, endLine: number, side: "LEFT" | "RIGHT", initialBody: string) {
-    revealLine(endLine); // the composer renders at the end line
+  function openComposer(startLine: number, endLine: number, side: "LEFT" | "RIGHT", initialBody: string): boolean {
+    if (!revealLine(endLine)) return false; // bogus anchor: fail, don't open somewhere odd
     setCommentingOn({ startLine, endLine, side, initialBody });
+    return true;
   }
 
   function handlePostHighlightAsComment(h: Highlight) {

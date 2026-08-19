@@ -1445,7 +1445,7 @@ function App() {
         };
         if (target.path === tab.selectedFile?.path && tab.lens === "files") {
           // Already viewing the file — the mounted DiffViewer can open directly.
-          diffViewerRef.current?.openComposer(composer.startLine, composer.endLine, composer.side, composer.initialBody);
+          return diffViewerRef.current?.openComposer(composer.startLine, composer.endLine, composer.side, composer.initialBody) ?? false;
         } else if (target.path === tab.selectedFile?.path) {
           // Right file, wrong lens: switch to Files and let the pending-composer
           // effect open once the viewer mounts (same deferral as reveals).
