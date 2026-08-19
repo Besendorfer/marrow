@@ -377,6 +377,9 @@ export interface Tab {
    * fed into the next coverage pass as the authoritative extraction source.
    * `null` when nothing's been saved. */
   localRequirements: string | null;
+  /** True while the coverage-only re-analysis triggered by saving
+   * requirements is in flight. */
+  analyzingRequirements: boolean;
   /** Keys (see highlightKey) of AI highlights newly introduced by the most
    * recent refresh's re-analysis, relative to the manifest it replaced.
    * Transient — not persisted, and undefined outside a just-refreshed tab. */

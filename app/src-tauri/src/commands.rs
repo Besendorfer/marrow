@@ -129,6 +129,12 @@ pub async fn fetch_pr(app: tauri::AppHandle, pr_ref: String) -> Result<ReviewMan
 }
 
 #[command]
+pub async fn analyze_requirements(pr_ref: String) -> Result<ReviewManifest, String> {
+    let settings = load_settings();
+    marrow_core::fetch::analyze_requirements_impl(&pr_ref, &settings).await
+}
+
+#[command]
 pub async fn check_pr_updates(
     pr_url: String,
     current_head_sha: String,

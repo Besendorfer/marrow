@@ -13,9 +13,11 @@ interface RequirementsCardProps {
   /** User-provided requirements text saved locally (issue #179 phase 2), or
    * `null` if nothing's been saved yet. Pre-fills the empty-state editor. */
   localRequirements: string | null;
-  /** Persist `text` as this PR's local requirements. The next analysis (on
-   * Refresh) judges tests against it — saving alone doesn't re-trigger one. */
+  /** Persist `text` as this PR's local requirements. Saving triggers a
+   * coverage-only re-analysis immediately (see App.saveLocalRequirements). */
   onSaveRequirements: (text: string) => void;
+  /** True while the save-triggered coverage re-analysis is running. */
+  analyzing?: boolean;
 }
 
 function fileName(path: string): string {
@@ -138,11 +140,13 @@ function RequirementsEditor({
   onSave,
   onCancel,
   onClear,
+  analyzing,
 }: {
   draft: string;
   setDraft: (text: string) => void;
   prUrl: string;
   onSave: () => void;
+  analyzing?: boolean;
   /** Present only in edit mode (the empty state has nothing to go back to). */
   onCancel?: () => void;
   /** Present only when local requirements exist — reverts to body extraction. */
@@ -160,9 +164,9 @@ function RequirementsEditor({
         <button
           className="requirements-card-save"
           onClick={onSave}
-          disabled={draft.trim().length === 0}
+          disabled={analyzing || draft.trim().length === 0}
         >
-          Save requirements
+          {analyzing ? "Analyzing…" : "Save requirements"}
         </button>
         {onCancel && (
           <button className="overview-digest-row-action" onClick={onCancel}>
@@ -176,7 +180,7 @@ function RequirementsEditor({
         )}
       </div>
       <div className="requirements-card-hint">
-        Saved locally; the next analysis judges tests against these.
+        Saved locally — coverage re-runs right away, and on every future review.
       </div>
       <button
         className="github-link requirements-card-github-link"
@@ -196,6 +200,7 @@ export function RequirementsCard({
   onOpenAt,
   localRequirements,
   onSaveRequirements,
+  analyzing,
 }: RequirementsCardProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -224,6 +229,7 @@ export function RequirementsCard({
           draft={draft}
           setDraft={setDraft}
           prUrl={manifest.pr_url}
+          analyzing={analyzing}
           onSave={() => onSaveRequirements(draft.trim())}
           onClear={hasLocal ? () => onSaveRequirements("") : undefined}
         />
@@ -259,6 +265,7 @@ export function RequirementsCard({
           draft={draft}
           setDraft={setDraft}
           prUrl={manifest.pr_url}
+          analyzing={analyzing}
           onSave={() => {
             onSaveRequirements(draft.trim());
             setEditing(false);
@@ -288,6 +295,7 @@ export function RequirementsCard({
       <div className="requirements-card-progress">
         {covered} of {requirements.length} covered · {addressedKeys.size} addressed
       </div>
+      {analyzing && <div className="requirements-card-source">analyzing requirements…</div>}
       {hasLocal && (
         <div className="requirements-card-source">using your local requirements</div>
       )}

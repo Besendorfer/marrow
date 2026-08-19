@@ -260,6 +260,7 @@ pub fn run() {
             commands::save_resolved_specs,
             commands::load_pr_requirements,
             commands::save_pr_requirements,
+            commands::analyze_requirements,
             commands::list_cached_prs,
             commands::get_pr_checks,
             commands::dismiss_checks_warning,
