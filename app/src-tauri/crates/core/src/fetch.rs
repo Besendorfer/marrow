@@ -174,7 +174,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         // Coverage needs a PR body substantial enough to state real requirements;
         // a missing/near-empty body means nothing to extract, gate stays closed
         // regardless of whether the PR touched any test files.
-        let run_coverage = pr_body.trim().chars().count() >= 40;
+        let run_coverage = coverage_gate(&pr_body);
         let ai_total: u32 = 3 + if run_triage { 1 } else { 0 } + if run_coverage { 1 } else { 0 };
         emit_progress(app, 4, "Analyzing highlights, summary, grouping, and coverage", FetchStatus::Running, None, Some((0, ai_total)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
@@ -496,6 +496,14 @@ fn finalize_triage(report: &mut TriageReport, relevant: &[&FileClassification]) 
     }
 }
 
+/// The coverage pass runs on any PR whose body plausibly states requirements
+/// — deliberately body-length-only, independent of test presence: a
+/// requirements-stating PR with zero tests lighting up all-uncovered is the
+/// feature's core signal.
+fn coverage_gate(pr_body: &str) -> bool {
+    pr_body.trim().chars().count() >= 40
+}
+
 /// Finalize a parsed `RequirementsCoverage`: drop requirements whose status
 /// isn't one the UI understands (a model that strays from the four allowed
 /// statuses would otherwise render as neither a row nor an all-clear), drop
@@ -510,7 +518,16 @@ fn finalize_coverage(
     cov.requirements
         .retain(|r| matches!(r.status.as_str(), "covered" | "partial" | "uncovered" | "untestable"));
     for req in &mut cov.requirements {
+        let cited_any = !req.tests.is_empty();
         req.tests.retain(|t| known_tests.contains(t.path.as_str()));
+        // A covered/partial verdict whose every citation was hallucinated is
+        // unsupported — downgrade it rather than letting it count as covered.
+        if cited_any
+            && req.tests.is_empty()
+            && matches!(req.status.as_str(), "covered" | "partial")
+        {
+            req.status = "uncovered".to_string();
+        }
     }
     cov.orphan_tests.retain(|t| known_tests.contains(t.path.as_str()));
     cov.requirements.truncate(8);
@@ -1218,7 +1235,7 @@ mod tests {
         assert_eq!(report.review_order[0].rationale, "defines it");
     }
 
-    use super::finalize_coverage;
+    use super::{coverage_gate, finalize_coverage};
     use crate::ai::extract_json_object;
     use crate::types::RequirementsCoverage;
     use std::collections::HashSet;
@@ -1296,6 +1313,73 @@ mod tests {
         let cov = RequirementsCoverage { requirements: vec![], orphan_tests: vec![] };
         let known: HashSet<&str> = HashSet::new();
         assert!(finalize_coverage(cov, &known).is_none());
+    }
+
+    #[test]
+    fn coverage_gate_requires_40_trimmed_chars() {
+        assert!(!coverage_gate(""));
+        assert!(!coverage_gate("   \n\t  "));
+        assert!(!coverage_gate("short body"));
+        assert!(!coverage_gate(&format!("  {}  ", "x".repeat(39))));
+        assert!(coverage_gate(&"x".repeat(40)));
+        assert!(coverage_gate(&format!("  {}  ", "x".repeat(40))));
+    }
+
+    #[test]
+    fn finalize_coverage_clamps_to_eight_requirements() {
+        let req = |n: usize| crate::types::RequirementEntry {
+            text: format!("Requirement {n}"),
+            status: "uncovered".to_string(),
+            tests: vec![],
+            note: None,
+        };
+        let cov = RequirementsCoverage {
+            requirements: (0..10).map(req).collect(),
+            orphan_tests: vec![],
+        };
+        let known: HashSet<&str> = HashSet::new();
+        assert_eq!(finalize_coverage(cov, &known).unwrap().requirements.len(), 8);
+    }
+
+    #[test]
+    fn finalize_coverage_downgrades_verdicts_with_only_hallucinated_tests() {
+        let req = |status: &str, tests: Vec<&str>| crate::types::RequirementEntry {
+            text: "Does the thing".to_string(),
+            status: status.to_string(),
+            tests: tests
+                .into_iter()
+                .map(|p| crate::types::TestRef { path: p.to_string(), note: None })
+                .collect(),
+            note: None,
+        };
+        let cov = RequirementsCoverage {
+            requirements: vec![
+                req("covered", vec!["tests/made_up.test.ts"]),
+                req("partial", vec!["tests/real.test.ts", "tests/made_up.test.ts"]),
+                // Uncited "covered" is left alone — nothing was hallucinated.
+                req("covered", vec![]),
+            ],
+            orphan_tests: vec![],
+        };
+        let known: HashSet<&str> = ["tests/real.test.ts"].into_iter().collect();
+        let result = finalize_coverage(cov, &known).unwrap();
+        assert_eq!(result.requirements[0].status, "uncovered");
+        assert_eq!(result.requirements[1].status, "partial");
+        assert_eq!(result.requirements[1].tests.len(), 1);
+        assert_eq!(result.requirements[2].status, "covered");
+    }
+
+    #[test]
+    fn manifest_without_coverage_field_deserializes_to_none() {
+        let json = r#"{
+            "pr_title": "t", "pr_url": "u", "pr_number": 1,
+            "base_ref": "main", "head_ref": "f", "base_sha": "a", "head_sha": "b",
+            "author": "o", "draft": false, "summary": "", "change_groups": [],
+            "body": "", "commits": [], "files": []
+        }"#;
+        let m: crate::types::ReviewManifest = serde_json::from_str(json).unwrap();
+        assert!(m.requirements_coverage.is_none());
+        assert!(m.triage.is_none());
     }
 
     #[test]
