@@ -16,6 +16,7 @@ pub mod github;
 pub mod manifest_cache;
 pub mod pr_parser;
 pub mod prompts;
+pub mod resolved_specs;
 pub mod session;
 pub mod types;
 pub mod viewed_state;

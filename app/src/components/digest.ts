@@ -1,5 +1,35 @@
-import { isFailingCheck } from "../utils";
+import { hashString, isFailingCheck } from "../utils";
 import type { CheckRunInfo, DigestEntry, ReviewManifest, PrChecksStatus } from "../types";
+
+/** Resolve-keys hash canonicalized requirement text so re-extraction drift
+ * (case, whitespace, punctuation, markdown backticks/emphasis) doesn't
+ * resurface an already-addressed spec item — live-testing showed the model
+ * flip-flops on quoting the body's markdown. Everything but letters, digits,
+ * and word boundaries is stripped before hashing. Semantic rewording still
+ * changes the key — accepted residual. */
+export function specResolveKey(text: string): string {
+  const normalized = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+  return `spec:${hashString(normalized)}`;
+}
+
+/** Per-source tab/row labels for the attention digest (issue #180 follow-up). */
+export const DIGEST_SOURCE_LABEL: Record<DigestEntry["source"], string> = {
+  ci: "CI",
+  triage: "risk",
+  coverage: "spec",
+};
+
+/** Counts entries per source, omitting sources with zero entries. */
+export function countBySource(entries: DigestEntry[]): Partial<Record<DigestEntry["source"], number>> {
+  const counts: Partial<Record<DigestEntry["source"], number>> = {};
+  for (const entry of entries) {
+    counts[entry.source] = (counts[entry.source] ?? 0) + 1;
+  }
+  return counts;
+}
 
 /** Short, jump-worthy wording per failing conclusion — mirrors the CiChip
  * label conventions in PrOverview.tsx. */
@@ -44,6 +74,44 @@ export function buildDigestEntries(
       jump: { kind: "file", path: risk.path, line: risk.start_line },
     });
   });
+  const requirements = manifest.requirements_coverage?.requirements ?? [];
+  requirements.forEach((req, i) => {
+    if (req.status === "uncovered") {
+      entries.push({
+        id: `req:${i}`,
+        severity: "high",
+        claim: req.text,
+        detail: req.note ?? undefined,
+        source: "coverage",
+        jump: { kind: "none" },
+        resolveKey: specResolveKey(req.text),
+      });
+    } else if (req.status === "partial") {
+      const firstTestPath = req.tests[0]?.path;
+      entries.push({
+        id: `req:${i}`,
+        severity: "medium",
+        claim: req.text,
+        detail: req.note ?? undefined,
+        source: "coverage",
+        jump: firstTestPath ? { kind: "file", path: firstTestPath, line: null } : { kind: "none" },
+        resolveKey: specResolveKey(req.text),
+      });
+    }
+  });
+  const orphanTests = manifest.requirements_coverage?.orphan_tests ?? [];
+  orphanTests.forEach((test, i) => {
+    const filename = test.path.split("/").pop() ?? test.path;
+    entries.push({
+      id: `orphan:${i}`,
+      severity: "info",
+      claim: `Test without a stated requirement: ${filename}`,
+      detail: test.note ?? undefined,
+      source: "coverage",
+      jump: { kind: "file", path: test.path },
+      resolveKey: `orphan:${hashString(test.path)}`,
+    });
+  });
   return entries;
 }
 
@@ -64,6 +132,17 @@ export function buildAllClearSummary(
   }
   if (manifest.triage) {
     if (manifest.triage.top_risks.length === 0) fragments.push("no top risks");
+  }
+  if (manifest.requirements_coverage) {
+    const reqs = manifest.requirements_coverage.requirements;
+    // Guard the vacuous-.every() case locally rather than relying on core's
+    // empty-means-None invariant holding forever. At least one requirement
+    // must actually be covered — all-untestable means nothing was verified,
+    // which is not a "covered" claim.
+    const allCovered =
+      reqs.some((r) => r.status === "covered") &&
+      reqs.every((r) => r.status === "covered" || r.status === "untestable");
+    if (allCovered) fragments.push("requirements covered");
   }
   return fragments;
 }

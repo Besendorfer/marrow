@@ -487,6 +487,8 @@ function App() {
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
       noteResolutions: new Map(),
+      resolvedSpecKeys: new Set(),
+      specResolutions: new Map(),
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
       checkAnnotations: { status: "idle" },
@@ -517,6 +519,8 @@ function App() {
       staleViewedFiles: new Set(),
       dismissedHighlights: new Set(),
       noteResolutions: new Map(),
+      resolvedSpecKeys: new Set(),
+      specResolutions: new Map(),
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
       checkAnnotations: { status: "idle" },
@@ -630,6 +634,7 @@ function App() {
             for (const tab of restored) {
               loadPersistedViewedState(tab);
               loadDismissedHighlights(tab);
+              loadResolvedSpecs(tab);
               loadChatHistory(tab);
               fetchMyReviewState(tab.id, tab.manifest!.pr_url);
               fetchChecksStatus(tab.id, tab.manifest!.pr_url);
@@ -815,6 +820,7 @@ function App() {
     setError(null);
     loadPersistedViewedState(tab);
     loadDismissedHighlights(tab);
+    loadResolvedSpecs(tab);
     loadChatHistory(tab);
     fetchMyReviewState(tabId, data.pr_url);
     fetchChecksStatus(tabId, data.pr_url);
@@ -835,6 +841,7 @@ function App() {
     setError(null);
     loadPersistedViewedState(tab);
     loadDismissedHighlights(tab);
+    loadResolvedSpecs(tab);
     loadChatHistory(tab);
     fetchMyReviewState(tab.id, data.pr_url);
     fetchChecksStatus(tab.id, data.pr_url);
@@ -961,6 +968,61 @@ function App() {
     nextResolutions.delete(key);
     updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: nextKeys, noteResolutions: nextResolutions }));
     saveDismissedState(tab, nextKeys, nextResolutions);
+  }
+
+  async function loadResolvedSpecs(tab: Tab) {
+    if (!tab.manifest) return;
+    try {
+      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+      const saved = await invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> } | null>("load_resolved_specs", { owner, repo, prNumber: number });
+      if (saved && saved.keys.length > 0) {
+        updateTab(tab.id, (t) => ({
+          ...t,
+          resolvedSpecKeys: new Set(saved.keys),
+          specResolutions: new Map(Object.entries(saved.resolutions ?? {})),
+        }));
+      }
+    } catch {
+      // Non-critical: start with nothing resolved on failure
+    }
+  }
+
+  /** Persist the current tab's resolved-spec set + resolutions in one write. */
+  function saveResolvedSpecs(tab: Tab, keys: Set<string>, resolutions: Map<string, NoteResolution>) {
+    if (!tab.manifest) return;
+    const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+    invoke("save_resolved_specs", {
+      owner,
+      repo,
+      prNumber: number,
+      state: { keys: [...keys], resolutions: Object.fromEntries(resolutions) },
+    }).catch(() => addToast("error", "Couldn't save — this resolution may not persist"));
+  }
+
+  /** Mark a coverage-digest spec item (uncovered/partial requirement or orphan
+   * test) addressed. This is a user acknowledgment, not a re-judgment of
+   * coverage — the all-clear "requirements covered" fragment is untouched. */
+  function resolveSpecItem(key: string) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest) return;
+    const nextKeys = new Set(tab.resolvedSpecKeys);
+    nextKeys.add(key);
+    const nextResolutions = new Map(tab.specResolutions);
+    nextResolutions.set(key, { state: "addressed", reason: "", at: new Date().toISOString() });
+    updateTab(tab.id, (t) => ({ ...t, resolvedSpecKeys: nextKeys, specResolutions: nextResolutions }));
+    saveResolvedSpecs(tab, nextKeys, nextResolutions);
+  }
+
+  /** Restore a previously-resolved spec item, clearing its recorded resolution. */
+  function restoreSpecItem(key: string) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest) return;
+    const nextKeys = new Set(tab.resolvedSpecKeys);
+    nextKeys.delete(key);
+    const nextResolutions = new Map(tab.specResolutions);
+    nextResolutions.delete(key);
+    updateTab(tab.id, (t) => ({ ...t, resolvedSpecKeys: nextKeys, specResolutions: nextResolutions }));
+    saveResolvedSpecs(tab, nextKeys, nextResolutions);
   }
 
   async function loadChatHistory(tab: Tab) {
@@ -2723,6 +2785,9 @@ function App() {
               onBriefMe={briefMe}
               onViewCommit={handleViewCommit}
               onOpenChecks={() => { if (activeTabId) setLens(activeTabId, "checks"); }}
+              resolvedSpecKeys={activeTab.resolvedSpecKeys}
+              onResolveSpec={resolveSpecItem}
+              onRestoreSpec={restoreSpecItem}
               newHighlightKeys={
                 // Dismissing a new note removes it from the chip immediately —
                 // a dead "1 new AI note" pointing at a hidden note is worse

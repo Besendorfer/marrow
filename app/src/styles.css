@@ -5380,27 +5380,110 @@ mark.search-highlight-current {
 }
 
 /* ─── Attention digest (issue #180) ───────────────────────────────────── */
-.overview-digest-row {
+.overview-digest-tabs {
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  margin: -2px 0 10px;
+}
+
+.overview-digest-tab {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-sans);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.overview-digest-tab.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.overview-digest-tab:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.overview-digest-row {
   width: 100%;
   padding: 10px 4px;
-  background: none;
-  border: none;
   border-top: 1px solid var(--chip-border);
-  color: inherit;
-  font-family: var(--font-sans);
-  text-align: left;
-  cursor: pointer;
 }
 
 .overview-digest-row:first-of-type {
   border-top: none;
 }
 
-.overview-digest-row:hover .overview-digest-row-claim {
+/* Every row expands on click; the toggle is the whole row surface. */
+.overview-digest-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview-digest-row-toggle:hover .overview-digest-row-claim {
   color: var(--accent);
+}
+
+/* Expanded rows show the full text — the clamp only applies collapsed. */
+.overview-digest-row.expanded .overview-digest-row-claim,
+.overview-digest-row.expanded .overview-digest-row-detail {
+  -webkit-line-clamp: unset;
+}
+
+.overview-digest-row-actions {
+  /* dot width + row gap, so the action aligns with the text column */
+  padding: 6px 0 0 calc(7px + var(--space-3));
+  display: flex;
+  gap: 12px;
+}
+
+/* Resolved spec items sit in a dimmed tray below the active list — reachable
+   (Restore is one click away) but visually out of the way. */
+.overview-digest-row.resolved {
+  opacity: 0.55;
+}
+
+.overview-digest-showresolved {
+  background: none;
+  border: none;
+  padding: 6px 4px 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.overview-digest-showresolved:hover {
+  color: var(--text-secondary);
+}
+
+.overview-digest-resolved-suffix {
+  color: var(--text-muted);
+}
+
+.overview-digest-row-action {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.overview-digest-row-action:hover {
+  text-decoration: underline;
 }
 
 .overview-digest-row-main {
@@ -5412,16 +5495,42 @@ mark.search-highlight-current {
   text-align: left;
 }
 
+.overview-digest-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.overview-digest-row-source {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Coverage claims arrive as full requirement sentences — clamp both lines so
+   rows stay glanceable ("statuses, not essays"). */
 .overview-digest-row-claim {
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text-primary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .overview-digest-row-detail {
   font-size: 12.5px;
   color: var(--text-secondary);
   margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .digest-dot {

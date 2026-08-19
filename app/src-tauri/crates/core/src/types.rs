@@ -97,6 +97,41 @@ pub struct TriageReport {
     pub review_order: Vec<ReviewOrderItem>,
 }
 
+/// A test file backing (or, for an orphan, not backing) a requirement.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TestRef {
+    pub path: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// One requirement extracted from the PR body/title, judged against the PR's
+/// test-file diffs.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RequirementEntry {
+    pub text: String,
+    /// "covered" | "partial" | "uncovered" | "untestable" — a String (not an
+    /// enum) so an unrecognized value from the AI still deserializes.
+    pub status: String,
+    #[serde(default)]
+    pub tests: Vec<TestRef>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Requirements-coverage analysis: explicit requirements from the PR body,
+/// each judged covered/partial/uncovered/untestable against the PR's test
+/// diffs. `None` on the manifest when the PR body states no real
+/// requirements, the gate isn't met, or the AI pass fails to parse — this
+/// pass has no fallback (see the gate in `fetch`).
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct RequirementsCoverage {
+    #[serde(default)]
+    pub requirements: Vec<RequirementEntry>,
+    #[serde(default)]
+    pub orphan_tests: Vec<TestRef>,
+}
+
 /// One commit in a PR's commit list (the "commits" tab).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PrCommit {
@@ -130,6 +165,10 @@ pub struct ReviewManifest {
     /// PRs or when the triage AI pass fails without a usable fallback.
     #[serde(default)]
     pub triage: Option<TriageReport>,
+    /// Requirements-coverage analysis. `None` when the PR body is too short,
+    /// states no real requirements, or the AI pass fails.
+    #[serde(default)]
+    pub requirements_coverage: Option<RequirementsCoverage>,
     /// The PR description, truncated char-safely to bound cache size. Empty
     /// when the PR has no body or on manifests fetched before this field existed.
     #[serde(default)]

@@ -58,6 +58,30 @@ export interface TriageReport {
   review_order: ReviewOrderItem[];
 }
 
+export type RequirementStatus = "covered" | "partial" | "uncovered" | "untestable";
+
+/** A test file backing (or, for an orphan, not backing) a requirement. */
+export interface TestRef {
+  path: string;
+  note?: string | null;
+}
+
+/** One requirement extracted from the PR body/title, judged against the PR's
+ * test-file diffs. */
+export interface RequirementEntry {
+  text: string;
+  status: RequirementStatus;
+  tests: TestRef[];
+  note?: string | null;
+}
+
+/** Requirements-coverage analysis (issue #179). `null` when the PR body states
+ * no real requirements, the gate isn't met, or the AI pass fails to parse. */
+export interface RequirementsCoverage {
+  requirements: RequirementEntry[];
+  orphan_tests: TestRef[];
+}
+
 // ── Attention digest (issue #180) ───────────────────────────────────────────
 // TS-only for now: entries are derived in the frontend from the manifest and
 // checks status (see components/digest.ts). A Rust counterpart arrives when a
@@ -68,7 +92,8 @@ export type DigestSeverity = "critical" | "high" | "medium" | "info";
 export type DigestJump =
   | { kind: "file"; path: string; line?: number | null }
   | { kind: "checks" }
-  | { kind: "url"; url: string };
+  | { kind: "url"; url: string }
+  | { kind: "none" };
 
 export interface DigestEntry {
   /** Stable key, e.g. "ci:<check name>" / "risk:<index>". */
@@ -78,9 +103,12 @@ export interface DigestEntry {
   claim: string;
   /** One sentence max, shown muted. */
   detail?: string;
-  /** Producing pass; more sources later (#179 coverage). */
-  source: "ci" | "triage";
+  /** Producing pass. */
+  source: "ci" | "triage" | "coverage";
   jump: DigestJump;
+  /** Stable text-hash key into the resolved-specs store (see resolved_specs.rs).
+   * Present only on coverage entries — CI/triage rows aren't resolvable. */
+  resolveKey?: string;
 }
 
 /** One commit in a PR's commit list (the "commits" tab). */
@@ -107,6 +135,9 @@ export interface ReviewManifest {
   /** Triage-first guidance (top risks + contract-first order). `null` for small
    * PRs or when the triage AI pass fails without a usable fallback. */
   triage?: TriageReport | null;
+  /** Requirements-coverage analysis (issue #179). `null` when the pass didn't
+   * run or found nothing to report. */
+  requirements_coverage?: RequirementsCoverage | null;
   /** The PR description, truncated char-safely to bound cache size. Empty
    * when the PR has no body or on manifests fetched before this field existed. */
   body: string;
@@ -334,6 +365,13 @@ export interface Tab {
   /** Resolution metadata (state + reason) for dismissed highlights, keyed by
    * highlightKey. A dismissed key may have no entry here (plain/legacy dismiss). */
   noteResolutions: Map<string, NoteResolution>;
+  /** Keys (see DigestEntry.resolveKey) of coverage-digest spec items the user
+   * has marked addressed for this PR. Resolution never means "covered" —
+   * it's a user acknowledgment, orthogonal to the AI's coverage judgment. */
+  resolvedSpecKeys: Set<string>;
+  /** Resolution metadata (state + reason) for resolved spec items, keyed by
+   * resolveKey. Mirrors noteResolutions' shape/lifecycle. */
+  specResolutions: Map<string, NoteResolution>;
   /** Keys (see highlightKey) of AI highlights newly introduced by the most
    * recent refresh's re-analysis, relative to the manifest it replaced.
    * Transient — not persisted, and undefined outside a just-refreshed tab. */

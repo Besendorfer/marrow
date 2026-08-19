@@ -256,6 +256,8 @@ pub fn run() {
             commands::save_viewed_files,
             commands::load_dismissed_highlights,
             commands::save_dismissed_highlights,
+            commands::load_resolved_specs,
+            commands::save_resolved_specs,
             commands::list_cached_prs,
             commands::get_pr_checks,
             commands::dismiss_checks_warning,

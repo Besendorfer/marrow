@@ -9,6 +9,7 @@ use marrow_core::types::{CheckFailures, CommitDiff, MyReviewState, PrChecksStatu
 use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
 use marrow_core::dismissed_highlights::{self, DismissedHighlights};
+use marrow_core::resolved_specs::{self, ResolvedSpecs};
 use marrow_core::viewed_state::{self, ViewedFileState};
 use marrow_core::activity::{self, Observed};
 use marrow_core::watches::{self, Watch};
@@ -593,6 +594,25 @@ pub fn save_dismissed_highlights(
     state: DismissedHighlights,
 ) -> Result<(), String> {
     dismissed_highlights::save_dismissed(&owner, &repo, pr_number, &state)
+}
+
+#[command]
+pub fn load_resolved_specs(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+) -> Option<ResolvedSpecs> {
+    resolved_specs::load_resolved_specs(&owner, &repo, pr_number)
+}
+
+#[command]
+pub fn save_resolved_specs(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    state: ResolvedSpecs,
+) -> Result<(), String> {
+    resolved_specs::save_resolved_specs(&owner, &repo, pr_number, &state)
 }
 
 #[command]

@@ -2,8 +2,19 @@
 // merge CI failures and triage top-risks into one ranked list, and derive
 // the all-clear quiet-line fragments when nothing needs attention.
 import { describe, expect, test } from "bun:test";
-import { buildAllClearSummary, buildDigestEntries } from "./digest";
-import type { CheckRunInfo, PrChecksStatus, ReviewManifest, TopRisk } from "../types";
+import { buildAllClearSummary, buildDigestEntries, countBySource, DIGEST_SOURCE_LABEL } from "./digest";
+import { hashString } from "../utils";
+import { specResolveKey } from "./digest";
+import type {
+  CheckRunInfo,
+  DigestEntry,
+  PrChecksStatus,
+  RequirementEntry,
+  RequirementsCoverage,
+  ReviewManifest,
+  TestRef,
+  TopRisk,
+} from "../types";
 
 function checkRun(overrides: Partial<CheckRunInfo>): CheckRunInfo {
   return {
@@ -27,6 +38,24 @@ function topRisk(overrides: Partial<TopRisk>): TopRisk {
     start_line: 42,
     ...overrides,
   };
+}
+
+function requirement(overrides: Partial<RequirementEntry>): RequirementEntry {
+  return {
+    text: "Users can reset their password",
+    status: "uncovered",
+    tests: [],
+    note: null,
+    ...overrides,
+  };
+}
+
+function testRef(overrides: Partial<TestRef>): TestRef {
+  return { path: "tests/reset.test.ts", note: null, ...overrides };
+}
+
+function coverage(overrides: Partial<RequirementsCoverage> = {}): RequirementsCoverage {
+  return { requirements: [], orphan_tests: [], ...overrides };
 }
 
 function manifest(overrides: Partial<ReviewManifest> = {}): ReviewManifest {
@@ -60,7 +89,9 @@ describe("buildDigestEntries", () => {
     expect(entries.length).toBe(2);
     expect(entries[0].source).toBe("ci");
     expect(entries[0].severity).toBe("critical");
+    expect(entries[0].resolveKey).toBeUndefined();
     expect(entries[1].source).toBe("triage");
+    expect(entries[1].resolveKey).toBeUndefined();
   });
 
   test("cancelled, skipped, and pending runs produce no entries", () => {
@@ -85,6 +116,134 @@ describe("buildDigestEntries", () => {
     });
     const entries = buildDigestEntries(m);
     expect(entries.map((e) => e.claim)).toEqual(["First", "Second", "Third"]);
+  });
+
+  test("uncovered requirement produces a high entry with no jump", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "uncovered", text: "Login rate-limits after 5 tries", note: null })],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries.length).toBe(1);
+    expect(entries[0]).toMatchObject({
+      severity: "high",
+      claim: "Login rate-limits after 5 tries",
+      source: "coverage",
+      jump: { kind: "none" },
+      resolveKey: specResolveKey("Login rate-limits after 5 tries"),
+    });
+  });
+
+  test("partial requirement with tests produces a medium entry jumping to the first test", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [
+          requirement({
+            status: "partial",
+            text: "Password reset email is sent",
+            note: "only the happy path is asserted",
+            tests: [testRef({ path: "tests/reset.test.ts" }), testRef({ path: "tests/reset2.test.ts" })],
+          }),
+        ],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries.length).toBe(1);
+    expect(entries[0]).toMatchObject({
+      severity: "medium",
+      claim: "Password reset email is sent",
+      detail: "only the happy path is asserted",
+      source: "coverage",
+      jump: { kind: "file", path: "tests/reset.test.ts", line: null },
+      resolveKey: specResolveKey("Password reset email is sent"),
+    });
+  });
+
+  test("partial requirement with no tests produces a medium entry with no jump", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "partial", tests: [] })],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries[0].jump).toEqual({ kind: "none" });
+  });
+
+  test("covered and untestable requirements produce no entries", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "covered" }), requirement({ status: "untestable" })],
+      }),
+    });
+    expect(buildDigestEntries(m)).toEqual([]);
+  });
+
+  test("orphan test produces an info entry with a file jump", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        orphan_tests: [testRef({ path: "tests/logout.test.ts", note: "tests logout, not login" })],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries.length).toBe(1);
+    expect(entries[0]).toMatchObject({
+      severity: "info",
+      claim: "Test without a stated requirement: logout.test.ts",
+      detail: "tests logout, not login",
+      source: "coverage",
+      jump: { kind: "file", path: "tests/logout.test.ts" },
+      resolveKey: `orphan:${hashString("tests/logout.test.ts")}`,
+    });
+  });
+
+  test("resolveKey survives re-extraction drift (case, whitespace, punctuation, markdown)", () => {
+    const base = specResolveKey("Users can reset their password via is_test_path");
+    expect(specResolveKey("users can reset  their password via is_test_path.")).toBe(base);
+    expect(specResolveKey("  Users can\treset their password via `is_test_path` ")).toBe(base);
+    expect(specResolveKey("Users can reset their **password** via is_test_path!")).toBe(base);
+    expect(specResolveKey("Users can reset their sessions via is_test_path")).not.toBe(base);
+  });
+
+  test("all-untestable requirements do not claim requirements covered", () => {
+    const m = manifest({
+      triage: null,
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "untestable" }), requirement({ status: "untestable", text: "B" })],
+      }),
+    });
+    expect(buildAllClearSummary(m, null)).toEqual([]);
+  });
+
+  test("resolveKey is stable for identical text regardless of array position", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [
+          requirement({ status: "uncovered", text: "Padding requirement" }),
+          requirement({ status: "uncovered", text: "Users can reset their password" }),
+        ],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    const first = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "uncovered", text: "Users can reset their password" })],
+      }),
+    });
+    const soloEntries = buildDigestEntries(first);
+    expect(entries[1].resolveKey).toBe(soloEntries[0].resolveKey);
+  });
+
+  test("entries are ordered CI, then triage, then coverage", () => {
+    const m = manifest({
+      triage: { top_risks: [topRisk({})], review_order: [] },
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "uncovered" })],
+      }),
+    });
+    const c = checks([checkRun({ name: "test", conclusion: "FAILURE" })]);
+    const entries = buildDigestEntries(m, c);
+    expect(entries.map((e) => e.source)).toEqual(["ci", "triage", "coverage"]);
   });
 });
 
@@ -119,5 +278,73 @@ describe("buildAllClearSummary", () => {
   test("pending-but-not-failing checks report CI running", () => {
     const c = checks([checkRun({ status: "IN_PROGRESS", conclusion: null })]);
     expect(buildAllClearSummary(manifest({ triage: null }), c)).toEqual(["CI running"]);
+  });
+
+  test("all requirements covered/untestable adds the coverage fragment after triage", () => {
+    const m = manifest({
+      triage: { top_risks: [], review_order: [] },
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "covered" }), requirement({ status: "untestable" })],
+      }),
+    });
+    expect(buildAllClearSummary(m, null)).toEqual(["no top risks", "requirements covered"]);
+  });
+
+  test("coverage absent yields no requirements fragment", () => {
+    expect(buildAllClearSummary(manifest({ triage: null }), null)).toEqual([]);
+  });
+
+  test("coverage present but empty yields no vacuous fragment", () => {
+    const m = manifest({ triage: null, requirements_coverage: coverage() });
+    expect(buildAllClearSummary(m, null)).toEqual([]);
+  });
+
+  test("coverage present with an uncovered requirement yields no all-clear fragment", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "uncovered" })],
+      }),
+    });
+    expect(buildAllClearSummary(m, null)).toEqual([]);
+  });
+});
+
+// ── DIGEST_SOURCE_LABEL / countBySource ─────────────────────────────────────
+
+function digestEntry(overrides: Partial<DigestEntry>): DigestEntry {
+  return {
+    id: "x:0",
+    severity: "high",
+    claim: "claim",
+    source: "triage",
+    jump: { kind: "none" },
+    ...overrides,
+  };
+}
+
+describe("DIGEST_SOURCE_LABEL", () => {
+  test("maps all three sources", () => {
+    expect(DIGEST_SOURCE_LABEL).toEqual({ ci: "CI", triage: "risk", coverage: "spec" });
+  });
+});
+
+describe("countBySource", () => {
+  test("counts entries per source", () => {
+    const entries = [
+      digestEntry({ id: "ci:0", source: "ci" }),
+      digestEntry({ id: "ci:1", source: "ci" }),
+      digestEntry({ id: "risk:0", source: "triage" }),
+      digestEntry({ id: "req:0", source: "coverage" }),
+    ];
+    expect(countBySource(entries)).toEqual({ ci: 2, triage: 1, coverage: 1 });
+  });
+
+  test("omits sources with no entries", () => {
+    const entries = [digestEntry({ id: "ci:0", source: "ci" })];
+    expect(countBySource(entries)).toEqual({ ci: 1 });
+  });
+
+  test("empty entries yields an empty object", () => {
+    expect(countBySource([])).toEqual({});
   });
 });

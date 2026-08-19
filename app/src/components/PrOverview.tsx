@@ -30,6 +30,13 @@ interface PrOverviewProps {
   onViewCommit?: (commit: PrCommit) => void;
   /** CI chip click — jump to the Checks lens (issue #175). */
   onOpenChecks?: () => void;
+  /** Keys (see DigestEntry.resolveKey) of coverage-digest spec items the user
+   * has marked addressed for this PR. */
+  resolvedSpecKeys?: Set<string>;
+  /** Mark a coverage-digest spec item addressed. */
+  onResolveSpec?: (key: string) => void;
+  /** Restore a previously-resolved spec item. */
+  onRestoreSpec?: (key: string) => void;
 }
 
 /** First file (in manifest order) whose highlights include a new-note key. */
@@ -237,6 +244,9 @@ export function PrOverview({
   onBriefMe,
   onViewCommit,
   onOpenChecks,
+  resolvedSpecKeys,
+  onResolveSpec,
+  onRestoreSpec,
 }: PrOverviewProps) {
   const newNoteCount = newHighlightKeys?.size ?? 0;
   const relevant = manifest.files.filter((f) => f.classification !== "NOT_RELEVANT");
@@ -353,6 +363,9 @@ export function PrOverview({
           allClear={digestAllClear}
           onOpenAt={onOpenAt}
           onOpenChecks={onOpenChecks}
+          resolvedSpecKeys={resolvedSpecKeys}
+          onResolveSpec={onResolveSpec}
+          onRestoreSpec={onRestoreSpec}
         />
         <div className="overview-card">
           <h4>Start reviewing</h4>
