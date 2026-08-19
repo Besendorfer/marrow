@@ -490,6 +490,7 @@ function App() {
       resolvedSpecKeys: new Set(),
       specResolutions: new Map(),
       localRequirements: null,
+      analyzingRequirements: false,
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
       checkAnnotations: { status: "idle" },
@@ -523,6 +524,7 @@ function App() {
       resolvedSpecKeys: new Set(),
       specResolutions: new Map(),
       localRequirements: null,
+      analyzingRequirements: false,
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
       checkAnnotations: { status: "idle" },
@@ -1056,12 +1058,29 @@ function App() {
     const normalized = text.trim();
     updateTab(tab.id, (t) => ({ ...t, localRequirements: normalized || null }));
     const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+    const prUrl = tab.manifest.pr_url;
+    const tabId = tab.id;
     invoke("save_pr_requirements", {
       owner,
       repo,
       prNumber: number,
       state: { text: normalized },
-    }).catch(() => addToast("error", "Couldn't save — these requirements may not persist"));
+    })
+      .then(() => {
+        // Saving is the ask — run the coverage pass right away instead of
+        // waiting for a head change (Refresh cache-hits on unchanged heads).
+        updateTab(tabId, (t) => ({ ...t, analyzingRequirements: true }));
+        return invoke<ReviewManifest>("analyze_requirements", { prRef: prUrl }).then(
+          (manifest) => {
+            updateTab(tabId, (t) => ({ ...t, manifest, analyzingRequirements: false }));
+          },
+          (e) => {
+            updateTab(tabId, (t) => ({ ...t, analyzingRequirements: false }));
+            addToast("error", `Couldn't analyze requirements: ${e}`);
+          }
+        );
+      })
+      .catch(() => addToast("error", "Couldn't save — these requirements may not persist"));
   }
 
   async function loadChatHistory(tab: Tab) {
@@ -2829,6 +2848,7 @@ function App() {
               onResolveSpec={resolveSpecItem}
               onRestoreSpec={restoreSpecItem}
               localRequirements={activeTab.localRequirements}
+              analyzingRequirements={activeTab.analyzingRequirements}
               onSaveRequirements={saveLocalRequirements}
               newHighlightKeys={
                 // Dismissing a new note removes it from the chip immediately —

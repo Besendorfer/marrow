@@ -53,6 +53,55 @@ fn emit_progress(
     });
 }
 
+/// Re-run ONLY the requirements-coverage pass against the cached manifest —
+/// the "Save requirements" flow needs coverage without waiting for a new
+/// head commit (a plain Refresh cache-hits on unchanged heads and never
+/// re-analyzes). One AI call; everything else comes from the cache. Updates
+/// the cached manifest in place and returns it.
+pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewManifest, String> {
+    let parsed = parse_pr_ref(pr_ref)?;
+    let mut manifest = manifest_cache::load_cached_manifest(&parsed.owner, &parsed.repo, parsed.number)
+        .ok_or_else(|| "No cached review for this PR — open it first.".to_string())?;
+
+    let user_requirements_text = pr_requirements::load_pr_requirements(&parsed.owner, &parsed.repo, parsed.number)
+        .map(|r| r.text)
+        .filter(|t| !t.trim().is_empty());
+
+    // Same gate as the full pipeline: user text opens it; otherwise the body
+    // must clear the length bar. Gate closed ⇒ coverage becomes absent.
+    if user_requirements_text.is_none() && !coverage_gate(&manifest.body) {
+        manifest.requirements_coverage = None;
+        let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
+        return Ok(manifest);
+    }
+
+    let test_diffs: Vec<(String, String)> = manifest
+        .files
+        .iter()
+        .filter(|f| is_test_path(&f.path))
+        .map(|f| (f.path.clone(), f.unified_diff.clone()))
+        .collect();
+    let changed_paths: Vec<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
+
+    let prompt = build_requirements_coverage_prompt(
+        &manifest.pr_title,
+        &manifest.body,
+        &test_diffs,
+        &changed_paths,
+        user_requirements_text.as_deref(),
+    );
+    let ai = AiBackend::from_settings(settings).await?;
+    let raw = ai.invoke(&prompt).await?;
+    let known_tests: HashSet<&str> = test_diffs.iter().map(|(p, _)| p.as_str()).collect();
+    manifest.requirements_coverage = extract_json_object(&raw)
+        .ok()
+        .and_then(|v| serde_json::from_value::<RequirementsCoverage>(v).ok())
+        .and_then(|cov| finalize_coverage(cov, &known_tests));
+
+    let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
+    Ok(manifest)
+}
+
 pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_>) -> Result<ReviewManifest, String> {
     if settings.model.is_empty() {
         return Err("No model configured. Set `model` to a Claude model name (e.g. claude-sonnet-4-6) with an Anthropic API key or the `claude` CLI, or to an AWS Bedrock model ARN.".to_string());

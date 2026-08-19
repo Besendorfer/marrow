@@ -43,6 +43,7 @@ interface PrOverviewProps {
   onRestoreSpec?: (key: string) => void;
   /** User-provided requirements text (issue #179 phase 2), or `null`. */
   localRequirements: string | null;
+  analyzingRequirements?: boolean;
   /** Persist local requirements text for this PR. */
   onSaveRequirements: (text: string) => void;
 }
@@ -257,6 +258,7 @@ export function PrOverview({
   onResolveSpec,
   onRestoreSpec,
   localRequirements,
+  analyzingRequirements,
   onSaveRequirements,
 }: PrOverviewProps) {
   const requirementsCardRef = useRef<HTMLDivElement>(null);
@@ -351,6 +353,7 @@ export function PrOverview({
             onRestoreSpec={onRestoreSpec}
             onOpenAt={onOpenAt}
             localRequirements={localRequirements}
+            analyzing={analyzingRequirements}
             onSaveRequirements={onSaveRequirements}
           />
         </div>
