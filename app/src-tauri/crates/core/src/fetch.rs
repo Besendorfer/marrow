@@ -106,7 +106,16 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         .ok_or_else(|| "The analysis response couldn't be parsed; kept the previous coverage.".to_string())?;
     manifest.requirements_coverage = finalize_coverage(cov, &known_tests);
 
-    let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
+    // The AI call above is slow — a concurrent full Refresh may have written
+    // a newer-head manifest to this cache file meanwhile. Only persist onto
+    // the same head we analyzed; otherwise our result is stale and the
+    // frontend's own head guard drops it too.
+    let still_current = manifest_cache::load_cached_manifest(&parsed.owner, &parsed.repo, parsed.number)
+        .map(|m| m.head_sha == manifest.head_sha)
+        .unwrap_or(true);
+    if still_current {
+        let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
+    }
     Ok(manifest)
 }
 
