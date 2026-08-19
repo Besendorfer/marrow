@@ -1051,14 +1051,16 @@ function App() {
     if (!tab || !tab.manifest) return;
     // Empty text means "back to PR-description extraction" — store null so
     // the UI treats the local source as absent (the backend gate already
-    // ignores empty text).
-    updateTab(tab.id, (t) => ({ ...t, localRequirements: text.trim() ? text : null }));
+    // ignores empty text). Persist the same normalized value the UI keeps,
+    // so a reload can't diverge from the in-memory state.
+    const normalized = text.trim();
+    updateTab(tab.id, (t) => ({ ...t, localRequirements: normalized || null }));
     const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
     invoke("save_pr_requirements", {
       owner,
       repo,
       prNumber: number,
-      state: { text },
+      state: { text: normalized },
     }).catch(() => addToast("error", "Couldn't save — these requirements may not persist"));
   }
 
