@@ -1072,7 +1072,18 @@ function App() {
         updateTab(tabId, (t) => ({ ...t, analyzingRequirements: true }));
         return invoke<ReviewManifest>("analyze_requirements", { prRef: prUrl }).then(
           (manifest) => {
-            updateTab(tabId, (t) => ({ ...t, manifest, analyzingRequirements: false }));
+            // Merge only the coverage section, and only onto the same head —
+            // a concurrent Refresh may have replaced the manifest meanwhile,
+            // and this analysis (built from the pre-Refresh cache) must not
+            // clobber it.
+            updateTab(tabId, (t) => ({
+              ...t,
+              manifest:
+                t.manifest && t.manifest.head_sha === manifest.head_sha
+                  ? { ...t.manifest, requirements_coverage: manifest.requirements_coverage }
+                  : t.manifest ?? manifest,
+              analyzingRequirements: false,
+            }));
           },
           (e) => {
             updateTab(tabId, (t) => ({ ...t, analyzingRequirements: false }));

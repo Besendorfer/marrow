@@ -59,6 +59,9 @@ fn emit_progress(
 /// re-analyzes). One AI call; everything else comes from the cache. Updates
 /// the cached manifest in place and returns it.
 pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewManifest, String> {
+    if settings.model.is_empty() {
+        return Err("No model configured. Set `model` to a Claude model name (e.g. claude-sonnet-4-6) with an Anthropic API key or the `claude` CLI, or to an AWS Bedrock model ARN.".to_string());
+    }
     let parsed = parse_pr_ref(pr_ref)?;
     let mut manifest = manifest_cache::load_cached_manifest(&parsed.owner, &parsed.repo, parsed.number)
         .ok_or_else(|| "No cached review for this PR — open it first.".to_string())?;
@@ -93,10 +96,15 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
     let ai = AiBackend::from_settings(settings).await?;
     let raw = ai.invoke(&prompt).await?;
     let known_tests: HashSet<&str> = test_diffs.iter().map(|(p, _)| p.as_str()).collect();
-    manifest.requirements_coverage = extract_json_object(&raw)
+    // An unparseable response is an error, not "no requirements" — erroring
+    // out here keeps the previously-good coverage in the cache instead of
+    // silently wiping it. (finalize returning None — nothing extracted — is
+    // a legitimate outcome and does persist.)
+    let cov = extract_json_object(&raw)
         .ok()
         .and_then(|v| serde_json::from_value::<RequirementsCoverage>(v).ok())
-        .and_then(|cov| finalize_coverage(cov, &known_tests));
+        .ok_or_else(|| "The analysis response couldn't be parsed; kept the previous coverage.".to_string())?;
+    manifest.requirements_coverage = finalize_coverage(cov, &known_tests);
 
     let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
     Ok(manifest)
