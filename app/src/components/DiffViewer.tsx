@@ -163,6 +163,10 @@ export interface DiffViewerHandle {
    * the line is unchanged code. Returns false when it can't be shown at all
    * (no head content, or the line is beyond the file's current end). */
   revealLine: (line: number) => boolean;
+  /** Open the inline comment composer on a line range with a prefilled body —
+   * serves chat draft_comment chips. Reveals the end line first (the composer
+   * renders there); the user edits and posts through the normal flow. */
+  openComposer: (startLine: number, endLine: number, side: "LEFT" | "RIGHT", initialBody: string) => void;
 }
 
 /** Small keyboard-driven reply box, shown when `r` is pressed on a thread line. */
@@ -1751,13 +1755,17 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     return false;
   }
 
+  // Open the comment composer pre-filled with an editable draft — the reviewer
+  // tweaks, then sends. Shared by the AI-note "post as comment" flow (issue #73)
+  // and chat draft_comment chips (issue #185, via the imperative handle).
+  function openComposer(startLine: number, endLine: number, side: "LEFT" | "RIGHT", initialBody: string) {
+    revealLine(endLine); // the composer renders at the end line
+    setCommentingOn({ startLine, endLine, side, initialBody });
+  }
+
   function handlePostHighlightAsComment(h: Highlight) {
     if (!onCreateComment) return;
-    // Open the comment composer pre-filled with the AI note as an editable draft
-    // (issue #73) instead of posting immediately — the reviewer tweaks, then sends.
-    const body = `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`;
-    revealLine(h.end_line); // the composer renders at the end line
-    setCommentingOn({ startLine: h.start_line, endLine: h.end_line, side: "RIGHT", initialBody: body });
+    openComposer(h.start_line, h.end_line, "RIGHT", `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`);
   }
 
   useEffect(() => {
@@ -2375,7 +2383,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     nextHunk, prevHunk, foldAll,
     cursorMove, cursorEdge, cursorPage, nextFinding, prevFinding, foldAtCursor,
     commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor, scrollToThread,
-    revealLine,
+    revealLine, openComposer,
   }));
 
   return (

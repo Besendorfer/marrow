@@ -301,6 +301,17 @@ export function isChatAction(x: unknown): x is ChatAction {
       return a.mode === "split" || a.mode === "unified";
     case "show_comments":
       return typeof a.open === "boolean";
+    case "draft_comment":
+      return (
+        typeof a.path === "string" &&
+        a.path.length > 0 &&
+        typeof a.line === "number" &&
+        a.line > 0 &&
+        (a.start_line === undefined ||
+          (typeof a.start_line === "number" && a.start_line > 0 && a.start_line < a.line)) &&
+        typeof a.body === "string" &&
+        a.body.length > 0
+      );
     default:
       return false;
   }
@@ -387,6 +398,10 @@ function actionChipLabel(a: ChatAction): string {
       return `${a.mode} view`;
     case "show_comments":
       return a.open ? "Show comments" : "Hide comments";
+    case "draft_comment": {
+      const base = a.path.split("/").pop() || a.path;
+      return `Draft comment · ${base}:${a.line}`;
+    }
   }
 }
 

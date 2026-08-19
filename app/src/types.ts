@@ -270,7 +270,12 @@ export type ChatAction =
   | { action: "open_commit"; sha: string }
   | { action: "set_hunk_filter"; filter: "all" | "high" | "medium" }
   | { action: "set_view_mode"; mode: DiffViewMode }
-  | { action: "show_comments"; open: boolean };
+  | { action: "show_comments"; open: boolean }
+  // Manual-only: never auto-executed — clicking the chip opens the inline
+  // comment composer prefilled with `body`; the user edits and posts it.
+  // `line` anchors the comment (last line, head side); optional `start_line`
+  // (< line) makes it a multi-line range.
+  | { action: "draft_comment"; path: string; line: number; start_line?: number; body: string };
 
 /** A structured answer card the chat model can emit as a fenced ```marrow-card
  * JSON block (see `CHAT_ANSWER_CARDS` in `crates/core/src/chat.rs`, the single
