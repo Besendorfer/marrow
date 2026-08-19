@@ -489,6 +489,7 @@ function App() {
       noteResolutions: new Map(),
       resolvedSpecKeys: new Set(),
       specResolutions: new Map(),
+      localRequirements: null,
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
       checkAnnotations: { status: "idle" },
@@ -521,6 +522,7 @@ function App() {
       noteResolutions: new Map(),
       resolvedSpecKeys: new Set(),
       specResolutions: new Map(),
+      localRequirements: null,
       chat: emptyChatState(),
       commentThreads: { status: "idle" },
       checkAnnotations: { status: "idle" },
@@ -635,6 +637,7 @@ function App() {
               loadPersistedViewedState(tab);
               loadDismissedHighlights(tab);
               loadResolvedSpecs(tab);
+              loadLocalRequirements(tab);
               loadChatHistory(tab);
               fetchMyReviewState(tab.id, tab.manifest!.pr_url);
               fetchChecksStatus(tab.id, tab.manifest!.pr_url);
@@ -821,6 +824,7 @@ function App() {
     loadPersistedViewedState(tab);
     loadDismissedHighlights(tab);
     loadResolvedSpecs(tab);
+    loadLocalRequirements(tab);
     loadChatHistory(tab);
     fetchMyReviewState(tabId, data.pr_url);
     fetchChecksStatus(tabId, data.pr_url);
@@ -842,6 +846,7 @@ function App() {
     loadPersistedViewedState(tab);
     loadDismissedHighlights(tab);
     loadResolvedSpecs(tab);
+    loadLocalRequirements(tab);
     loadChatHistory(tab);
     fetchMyReviewState(tab.id, data.pr_url);
     fetchChecksStatus(tab.id, data.pr_url);
@@ -1023,6 +1028,35 @@ function App() {
     nextResolutions.delete(key);
     updateTab(tab.id, (t) => ({ ...t, resolvedSpecKeys: nextKeys, specResolutions: nextResolutions }));
     saveResolvedSpecs(tab, nextKeys, nextResolutions);
+  }
+
+  async function loadLocalRequirements(tab: Tab) {
+    if (!tab.manifest) return;
+    try {
+      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+      const saved = await invoke<{ text: string } | null>("load_pr_requirements", { owner, repo, prNumber: number });
+      if (saved && saved.text) {
+        updateTab(tab.id, (t) => ({ ...t, localRequirements: saved.text }));
+      }
+    } catch {
+      // Non-critical: start with nothing saved on failure
+    }
+  }
+
+  /** Persist the current tab's local requirements text (issue #179 phase 2).
+   * The next analysis (on Refresh) judges tests against it — saving doesn't
+   * auto-trigger a re-review. */
+  function saveLocalRequirements(text: string) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest) return;
+    updateTab(tab.id, (t) => ({ ...t, localRequirements: text }));
+    const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+    invoke("save_pr_requirements", {
+      owner,
+      repo,
+      prNumber: number,
+      state: { text },
+    }).catch(() => addToast("error", "Couldn't save — these requirements may not persist"));
   }
 
   async function loadChatHistory(tab: Tab) {
@@ -2786,8 +2820,11 @@ function App() {
               onViewCommit={handleViewCommit}
               onOpenChecks={() => { if (activeTabId) setLens(activeTabId, "checks"); }}
               resolvedSpecKeys={activeTab.resolvedSpecKeys}
+              specResolutions={activeTab.specResolutions}
               onResolveSpec={resolveSpecItem}
               onRestoreSpec={restoreSpecItem}
+              localRequirements={activeTab.localRequirements}
+              onSaveRequirements={saveLocalRequirements}
               newHighlightKeys={
                 // Dismissing a new note removes it from the chip immediately —
                 // a dead "1 new AI note" pointing at a hidden note is worse

@@ -17,6 +17,7 @@ function jumpLabel(entry: DigestEntry): string | null {
     return `Open ${fileName(entry.jump.path)}${line}`;
   }
   if (entry.jump.kind === "checks" || entry.jump.kind === "url") return "Open checks";
+  if (entry.jump.kind === "requirements") return "Open requirements";
   return null;
 }
 
@@ -29,6 +30,7 @@ function DigestRow({
   onToggle,
   onOpenAt,
   onOpenChecks,
+  onOpenRequirements,
   onResolveSpec,
   onRestoreSpec,
   resolved,
@@ -38,6 +40,7 @@ function DigestRow({
   onToggle: () => void;
   onOpenAt?: (path: string, line?: number) => void;
   onOpenChecks?: () => void;
+  onOpenRequirements?: () => void;
   onResolveSpec?: (key: string) => void;
   onRestoreSpec?: (key: string) => void;
   /** Rendered in the resolved-items tray: muted, Restore-only, no Open/Mark
@@ -48,6 +51,7 @@ function DigestRow({
     if (entry.jump.kind === "file") onOpenAt?.(entry.jump.path, entry.jump.line ?? undefined);
     else if (entry.jump.kind === "checks") onOpenChecks?.();
     else if (entry.jump.kind === "url") onOpenChecks?.(); // MVP: url jumps fall back to the Checks lens.
+    else if (entry.jump.kind === "requirements") onOpenRequirements?.();
   }
   const label = resolved ? null : jumpLabel(entry);
   const canResolve = !resolved && !!entry.resolveKey && !!onResolveSpec;
@@ -110,6 +114,7 @@ export function AttentionDigest({
   allClear,
   onOpenAt,
   onOpenChecks,
+  onOpenRequirements,
   resolvedSpecKeys,
   onResolveSpec,
   onRestoreSpec,
@@ -118,6 +123,9 @@ export function AttentionDigest({
   allClear: string[];
   onOpenAt?: (path: string, line?: number) => void;
   onOpenChecks?: () => void;
+  /** Jump target for the aggregate coverage entry (issue #179 phase 2) — scrolls
+   * the RequirementsCard into view. */
+  onOpenRequirements?: () => void;
   resolvedSpecKeys?: Set<string>;
   onResolveSpec?: (key: string) => void;
   onRestoreSpec?: (key: string) => void;
@@ -186,6 +194,7 @@ export function AttentionDigest({
             onToggle={() => setExpandedId(expandedId === entry.id ? null : entry.id)}
             onOpenAt={onOpenAt}
             onOpenChecks={onOpenChecks}
+            onOpenRequirements={onOpenRequirements}
             onResolveSpec={onResolveSpec}
           />
         ))}

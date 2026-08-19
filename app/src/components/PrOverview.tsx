@@ -3,9 +3,10 @@ import { SummaryParagraphs } from "./SummaryParagraphs";
 import { Avatar } from "./ReviewRequestList";
 import { RichText } from "./RichText";
 import { AttentionDigest } from "./AttentionDigest";
+import { RequirementsCard } from "./RequirementsCard";
 import { buildAllClearSummary, buildDigestEntries } from "./digest";
 import { countFailingChecks, highlightKey, timeAgo } from "../utils";
-import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, PrCommit } from "../types";
+import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, PrCommit, NoteResolution } from "../types";
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
@@ -33,10 +34,17 @@ interface PrOverviewProps {
   /** Keys (see DigestEntry.resolveKey) of coverage-digest spec items the user
    * has marked addressed for this PR. */
   resolvedSpecKeys?: Set<string>;
+  /** Resolution metadata (state + reason) for resolved spec items — passed
+   * through to RequirementsCard alongside resolvedSpecKeys. */
+  specResolutions?: Map<string, NoteResolution>;
   /** Mark a coverage-digest spec item addressed. */
   onResolveSpec?: (key: string) => void;
   /** Restore a previously-resolved spec item. */
   onRestoreSpec?: (key: string) => void;
+  /** User-provided requirements text (issue #179 phase 2), or `null`. */
+  localRequirements: string | null;
+  /** Persist local requirements text for this PR. */
+  onSaveRequirements: (text: string) => void;
 }
 
 /** First file (in manifest order) whose highlights include a new-note key. */
@@ -245,9 +253,13 @@ export function PrOverview({
   onViewCommit,
   onOpenChecks,
   resolvedSpecKeys,
+  specResolutions,
   onResolveSpec,
   onRestoreSpec,
+  localRequirements,
+  onSaveRequirements,
 }: PrOverviewProps) {
+  const requirementsCardRef = useRef<HTMLDivElement>(null);
   const newNoteCount = newHighlightKeys?.size ?? 0;
   const relevant = manifest.files.filter((f) => f.classification !== "NOT_RELEVANT");
   const setAside = manifest.files.length - relevant.length;
@@ -269,8 +281,8 @@ export function PrOverview({
     (f) => f.risk_level === "critical" || f.risk_level === "high"
   ).length;
   const digestEntries = useMemo(
-    () => buildDigestEntries(manifest, checksStatus),
-    [manifest, checksStatus]
+    () => buildDigestEntries(manifest, checksStatus, resolvedSpecKeys),
+    [manifest, checksStatus, resolvedSpecKeys]
   );
   const digestAllClear = useMemo(
     () => buildAllClearSummary(manifest, checksStatus),
@@ -330,6 +342,18 @@ export function PrOverview({
             <SummaryParagraphs text={manifest.summary} />
           </div>
         )}
+        <div ref={requirementsCardRef}>
+          <RequirementsCard
+            manifest={manifest}
+            resolvedSpecKeys={resolvedSpecKeys}
+            specResolutions={specResolutions}
+            onResolveSpec={onResolveSpec}
+            onRestoreSpec={onRestoreSpec}
+            onOpenAt={onOpenAt}
+            localRequirements={localRequirements}
+            onSaveRequirements={onSaveRequirements}
+          />
+        </div>
         {manifest.body && <DescriptionCard body={manifest.body} />}
         {groups.length > 0 && (
           <div className="overview-card">
@@ -363,6 +387,9 @@ export function PrOverview({
           allClear={digestAllClear}
           onOpenAt={onOpenAt}
           onOpenChecks={onOpenChecks}
+          onOpenRequirements={() =>
+            requirementsCardRef.current?.scrollIntoView({ behavior: "smooth" })
+          }
           resolvedSpecKeys={resolvedSpecKeys}
           onResolveSpec={onResolveSpec}
           onRestoreSpec={onRestoreSpec}

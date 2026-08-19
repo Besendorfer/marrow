@@ -7051,3 +7051,134 @@ mark.search-highlight-current {
   white-space: nowrap;
 }
 
+/* ─── Requirements card (issue #179 phase 2) ──────────────────────────── */
+.requirements-card-progress {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.requirements-card-source {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.req-glyph {
+  flex-shrink: 0;
+  width: 14px;
+  font-weight: 700;
+  font-size: 12px;
+  text-align: center;
+}
+
+.req-glyph--covered { color: var(--diff-add-text); }
+.req-glyph--partial { color: var(--risk-medium); }
+.req-glyph--uncovered { color: var(--risk-high); }
+.req-glyph--untestable { color: var(--text-muted); }
+
+.req-card-row-affix {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.requirements-card-orphans {
+  margin-top: 4px;
+}
+
+.requirements-card-orphans-label {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--chip-border);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Empty state (no requirements found) renders prominently — an amber left
+   border, mirroring the stale-file warning treatment — rather than blending
+   in as just another quiet card. */
+.requirements-card--empty {
+  border-left: 3px solid var(--risk-medium);
+}
+
+.requirements-card-empty-headline {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.requirements-card-empty-explainer {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-3);
+  max-width: 60ch;
+}
+
+.requirements-card-textarea {
+  width: 100%;
+  min-height: 90px;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  resize: vertical;
+  outline: none;
+}
+
+.requirements-card-textarea:focus {
+  border-color: var(--accent);
+}
+
+.requirements-card-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.requirements-card-save {
+  display: inline-flex;
+  align-items: center;
+  margin-top: var(--space-2);
+  padding: 6px 14px;
+  background: var(--accent-strong);
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--white);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.requirements-card-save:hover:not(:disabled) {
+  background: var(--accent-strong-hover);
+}
+
+.requirements-card-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.requirements-card-hint {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.requirements-card-github-link {
+  display: block;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.requirements-card-github-link:hover {
+  color: var(--text-secondary);
+}
+

@@ -3,7 +3,6 @@
 // the all-clear quiet-line fragments when nothing needs attention.
 import { describe, expect, test } from "bun:test";
 import { buildAllClearSummary, buildDigestEntries, countBySource, DIGEST_SOURCE_LABEL } from "./digest";
-import { hashString } from "../utils";
 import { specResolveKey } from "./digest";
 import type {
   CheckRunInfo,
@@ -12,7 +11,6 @@ import type {
   RequirementEntry,
   RequirementsCoverage,
   ReviewManifest,
-  TestRef,
   TopRisk,
 } from "../types";
 
@@ -48,10 +46,6 @@ function requirement(overrides: Partial<RequirementEntry>): RequirementEntry {
     note: null,
     ...overrides,
   };
-}
-
-function testRef(overrides: Partial<TestRef>): TestRef {
-  return { path: "tests/reset.test.ts", note: null, ...overrides };
 }
 
 function coverage(overrides: Partial<RequirementsCoverage> = {}): RequirementsCoverage {
@@ -118,59 +112,12 @@ describe("buildDigestEntries", () => {
     expect(entries.map((e) => e.claim)).toEqual(["First", "Second", "Third"]);
   });
 
-  test("uncovered requirement produces a high entry with no jump", () => {
-    const m = manifest({
-      requirements_coverage: coverage({
-        requirements: [requirement({ status: "uncovered", text: "Login rate-limits after 5 tries", note: null })],
-      }),
-    });
-    const entries = buildDigestEntries(m);
-    expect(entries.length).toBe(1);
-    expect(entries[0]).toMatchObject({
-      severity: "high",
-      claim: "Login rate-limits after 5 tries",
-      source: "coverage",
-      jump: { kind: "none" },
-      resolveKey: specResolveKey("Login rate-limits after 5 tries"),
-    });
+  test("coverage absent produces no aggregate entry", () => {
+    const m = manifest();
+    expect(buildDigestEntries(m)).toEqual([]);
   });
 
-  test("partial requirement with tests produces a medium entry jumping to the first test", () => {
-    const m = manifest({
-      requirements_coverage: coverage({
-        requirements: [
-          requirement({
-            status: "partial",
-            text: "Password reset email is sent",
-            note: "only the happy path is asserted",
-            tests: [testRef({ path: "tests/reset.test.ts" }), testRef({ path: "tests/reset2.test.ts" })],
-          }),
-        ],
-      }),
-    });
-    const entries = buildDigestEntries(m);
-    expect(entries.length).toBe(1);
-    expect(entries[0]).toMatchObject({
-      severity: "medium",
-      claim: "Password reset email is sent",
-      detail: "only the happy path is asserted",
-      source: "coverage",
-      jump: { kind: "file", path: "tests/reset.test.ts", line: null },
-      resolveKey: specResolveKey("Password reset email is sent"),
-    });
-  });
-
-  test("partial requirement with no tests produces a medium entry with no jump", () => {
-    const m = manifest({
-      requirements_coverage: coverage({
-        requirements: [requirement({ status: "partial", tests: [] })],
-      }),
-    });
-    const entries = buildDigestEntries(m);
-    expect(entries[0].jump).toEqual({ kind: "none" });
-  });
-
-  test("covered and untestable requirements produce no entries", () => {
+  test("covered and untestable requirements produce no aggregate entry", () => {
     const m = manifest({
       requirements_coverage: coverage({
         requirements: [requirement({ status: "covered" }), requirement({ status: "untestable" })],
@@ -179,22 +126,83 @@ describe("buildDigestEntries", () => {
     expect(buildDigestEntries(m)).toEqual([]);
   });
 
-  test("orphan test produces an info entry with a file jump", () => {
+  test("an unaddressed uncovered requirement produces a high aggregate entry jumping to the card", () => {
     const m = manifest({
       requirements_coverage: coverage({
-        orphan_tests: [testRef({ path: "tests/logout.test.ts", note: "tests logout, not login" })],
+        requirements: [requirement({ status: "uncovered", text: "Login rate-limits after 5 tries" })],
       }),
     });
     const entries = buildDigestEntries(m);
     expect(entries.length).toBe(1);
     expect(entries[0]).toMatchObject({
-      severity: "info",
-      claim: "Test without a stated requirement: logout.test.ts",
-      detail: "tests logout, not login",
+      id: "coverage:summary",
+      severity: "high",
+      claim: "1 requirement needs attention",
       source: "coverage",
-      jump: { kind: "file", path: "tests/logout.test.ts" },
-      resolveKey: `orphan:${hashString("tests/logout.test.ts")}`,
+      jump: { kind: "requirements" },
     });
+    expect(entries[0].resolveKey).toBeUndefined();
+  });
+
+  test("only unaddressed partial requirements produce a medium aggregate entry", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [
+          requirement({ status: "partial", text: "A" }),
+          requirement({ status: "partial", text: "B" }),
+        ],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries.length).toBe(1);
+    expect(entries[0]).toMatchObject({
+      severity: "medium",
+      claim: "2 requirements need attention",
+      jump: { kind: "requirements" },
+    });
+  });
+
+  test("a mix of unaddressed uncovered and partial requirements is severity high", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [
+          requirement({ status: "partial", text: "A" }),
+          requirement({ status: "uncovered", text: "B" }),
+        ],
+      }),
+    });
+    const entries = buildDigestEntries(m);
+    expect(entries[0].severity).toBe("high");
+    expect(entries[0].claim).toBe("2 requirements need attention");
+  });
+
+  test("requirements addressed via resolvedSpecKeys are excluded from the aggregate count", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [
+          requirement({ status: "uncovered", text: "A" }),
+          requirement({ status: "partial", text: "B" }),
+        ],
+      }),
+    });
+    const addressedKeys = new Set([specResolveKey("A")]);
+    const entries = buildDigestEntries(m, null, addressedKeys);
+    expect(entries.length).toBe(1);
+    expect(entries[0].claim).toBe("1 requirement needs attention");
+    expect(entries[0].severity).toBe("medium");
+  });
+
+  test("all uncovered/partial requirements addressed produces no aggregate entry", () => {
+    const m = manifest({
+      requirements_coverage: coverage({
+        requirements: [
+          requirement({ status: "uncovered", text: "A" }),
+          requirement({ status: "partial", text: "B" }),
+        ],
+      }),
+    });
+    const addressedKeys = new Set([specResolveKey("A"), specResolveKey("B")]);
+    expect(buildDigestEntries(m, null, addressedKeys)).toEqual([]);
   });
 
   test("resolveKey survives re-extraction drift (case, whitespace, punctuation, markdown)", () => {
@@ -213,25 +221,6 @@ describe("buildDigestEntries", () => {
       }),
     });
     expect(buildAllClearSummary(m, null)).toEqual([]);
-  });
-
-  test("resolveKey is stable for identical text regardless of array position", () => {
-    const m = manifest({
-      requirements_coverage: coverage({
-        requirements: [
-          requirement({ status: "uncovered", text: "Padding requirement" }),
-          requirement({ status: "uncovered", text: "Users can reset their password" }),
-        ],
-      }),
-    });
-    const entries = buildDigestEntries(m);
-    const first = manifest({
-      requirements_coverage: coverage({
-        requirements: [requirement({ status: "uncovered", text: "Users can reset their password" })],
-      }),
-    });
-    const soloEntries = buildDigestEntries(first);
-    expect(entries[1].resolveKey).toBe(soloEntries[0].resolveKey);
   });
 
   test("entries are ordered CI, then triage, then coverage", () => {

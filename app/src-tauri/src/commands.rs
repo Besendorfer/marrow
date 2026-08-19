@@ -10,6 +10,7 @@ use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
 use marrow_core::dismissed_highlights::{self, DismissedHighlights};
 use marrow_core::resolved_specs::{self, ResolvedSpecs};
+use marrow_core::pr_requirements::{self, PrRequirements};
 use marrow_core::viewed_state::{self, ViewedFileState};
 use marrow_core::activity::{self, Observed};
 use marrow_core::watches::{self, Watch};
@@ -613,6 +614,25 @@ pub fn save_resolved_specs(
     state: ResolvedSpecs,
 ) -> Result<(), String> {
     resolved_specs::save_resolved_specs(&owner, &repo, pr_number, &state)
+}
+
+#[command]
+pub fn load_pr_requirements(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+) -> Option<PrRequirements> {
+    pr_requirements::load_pr_requirements(&owner, &repo, pr_number)
+}
+
+#[command]
+pub fn save_pr_requirements(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    state: PrRequirements,
+) -> Result<(), String> {
+    pr_requirements::save_pr_requirements(&owner, &repo, pr_number, &state)
 }
 
 #[command]
