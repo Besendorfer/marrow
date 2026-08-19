@@ -131,6 +131,63 @@ function OrphanTestRow({
   );
 }
 
+function RequirementsEditor({
+  draft,
+  setDraft,
+  prUrl,
+  onSave,
+  onCancel,
+  onClear,
+}: {
+  draft: string;
+  setDraft: (text: string) => void;
+  prUrl: string;
+  onSave: () => void;
+  /** Present only in edit mode (the empty state has nothing to go back to). */
+  onCancel?: () => void;
+  /** Present only when local requirements exist — reverts to body extraction. */
+  onClear?: () => void;
+}) {
+  return (
+    <>
+      <textarea
+        className="requirements-card-textarea"
+        value={draft}
+        placeholder="Paste or write the requirements/acceptance criteria for this PR…"
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="requirements-card-editor-actions">
+        <button
+          className="requirements-card-save"
+          onClick={onSave}
+          disabled={draft.trim().length === 0}
+        >
+          Save requirements
+        </button>
+        {onCancel && (
+          <button className="overview-digest-row-action" onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+        {onClear && (
+          <button className="overview-digest-row-action" onClick={onClear}>
+            Use PR description instead
+          </button>
+        )}
+      </div>
+      <div className="requirements-card-hint">
+        Saved locally; the next analysis judges tests against these.
+      </div>
+      <button
+        className="github-link requirements-card-github-link"
+        onClick={() => openUrl(prUrl).catch(() => {})}
+      >
+        or edit the PR description on GitHub
+      </button>
+    </>
+  );
+}
+
 export function RequirementsCard({
   manifest,
   resolvedSpecKeys,
@@ -141,6 +198,7 @@ export function RequirementsCard({
   onSaveRequirements,
 }: RequirementsCardProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(localRequirements ?? "");
   const lastLoadedRef = useRef(localRequirements);
   useEffect(() => {
@@ -151,6 +209,7 @@ export function RequirementsCard({
   }, [localRequirements]);
 
   const coverage = manifest.requirements_coverage;
+  const hasLocal = !!localRequirements?.trim();
 
   if (!coverage) {
     return (
@@ -161,28 +220,13 @@ export function RequirementsCard({
           Nothing in the PR description reads as requirements/acceptance criteria —
           coverage can't be judged.
         </p>
-        <textarea
-          className="requirements-card-textarea"
-          value={draft}
-          placeholder="Paste or write the requirements/acceptance criteria for this PR…"
-          onChange={(e) => setDraft(e.target.value)}
+        <RequirementsEditor
+          draft={draft}
+          setDraft={setDraft}
+          prUrl={manifest.pr_url}
+          onSave={() => onSaveRequirements(draft.trim())}
+          onClear={hasLocal ? () => onSaveRequirements("") : undefined}
         />
-        <button
-          className="requirements-card-save"
-          onClick={() => onSaveRequirements(draft.trim())}
-          disabled={draft.trim().length === 0}
-        >
-          Save requirements
-        </button>
-        <div className="requirements-card-hint">
-          Saved locally; the next analysis judges tests against these.
-        </div>
-        <button
-          className="github-link requirements-card-github-link"
-          onClick={() => openUrl(manifest.pr_url).catch(() => {})}
-        >
-          or edit the PR description on GitHub
-        </button>
       </div>
     );
   }
@@ -196,13 +240,55 @@ export function RequirementsCard({
       .filter((key) => resolvedSpecKeys?.has(key))
   );
 
+  function startEditing() {
+    // Local text edits as-is; body-extracted requirements seed the draft as a
+    // numbered list, so saving converts them into the local source.
+    setDraft(
+      hasLocal
+        ? (localRequirements ?? "")
+        : requirements.map((r, i) => `${i + 1}. ${r.text}`).join("\n")
+    );
+    setEditing(true);
+  }
+
+  if (editing) {
+    return (
+      <div className="overview-card requirements-card">
+        <h4>Requirements</h4>
+        <RequirementsEditor
+          draft={draft}
+          setDraft={setDraft}
+          prUrl={manifest.pr_url}
+          onSave={() => {
+            onSaveRequirements(draft.trim());
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+          onClear={
+            hasLocal
+              ? () => {
+                  onSaveRequirements("");
+                  setEditing(false);
+                }
+              : undefined
+          }
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="overview-card requirements-card">
-      <h4>Requirements</h4>
+      <div className="requirements-card-header">
+        <h4>Requirements</h4>
+        <button className="requirements-card-edit" onClick={startEditing}>
+          Edit
+        </button>
+      </div>
       <div className="requirements-card-progress">
         {covered} of {requirements.length} covered · {addressedKeys.size} addressed
       </div>
-      {localRequirements && (
+      {hasLocal && (
         <div className="requirements-card-source">using your local requirements</div>
       )}
       {requirements.map((req, i) => {

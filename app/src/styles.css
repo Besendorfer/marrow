@@ -7150,6 +7150,39 @@ mark.search-highlight-current {
   color: var(--text-muted);
 }
 
+.requirements-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.requirements-card-edit {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.requirements-card-edit:hover {
+  color: var(--text-secondary);
+}
+
+.requirements-card-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: var(--space-2);
+}
+
+.requirements-card-editor-actions .requirements-card-save {
+  margin-top: 0;
+}
+
 .requirements-card-save {
   display: inline-flex;
   align-items: center;

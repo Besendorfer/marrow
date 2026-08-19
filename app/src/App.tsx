@@ -1049,7 +1049,10 @@ function App() {
   function saveLocalRequirements(text: string) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab || !tab.manifest) return;
-    updateTab(tab.id, (t) => ({ ...t, localRequirements: text }));
+    // Empty text means "back to PR-description extraction" — store null so
+    // the UI treats the local source as absent (the backend gate already
+    // ignores empty text).
+    updateTab(tab.id, (t) => ({ ...t, localRequirements: text.trim() ? text : null }));
     const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
     invoke("save_pr_requirements", {
       owner,
