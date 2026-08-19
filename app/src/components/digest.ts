@@ -1,12 +1,17 @@
 import { hashString, isFailingCheck } from "../utils";
 import type { CheckRunInfo, DigestEntry, ReviewManifest, PrChecksStatus } from "../types";
 
-/** Resolve-keys hash normalized requirement text so trivial re-extraction
- * drift (case, whitespace, trailing punctuation) doesn't resurface an
- * already-addressed spec item. Semantic rewording still changes the key —
- * accepted residual, the prompt asks for verbatim quotes to minimize it. */
+/** Resolve-keys hash canonicalized requirement text so re-extraction drift
+ * (case, whitespace, punctuation, markdown backticks/emphasis) doesn't
+ * resurface an already-addressed spec item — live-testing showed the model
+ * flip-flops on quoting the body's markdown. Everything but letters, digits,
+ * and word boundaries is stripped before hashing. Semantic rewording still
+ * changes the key — accepted residual. */
 export function specResolveKey(text: string): string {
-  const normalized = text.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.。]$/, "");
+  const normalized = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
   return `spec:${hashString(normalized)}`;
 }
 
@@ -131,9 +136,11 @@ export function buildAllClearSummary(
   if (manifest.requirements_coverage) {
     const reqs = manifest.requirements_coverage.requirements;
     // Guard the vacuous-.every() case locally rather than relying on core's
-    // empty-means-None invariant holding forever.
+    // empty-means-None invariant holding forever. At least one requirement
+    // must actually be covered — all-untestable means nothing was verified,
+    // which is not a "covered" claim.
     const allCovered =
-      reqs.length > 0 &&
+      reqs.some((r) => r.status === "covered") &&
       reqs.every((r) => r.status === "covered" || r.status === "untestable");
     if (allCovered) fragments.push("requirements covered");
   }

@@ -197,11 +197,22 @@ describe("buildDigestEntries", () => {
     });
   });
 
-  test("resolveKey survives trivial re-extraction drift (case, whitespace, trailing period)", () => {
-    const base = specResolveKey("Users can reset their password");
-    expect(specResolveKey("users can reset  their password.")).toBe(base);
-    expect(specResolveKey("  Users can\treset their password ")).toBe(base);
-    expect(specResolveKey("Users can reset their sessions")).not.toBe(base);
+  test("resolveKey survives re-extraction drift (case, whitespace, punctuation, markdown)", () => {
+    const base = specResolveKey("Users can reset their password via is_test_path");
+    expect(specResolveKey("users can reset  their password via is_test_path.")).toBe(base);
+    expect(specResolveKey("  Users can\treset their password via `is_test_path` ")).toBe(base);
+    expect(specResolveKey("Users can reset their **password** via is_test_path!")).toBe(base);
+    expect(specResolveKey("Users can reset their sessions via is_test_path")).not.toBe(base);
+  });
+
+  test("all-untestable requirements do not claim requirements covered", () => {
+    const m = manifest({
+      triage: null,
+      requirements_coverage: coverage({
+        requirements: [requirement({ status: "untestable" }), requirement({ status: "untestable", text: "B" })],
+      }),
+    });
+    expect(buildAllClearSummary(m, null)).toEqual([]);
   });
 
   test("resolveKey is stable for identical text regardless of array position", () => {
