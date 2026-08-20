@@ -29,7 +29,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, ChatAction, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures, PrLens, ChangeGroup } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, PrConversationComment, SearchMatch, PrUpdateStatus, ViewedFileState, MyReviewState, PrChecksStatus, UpdateStatus, SessionState, Settings, CachedPrInfo, ChatState, ChatMessage, ChatStreamEvent, ChatAction, NoteResolution, PrCommit, CommitDiff, CheckAnnotation, CheckFailures, PrLens, ChangeGroup } from "./types";
 import { parsePrUrl, extractPrRef, canonicalPrKey, highlightKey, isFailingCheck } from "./utils";
 import type { ReviewSession } from "./hooks/useActivityFeed";
 
@@ -495,6 +495,8 @@ function App() {
       commentThreads: { status: "idle" },
       checkAnnotations: { status: "idle" },
       commentsOpen: false,
+      prConversation: null,
+      prCommentDraft: null,
       sidebarView: hasGroups ? "groups" : "category",
       isRefreshing: false,
       lastCommentCount: 0,
@@ -529,6 +531,8 @@ function App() {
       commentThreads: { status: "idle" },
       checkAnnotations: { status: "idle" },
       commentsOpen: false,
+      prConversation: null,
+      prCommentDraft: null,
       sidebarView: "category",
       isRefreshing: false,
       lastCommentCount: 0,
@@ -1457,6 +1461,17 @@ function App() {
         }
         return true;
       }
+      case "draft_pr_comment":
+        // Manual-only chip (see the auto-exec skip below): open the Comments
+        // panel with the PR-level compose box prefilled — same mutual
+        // exclusion with chat as show_comments.
+        updateTab(tab.id, (t) => ({
+          ...t,
+          commentsOpen: true,
+          chat: { ...t.chat, open: false },
+          prCommentDraft: a.body,
+        }));
+        return true;
       default:
         return false;
     }
@@ -1500,10 +1515,11 @@ function App() {
     const executed = chatExecutedActionsRef.current[tabId] ?? (chatExecutedActionsRef.current[tabId] = new Set());
     fences.forEach((entry, blockIndex) => {
       if (!entry.action) return;
-      // draft_comment is manual-only: never auto-run (it would pop a composer
-      // in the user's face mid-stream), and it doesn't consume the auto-exec
-      // cap or the executed set — its chip stays neutral until clicked.
-      if (entry.action.action === "draft_comment") return;
+      // draft_comment / draft_pr_comment are manual-only: never auto-run (they
+      // would pop a composer in the user's face mid-stream), and they don't
+      // consume the auto-exec cap or the executed set — their chips stay
+      // neutral until clicked.
+      if (entry.action.action === "draft_comment" || entry.action.action === "draft_pr_comment") return;
       // The prompt says "at most a few actions per reply", but the prompt
       // isn't enforcement: cap auto-execution per turn so a runaway reply
       // can't thrash the view. Blocks past the cap render as neutral
@@ -1806,6 +1822,7 @@ function App() {
     const tab = tabsRef.current.find((t) => t.id === tabId);
     if (!tab || !tab.manifest || tab.isRefreshing) return;
 
+    refreshPrConversation(tabId, tab.manifest.pr_url);
     try {
       const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
         prUrl: tab.manifest.pr_url,
@@ -1923,11 +1940,42 @@ function App() {
     updateTab(activeTabId,(t) => ({ ...t, sidebarView: view }));
   }
 
+  /** Best-effort fetch of the PR-level conversation comments (issue #185).
+   * Deliberately fire-and-forget from the thread-fetch paths: a failure keeps
+   * the prior value and must never block or fail the threads fetch. */
+  async function refreshPrConversation(tabId: string, prUrl: string) {
+    try {
+      const comments = await invoke<PrConversationComment[]>("fetch_pr_conversation", { prUrl });
+      updateTab(tabId, (t) => ({ ...t, prConversation: comments }));
+    } catch {
+      // Keep whatever we had (possibly null = never loaded).
+    }
+  }
+
+  /** Post a top-level PR conversation comment, then refresh the conversation
+   * list (only — threads are untouched by a conversation comment). Returns
+   * whether the post succeeded so the compose box knows to keep its text. */
+  async function handlePostPrComment(body: string): Promise<boolean> {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return false;
+    try {
+      await invoke<string>("add_pr_comment", { prUrl: tab.manifest.pr_url, body });
+      updateTab(tab.id, (t) => ({ ...t, prCommentDraft: null }));
+      refreshPrConversation(tab.id, tab.manifest.pr_url);
+      addToast("success", "Comment posted");
+      return true;
+    } catch (err) {
+      addToast("error", `Failed to post comment: ${String(err)}`);
+      return false;
+    }
+  }
+
   async function handleRequestComments() {
     const tab = tabs.find((t) => t.id === activeTabId);
     if (!tab || !tab.manifest || tab.commentThreads.status === "loading" || tab.commentThreads.status === "loaded") return;
 
     updateTab(activeTabId,(t) => ({ ...t, commentThreads: { status: "loading" } }));
+    refreshPrConversation(tab.id, tab.manifest.pr_url);
     try {
       const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
         prUrl: tab.manifest.pr_url,
@@ -2985,6 +3033,10 @@ function App() {
           {activeTab.commentsOpen && (
             <CommentsPanel
               commentThreads={activeTab.commentThreads}
+              conversation={activeTab.prConversation ?? null}
+              composeInitialBody={activeTab.prCommentDraft ?? null}
+              onPostPrComment={handlePostPrComment}
+              onClearComposeDraft={() => updateTab(activeTab.id, (t) => ({ ...t, prCommentDraft: null }))}
               onRetry={handleRequestComments}
               onReply={handleReply}
               onToggleResolved={handleToggleResolved}

@@ -312,6 +312,8 @@ export function isChatAction(x: unknown): x is ChatAction {
         typeof a.body === "string" &&
         a.body.length > 0
       );
+    case "draft_pr_comment":
+      return typeof a.body === "string" && a.body.length > 0;
     default:
       return false;
   }
@@ -402,6 +404,8 @@ function actionChipLabel(a: ChatAction): string {
       const base = a.path.split("/").pop() || a.path;
       return `Draft comment · ${base}:${a.line}`;
     }
+    case "draft_pr_comment":
+      return "Draft PR comment";
   }
 }
 

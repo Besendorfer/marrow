@@ -237,6 +237,8 @@ pub fn run() {
             commands::check_pr_updates,
             commands::fetch_review_requests,
             commands::fetch_review_comments,
+            commands::fetch_pr_conversation,
+            commands::add_pr_comment,
             commands::reply_to_thread,
             commands::toggle_thread_resolved,
             commands::get_my_review_state,

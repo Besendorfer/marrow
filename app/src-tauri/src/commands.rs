@@ -5,7 +5,7 @@ use marrow_core::chat_history::{self, StoredChat};
 use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};
 use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
-use marrow_core::types::{CheckFailures, CommitDiff, MyReviewState, PrChecksStatus, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
+use marrow_core::types::{CheckFailures, CommitDiff, MyReviewState, PrChecksStatus, PrConversationComment, PrUpdateStatus, ReviewComment, ReviewManifest, ReviewRequestItem, ReviewThread, Settings};
 use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
 use marrow_core::dismissed_highlights::{self, DismissedHighlights};
@@ -387,6 +387,22 @@ pub async fn fetch_review_comments(pr_url: String) -> Result<Vec<ReviewThread>, 
     let github = github_client();
     let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
     github.get_review_threads(&parsed.owner, &parsed.repo, parsed.number).await
+}
+
+#[command]
+pub async fn fetch_pr_conversation(pr_url: String) -> Result<Vec<PrConversationComment>, String> {
+    let github = github_client();
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
+    github.get_pr_conversation(&parsed.owner, &parsed.repo, parsed.number).await
+}
+
+/// Post a top-level conversation comment on the PR (not a review comment).
+/// Returns the created comment's URL.
+#[command]
+pub async fn add_pr_comment(pr_url: String, body: String) -> Result<String, String> {
+    let github = github_client();
+    let parsed = marrow_core::pr_parser::parse_pr_ref(&pr_url)?;
+    github.add_pr_comment(&parsed.owner, &parsed.repo, parsed.number, &body).await
 }
 
 #[command]

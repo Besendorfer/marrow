@@ -388,6 +388,17 @@ pub struct ReviewThread {
     pub comments: Vec<ReviewComment>,
 }
 
+/// A top-level PR conversation comment (a GitHub "issue comment") — not part
+/// of a review and not anchored to a diff line (issue #185).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PrConversationComment {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PrUpdateStatus {
     pub has_changes: bool,
