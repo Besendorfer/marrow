@@ -119,6 +119,17 @@ pub struct RequirementEntry {
     pub note: Option<String>,
 }
 
+/// A GitHub issue this PR closes (GraphQL `closingIssuesReferences`) —
+/// acceptance criteria often live in the linked issue rather than the PR
+/// description.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LinkedIssue {
+    pub number: u64,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+}
+
 /// Requirements-coverage analysis: explicit requirements from the PR body,
 /// each judged covered/partial/uncovered/untestable against the PR's test
 /// diffs. `None` on the manifest when the PR body states no real
@@ -130,6 +141,10 @@ pub struct RequirementsCoverage {
     pub requirements: Vec<RequirementEntry>,
     #[serde(default)]
     pub orphan_tests: Vec<TestRef>,
+    /// Numbers of the linked issues whose text fed the extraction. Empty when
+    /// requirements came from the PR body or the user's local text.
+    #[serde(default)]
+    pub source_issues: Vec<u64>,
 }
 
 /// One commit in a PR's commit list (the "commits" tab).

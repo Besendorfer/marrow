@@ -10,8 +10,8 @@ use crate::prompts::{
     build_summary_prompt, build_triage_prompt, has_inline_test_markers, is_test_path, PriorNote,
 };
 use crate::types::{
-    ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, RequirementsCoverage,
-    ReviewManifest, ReviewOrderItem, Settings, TopRisk, TriageReport,
+    ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, LinkedIssue,
+    RequirementsCoverage, ReviewManifest, ReviewOrderItem, Settings, TopRisk, TriageReport,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use sha2::{Sha256, Digest};
@@ -70,9 +70,25 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         .map(|r| r.text)
         .filter(|t| !t.trim().is_empty());
 
+    // Linked issues participate in the gate below, so they're fetched ahead
+    // of it — a short-body PR now costs one (best-effort) API call to learn
+    // whether an issue supplies the requirements; that's the feature. Skipped
+    // entirely when user text exists: it's authoritative and replaces issues
+    // as the extraction source.
+    let github = GithubClient::new(resolve_github_token(settings));
+    let linked_issues: Vec<LinkedIssue> = if user_requirements_text.is_none() {
+        github
+            .get_linked_issues(&parsed.owner, &parsed.repo, parsed.number)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     // Same gate as the full pipeline: user text opens it; otherwise the body
-    // must clear the length bar. Gate closed ⇒ coverage becomes absent.
-    if user_requirements_text.is_none() && !coverage_gate(&manifest.body) {
+    // or a linked issue's body must clear the length bar. Gate closed ⇒
+    // coverage becomes absent.
+    if !coverage_gate_with_issues(&manifest.body, user_requirements_text.is_some(), &linked_issues) {
         manifest.requirements_coverage = None;
         let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
         return Ok(manifest);
@@ -92,7 +108,6 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         .collect();
     let changed_paths: Vec<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
 
-    let github = GithubClient::new(resolve_github_token(settings));
     let existing_tests =
         fetch_related_existing_tests(&github, &parsed.owner, &parsed.repo, &manifest.head_sha, &changed_paths).await;
 
@@ -104,6 +119,7 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         &existing_tests,
         &changed_paths,
         user_requirements_text.as_deref(),
+        &linked_issues,
     );
     let ai = AiBackend::from_settings(settings).await?;
     let raw = ai.invoke(&prompt).await?;
@@ -122,6 +138,11 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         .and_then(|v| serde_json::from_value::<RequirementsCoverage>(v).ok())
         .ok_or_else(|| "The analysis response couldn't be parsed; kept the previous coverage.".to_string())?;
     manifest.requirements_coverage = finalize_coverage(cov, &known_tests);
+    if !linked_issues.is_empty() {
+        if let Some(c) = manifest.requirements_coverage.as_mut() {
+            c.source_issues = linked_issues.iter().map(|i| i.number).collect();
+        }
+    }
 
     // The AI call above is slow — a concurrent full Refresh may have written
     // a newer-head manifest to this cache file meanwhile. Only persist onto
@@ -273,11 +294,23 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             .as_ref()
             .map(|r| r.text.as_str())
             .filter(|t| !t.trim().is_empty());
+        // Linked issues (issue #179 phase 3) are an extraction source when the
+        // reviewer supplied no local text — user text is authoritative and
+        // replaces them, so the (best-effort) fetch is skipped entirely then.
+        let linked_issues: Vec<LinkedIssue> = if user_requirements_text.is_none() {
+            github
+                .get_linked_issues(&parsed.owner, &parsed.repo, parsed.number)
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         // Coverage needs a PR body substantial enough to state real requirements;
         // a missing/near-empty body means nothing to extract, gate stays closed
         // regardless of whether the PR touched any test files — unless local
-        // requirements text overrides the gate.
-        let run_coverage = coverage_gate(&pr_body) || user_requirements_text.is_some();
+        // requirements text or a substantial linked-issue body overrides it.
+        let run_coverage =
+            coverage_gate_with_issues(&pr_body, user_requirements_text.is_some(), &linked_issues);
         let ai_total: u32 = 3 + if run_triage { 1 } else { 0 } + if run_coverage { 1 } else { 0 };
         emit_progress(app, 4, "Analyzing highlights, summary, grouping, and coverage", FetchStatus::Running, None, Some((0, ai_total)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
@@ -307,6 +340,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 &existing_tests,
                 &file_list,
                 user_requirements_text,
+                &linked_issues,
             )
         } else {
             String::new()
@@ -405,6 +439,11 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 .map(|(p, _)| p.as_str())
                 .collect();
             requirements_coverage = parsed_cov.and_then(|cov| finalize_coverage(cov, &known_tests));
+            if !linked_issues.is_empty() {
+                if let Some(c) = requirements_coverage.as_mut() {
+                    c.source_issues = linked_issues.iter().map(|i| i.number).collect();
+                }
+            }
         }
 
         // Step 5: Fetch file contents for all relevant files concurrently
@@ -625,6 +664,20 @@ fn finalize_triage(report: &mut TriageReport, relevant: &[&FileClassification]) 
 /// feature's core signal.
 fn coverage_gate(pr_body: &str) -> bool {
     pr_body.trim().chars().count() >= 40
+}
+
+/// The gate with linked issues in play (issue #179 phase 3): user text always
+/// opens it; otherwise the PR body OR any linked issue's body must clear the
+/// same 40-char bar — a terse PR whose linked issue states the acceptance
+/// criteria is exactly the case linked-issue extraction exists for.
+pub(crate) fn coverage_gate_with_issues(
+    pr_body: &str,
+    has_user_requirements: bool,
+    linked_issues: &[LinkedIssue],
+) -> bool {
+    has_user_requirements
+        || coverage_gate(pr_body)
+        || linked_issues.iter().any(|i| coverage_gate(&i.body))
 }
 
 /// Finalize a parsed `RequirementsCoverage`: drop requirements whose status
@@ -1428,9 +1481,9 @@ mod tests {
         assert_eq!(report.review_order[0].rationale, "defines it");
     }
 
-    use super::{coverage_gate, finalize_coverage};
+    use super::{coverage_gate, coverage_gate_with_issues, finalize_coverage};
     use crate::ai::extract_json_object;
-    use crate::types::RequirementsCoverage;
+    use crate::types::{LinkedIssue, RequirementsCoverage};
     use std::collections::HashSet;
 
     #[test]
@@ -1492,6 +1545,7 @@ mod tests {
                 crate::types::TestRef { path: "tests/real.test.ts".to_string(), note: None },
                 crate::types::TestRef { path: "tests/made_up.test.ts".to_string(), note: None },
             ],
+            source_issues: vec![],
         };
         let known: HashSet<&str> = ["tests/real.test.ts"].into_iter().collect();
         let result = finalize_coverage(cov, &known).unwrap();
@@ -1503,7 +1557,7 @@ mod tests {
 
     #[test]
     fn finalize_coverage_empty_requirements_yields_none() {
-        let cov = RequirementsCoverage { requirements: vec![], orphan_tests: vec![] };
+        let cov = RequirementsCoverage { requirements: vec![], orphan_tests: vec![], source_issues: vec![] };
         let known: HashSet<&str> = HashSet::new();
         assert!(finalize_coverage(cov, &known).is_none());
     }
@@ -1519,6 +1573,27 @@ mod tests {
     }
 
     #[test]
+    fn coverage_gate_with_issues_opens_on_substantial_issue_body() {
+        let issue = |body: &str| LinkedIssue {
+            number: 1,
+            title: "t".to_string(),
+            body: body.to_string(),
+        };
+        // Short PR body + a linked issue that clears the 40-char bar → open.
+        assert!(coverage_gate_with_issues("short", false, &[issue(&"x".repeat(40))]));
+        // Any one substantial issue among trivial ones is enough.
+        assert!(coverage_gate_with_issues("short", false, &[issue(""), issue(&"x".repeat(40))]));
+        // Short PR body + only trivial issue bodies → closed.
+        assert!(!coverage_gate_with_issues("short", false, &[issue(""), issue("tiny")]));
+        assert!(!coverage_gate_with_issues("short", false, &[issue(&format!("  {}  ", "x".repeat(39)))]));
+        assert!(!coverage_gate_with_issues("short", false, &[]));
+        // User requirements always open the gate, issues or not.
+        assert!(coverage_gate_with_issues("", true, &[]));
+        // A substantial PR body still opens it on its own.
+        assert!(coverage_gate_with_issues(&"x".repeat(40), false, &[]));
+    }
+
+    #[test]
     fn finalize_coverage_clamps_to_eight_requirements() {
         let req = |n: usize| crate::types::RequirementEntry {
             text: format!("Requirement {n}"),
@@ -1529,6 +1604,7 @@ mod tests {
         let cov = RequirementsCoverage {
             requirements: (0..10).map(req).collect(),
             orphan_tests: vec![],
+            source_issues: vec![],
         };
         let known: HashSet<&str> = HashSet::new();
         assert_eq!(finalize_coverage(cov, &known).unwrap().requirements.len(), 8);
@@ -1553,6 +1629,7 @@ mod tests {
                 req("covered", vec![]),
             ],
             orphan_tests: vec![],
+            source_issues: vec![],
         };
         let known: HashSet<&str> = ["tests/real.test.ts"].into_iter().collect();
         let result = finalize_coverage(cov, &known).unwrap();
@@ -1586,6 +1663,7 @@ mod tests {
         let cov = RequirementsCoverage {
             requirements: vec![req("covered"), req("mystery"), req("partial")],
             orphan_tests: vec![],
+            source_issues: vec![],
         };
         let known: HashSet<&str> = HashSet::new();
         let result = finalize_coverage(cov, &known).unwrap();
@@ -1593,7 +1671,7 @@ mod tests {
         assert!(result.requirements.iter().all(|r| r.status != "mystery"));
 
         // All statuses unknown → the pass reports nothing at all.
-        let cov = RequirementsCoverage { requirements: vec![req("mystery")], orphan_tests: vec![] };
+        let cov = RequirementsCoverage { requirements: vec![req("mystery")], orphan_tests: vec![], source_issues: vec![] };
         assert!(finalize_coverage(cov, &known).is_none());
     }
 

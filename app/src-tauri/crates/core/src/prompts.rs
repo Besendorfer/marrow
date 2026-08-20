@@ -1,4 +1,4 @@
-use crate::types::FileClassification;
+use crate::types::{FileClassification, LinkedIssue};
 
 // The test-file glob list below is kept in sync BY HAND with `is_test_path`
 // (same file) — the coverage pass uses that matcher to decide which diffs the
@@ -142,7 +142,7 @@ Do NOT include any text before or after the JSON object. Just the JSON."#;
 
 pub const REQUIREMENTS_COVERAGE_PROMPT: &str = r#"You are a code review assistant checking whether a pull request's stated requirements are backed by tests.
 
-Step 1: Extract the explicit requirements or acceptance criteria. When a "USER-PROVIDED REQUIREMENTS" section is present below, extract from IT — it is authoritative — and use the PR description only as supporting context. Otherwise extract from the PR title/description. Never invent or infer a requirement the author didn't state. Skip boilerplate (checklists about code style, formatting, unrelated process items). Extract at most 8 requirements; each must be a short, standalone statement of what the PR is supposed to do or guarantee. Quote each requirement's "text" using the source's own wording as closely as possible (verbatim phrases, not a paraphrase) so re-running this extraction yields identical text. If the source states no real requirements, return {"requirements": [], "orphan_tests": []}.
+Step 1: Extract the explicit requirements or acceptance criteria. When a "USER-PROVIDED REQUIREMENTS" section is present below, extract from IT — it is authoritative — and use the PR description only as supporting context. Otherwise, when a "LINKED ISSUES" section is present, extract from the linked issues and the PR title/description together — issues typically state the acceptance criteria while the description states intent. Otherwise extract from the PR title/description. Never invent or infer a requirement the author didn't state. Skip boilerplate (checklists about code style, formatting, unrelated process items). Extract at most 8 requirements; each must be a short, standalone statement of what the PR is supposed to do or guarantee. Quote each requirement's "text" using the source's own wording as closely as possible (verbatim phrases, not a paraphrase) so re-running this extraction yields identical text. If the source states no real requirements, return {"requirements": [], "orphan_tests": []}.
 
 Step 2: For each requirement, judge it ONLY against the provided test evidence. Evidence comes from up to three sections below: diffs of test files changed in this PR, implementation-file diffs that ADD inline tests (e.g. Rust `#[cfg(test)]` modules), and existing test files unchanged in this PR (shown as full content). In implementation diffs, ONLY the added test code counts as evidence — the implementation changes themselves never make a requirement covered.
 - "covered": a shown test genuinely asserts this requirement. The test may come from any provided section: a changed test-file diff, an existing unchanged test file, or the test code inside an implementation diff.
@@ -241,6 +241,11 @@ fn append_budgeted_file(
 /// `REQUIREMENTS_COVERAGE_PROMPT`'s source-precedence note), letting a
 /// reviewer supply requirements a sparse/missing PR description doesn't
 /// state.
+///
+/// `linked_issues` are the issues this PR closes — an extraction source that
+/// sits below user requirements but alongside the PR description (callers
+/// pass an empty slice when user requirements exist; see the fetch in
+/// `fetch.rs`).
 pub fn build_requirements_coverage_prompt(
     pr_title: &str,
     pr_body: &str,
@@ -249,6 +254,7 @@ pub fn build_requirements_coverage_prompt(
     existing_tests: &[(String, String)],
     changed_paths: &[String],
     user_requirements: Option<&str>,
+    linked_issues: &[LinkedIssue],
 ) -> String {
     const PER_FILE_BUDGET: usize = 1500;
     const TOTAL_BUDGET: usize = 20000;
@@ -272,6 +278,26 @@ pub fn build_requirements_coverage_prompt(
         }
         _ => String::new(),
     };
+
+    // Linked-issue bodies get their own budget pool (issues can be long, and
+    // acceptance criteria usually sit near the top).
+    const ISSUE_PER_ISSUE_BUDGET: usize = 3000;
+    const ISSUE_TOTAL_BUDGET: usize = 8000;
+    let mut linked_issues_section = String::new();
+    if !linked_issues.is_empty() {
+        linked_issues_section
+            .push_str("=== LINKED ISSUES (acceptance criteria often live here) ===\n");
+        let mut issue_remaining = ISSUE_TOTAL_BUDGET;
+        for issue in linked_issues {
+            append_budgeted_file(
+                &mut linked_issues_section,
+                &format!("--- Issue #{}: {} ---\n", issue.number, issue.title),
+                &issue.body,
+                &mut issue_remaining,
+                ISSUE_PER_ISSUE_BUDGET,
+            );
+        }
+    }
 
     let mut diffs = String::new();
     let mut remaining = TOTAL_BUDGET;
@@ -313,10 +339,11 @@ pub fn build_requirements_coverage_prompt(
     }
 
     let mut prompt = format!(
-        "{}\n\n---\n\nPR Title: {}\n\n{}PR Description:\n{}\n\nChanged files ({} total):\n{}\n\n=== TEST FILE DIFFS ===\n\n{}",
+        "{}\n\n---\n\nPR Title: {}\n\n{}{}PR Description:\n{}\n\nChanged files ({} total):\n{}\n\n=== TEST FILE DIFFS ===\n\n{}",
         REQUIREMENTS_COVERAGE_PROMPT,
         pr_title,
         user_requirements_section,
+        linked_issues_section,
         body,
         changed_paths.len(),
         changed_paths.join("\n"),
@@ -638,6 +665,7 @@ mod tests {
             &[],
             &["a.rs".to_string()],
             Some("The endpoint must return 404 for unknown ids."),
+            &[],
         );
         assert!(prompt.contains("=== USER-PROVIDED REQUIREMENTS (authoritative) ==="));
         assert!(prompt.contains("The endpoint must return 404 for unknown ids."));
@@ -653,8 +681,99 @@ mod tests {
             &[],
             &["a.rs".to_string()],
             None,
+            &[],
         );
         assert!(!prompt.contains("=== USER-PROVIDED REQUIREMENTS (authoritative) ==="));
+    }
+
+    fn linked_issue(number: u64, title: &str, body: &str) -> LinkedIssue {
+        LinkedIssue { number, title: title.to_string(), body: body.to_string() }
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_includes_linked_issues_section() {
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &[],
+            &[],
+            &["a.rs".to_string()],
+            None,
+            &[
+                linked_issue(12, "Support dark mode", "The app must honor the OS theme."),
+                linked_issue(34, "Fix crash", "Opening an empty file must not crash."),
+            ],
+        );
+        assert!(prompt.contains("=== LINKED ISSUES (acceptance criteria often live here) ==="));
+        assert!(prompt.contains("--- Issue #12: Support dark mode ---"));
+        assert!(prompt.contains("The app must honor the OS theme."));
+        assert!(prompt.contains("--- Issue #34: Fix crash ---"));
+        assert!(prompt.contains("Opening an empty file must not crash."));
+        // The section sits between the (absent) user requirements and the body.
+        let section = prompt.find("=== LINKED ISSUES").unwrap();
+        let description = prompt.find("PR Description:").unwrap();
+        assert!(section < description);
+        // Step 1 tells the model how to weigh the section.
+        assert!(REQUIREMENTS_COVERAGE_PROMPT
+            .contains(r#"when a "LINKED ISSUES" section is present, extract from the linked issues and the PR title/description together"#));
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_omits_linked_issues_when_empty() {
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &[],
+            &[],
+            &["a.rs".to_string()],
+            None,
+            &[],
+        );
+        assert!(!prompt.contains("=== LINKED ISSUES"));
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_linked_issues_respect_per_issue_budget() {
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &[],
+            &[],
+            &["a.rs".to_string()],
+            None,
+            &[linked_issue(1, "Big", &"y".repeat(3500))],
+        );
+        // 3500 chars > the 3000-char per-issue cap.
+        assert!(prompt.contains("--- Issue #1: Big ---"));
+        assert!(prompt.contains("... (truncated)"));
+        assert!(prompt.contains(&"y".repeat(3000)));
+        assert!(!prompt.contains(&"y".repeat(3001)));
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_linked_issues_respect_total_budget() {
+        // Four 3000-char issues against the 8000-char pool: full, full,
+        // truncated to the 2000 remaining, then dropped entirely.
+        let issues: Vec<LinkedIssue> =
+            (1..=4).map(|n| linked_issue(n, "Issue", &"z".repeat(3000))).collect();
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &[],
+            &[],
+            &["a.rs".to_string()],
+            None,
+            &issues,
+        );
+        assert!(prompt.contains("--- Issue #1: Issue ---"));
+        assert!(prompt.contains("--- Issue #2: Issue ---"));
+        assert!(prompt.contains("--- Issue #3: Issue ---"));
+        assert!(!prompt.contains("--- Issue #4: Issue ---"));
+        assert!(prompt.contains("... (truncated)"));
     }
 
     #[test]
@@ -688,6 +807,7 @@ mod tests {
             &[("tests/old.rs".to_string(), "fn existing() {}".to_string())],
             &["src/impl.rs".to_string()],
             None,
+            &[],
         );
         assert!(prompt.contains("=== TEST FILE: tests/a.rs ==="));
         assert!(prompt.contains("=== IMPLEMENTATION DIFFS WITH INLINE TESTS ==="));
@@ -709,6 +829,7 @@ mod tests {
             &[],
             &["src/impl.rs".to_string()],
             None,
+            &[],
         );
         assert!(!prompt.contains("(no test files changed in this PR)"));
 
@@ -721,6 +842,7 @@ mod tests {
             &[("tests/old.rs".to_string(), "fn existing() {}".to_string())],
             &["src/impl.rs".to_string()],
             None,
+            &[],
         );
         assert!(prompt.contains("(no test files changed in this PR)"));
         assert!(!prompt.contains("=== IMPLEMENTATION DIFFS WITH INLINE TESTS ==="));
@@ -737,6 +859,7 @@ mod tests {
             &[("tests/big.rs".to_string(), big)],
             &["src/impl.rs".to_string()],
             None,
+            &[],
         );
         // 2500 chars > the 2000-char per-file cap for existing test files.
         assert!(prompt.contains("=== EXISTING TEST FILE: tests/big.rs ==="));
