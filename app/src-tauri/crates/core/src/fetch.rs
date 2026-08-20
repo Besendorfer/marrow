@@ -7,7 +7,7 @@ use crate::pr_parser::parse_pr_ref;
 use crate::pr_requirements;
 use crate::prompts::{
     build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_requirements_coverage_prompt,
-    build_summary_prompt, build_triage_prompt, is_test_path, PriorNote,
+    build_summary_prompt, build_triage_prompt, has_inline_test_markers, is_test_path, PriorNote,
 };
 use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, RequirementsCoverage,
@@ -84,18 +84,35 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         .filter(|f| is_test_path(&f.path))
         .map(|f| (f.path.clone(), f.unified_diff.clone()))
         .collect();
+    let inline_test_diffs: Vec<(String, String)> = manifest
+        .files
+        .iter()
+        .filter(|f| !is_test_path(&f.path) && has_inline_test_markers(&f.unified_diff))
+        .map(|f| (f.path.clone(), f.unified_diff.clone()))
+        .collect();
     let changed_paths: Vec<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
+
+    let github = GithubClient::new(resolve_github_token(settings));
+    let existing_tests =
+        fetch_related_existing_tests(&github, &parsed.owner, &parsed.repo, &manifest.head_sha, &changed_paths).await;
 
     let prompt = build_requirements_coverage_prompt(
         &manifest.pr_title,
         &manifest.body,
         &test_diffs,
+        &inline_test_diffs,
+        &existing_tests,
         &changed_paths,
         user_requirements_text.as_deref(),
     );
     let ai = AiBackend::from_settings(settings).await?;
     let raw = ai.invoke(&prompt).await?;
-    let known_tests: HashSet<&str> = test_diffs.iter().map(|(p, _)| p.as_str()).collect();
+    let known_tests: HashSet<&str> = test_diffs
+        .iter()
+        .chain(inline_test_diffs.iter())
+        .chain(existing_tests.iter())
+        .map(|(p, _)| p.as_str())
+        .collect();
     // An unparseable response is an error, not "no requirements" — erroring
     // out here keeps the previously-good coverage in the cache instead of
     // silently wiping it. (finalize returning None — nothing extracted — is
@@ -219,6 +236,15 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         .filter(|p| is_test_path(p))
         .filter_map(|p| per_file_diff_map.get(p).map(|d| (p.clone(), d.clone())))
         .collect();
+    // Implementation files whose diff ADDS inline tests (Rust `#[cfg(test)]`
+    // modules live in the file they test, invisible to is_test_path) — extra
+    // coverage evidence alongside the changed test files.
+    let inline_test_diffs: Vec<(String, String)> = file_list
+        .iter()
+        .filter(|p| !is_test_path(p))
+        .filter_map(|p| per_file_diff_map.get(p).map(|d| (p.clone(), d.clone())))
+        .filter(|(_, d)| has_inline_test_markers(d))
+        .collect();
     let mut highlights_by_path: HashMap<String, Vec<Highlight>> = HashMap::new();
     let mut summary = String::new();
     let mut change_groups: Vec<ChangeGroup> = Vec::new();
@@ -265,8 +291,23 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         } else {
             String::new()
         };
+        // Existing unchanged test files related to the changed files — extra
+        // coverage evidence fetched only when the coverage pass will run.
+        let existing_tests: Vec<(String, String)> = if run_coverage {
+            fetch_related_existing_tests(&github, &parsed.owner, &parsed.repo, &head_sha, &file_list).await
+        } else {
+            Vec::new()
+        };
         let coverage_prompt = if run_coverage {
-            build_requirements_coverage_prompt(&pr_title, &pr_body, &test_diffs, &file_list, user_requirements_text)
+            build_requirements_coverage_prompt(
+                &pr_title,
+                &pr_body,
+                &test_diffs,
+                &inline_test_diffs,
+                &existing_tests,
+                &file_list,
+                user_requirements_text,
+            )
         } else {
             String::new()
         };
@@ -357,7 +398,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 .ok()
                 .and_then(|raw| extract_json_object(&raw).ok())
                 .and_then(|json| serde_json::from_value(json).ok());
-            let known_tests: HashSet<&str> = test_diffs.iter().map(|(p, _)| p.as_str()).collect();
+            let known_tests: HashSet<&str> = test_diffs
+                .iter()
+                .chain(inline_test_diffs.iter())
+                .chain(existing_tests.iter())
+                .map(|(p, _)| p.as_str())
+                .collect();
             requirements_coverage = parsed_cov.and_then(|cov| finalize_coverage(cov, &known_tests));
         }
 
@@ -614,6 +660,76 @@ fn finalize_coverage(
     } else {
         Some(cov)
     }
+}
+
+/// Pick existing test files (from the repo tree at head) related to this
+/// PR's changed files: for each changed non-test file's stem (basename minus
+/// extension, minus a trailing ".test"/".spec"), a candidate test path scores
+/// 1 per stem contained in its basename. Top 5 by (score desc, path asc).
+pub(crate) fn pick_related_test_paths(
+    tree_paths: &[String],
+    changed_paths: &[String],
+    already_included: &HashSet<&str>,
+) -> Vec<String> {
+    let mut stems: Vec<String> = changed_paths
+        .iter()
+        .filter(|p| !is_test_path(p))
+        .filter_map(|p| {
+            let base = p.rsplit('/').next().unwrap_or(p);
+            let stem = base.rsplit_once('.').map(|(s, _)| s).unwrap_or(base);
+            let stem = stem
+                .strip_suffix(".test")
+                .or_else(|| stem.strip_suffix(".spec"))
+                .unwrap_or(stem)
+                .to_lowercase();
+            // Short stems ("ui", "db") match far too many candidates.
+            if stem.chars().count() >= 3 { Some(stem) } else { None }
+        })
+        .collect();
+    stems.sort();
+    stems.dedup();
+
+    let mut scored: Vec<(usize, &String)> = tree_paths
+        .iter()
+        .filter(|p| is_test_path(p) && !already_included.contains(p.as_str()))
+        .filter_map(|p| {
+            let base = p.rsplit('/').next().unwrap_or(p).to_lowercase();
+            let score = stems.iter().filter(|s| base.contains(s.as_str())).count();
+            if score > 0 { Some((score, p)) } else { None }
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    scored.into_iter().take(5).map(|(_, p)| p.clone()).collect()
+}
+
+/// Fetch the contents (at `head_sha`) of existing test files unchanged in
+/// this PR but related to its changed files — coverage evidence for
+/// requirements whose tests the PR didn't need to touch. Best-effort by
+/// design: any failure yields fewer (or no) files, never a failed pass.
+async fn fetch_related_existing_tests(
+    github: &GithubClient,
+    owner: &str,
+    repo: &str,
+    head_sha: &str,
+    changed_paths: &[String],
+) -> Vec<(String, String)> {
+    let Ok(tree_paths) = github.get_tree_paths(owner, repo, head_sha).await else {
+        return Vec::new();
+    };
+    // Every changed path is excluded: changed test files already appear as
+    // diffs, and a changed file is by definition not an "unchanged" test.
+    let already_included: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
+    let picked = pick_related_test_paths(&tree_paths, changed_paths, &already_included);
+
+    let mut out = Vec::new();
+    for path in picked {
+        if let Ok(content) = github.get_file_content(owner, repo, &path, head_sha).await {
+            if !content.is_empty() {
+                out.push((path, content));
+            }
+        }
+    }
+    out
 }
 
 /// Build the prior-triage context fed back into the highlight prompt: for
@@ -1479,5 +1595,72 @@ mod tests {
         // All statuses unknown → the pass reports nothing at all.
         let cov = RequirementsCoverage { requirements: vec![req("mystery")], orphan_tests: vec![] };
         assert!(finalize_coverage(cov, &known).is_none());
+    }
+
+    use super::pick_related_test_paths;
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pick_related_test_paths_matches_by_stem() {
+        let tree = strs(&["src/digest.ts", "src/digest.test.ts", "tests/parser.rs", "README.md"]);
+        let changed = strs(&["src/digest.ts"]);
+        let already = HashSet::new();
+        let picked = pick_related_test_paths(&tree, &changed, &already);
+        assert_eq!(picked, vec!["src/digest.test.ts".to_string()]);
+    }
+
+    #[test]
+    fn pick_related_test_paths_skips_unrelated_and_already_included() {
+        let tree = strs(&["src/digest.test.ts", "tests/parser.rs", "tests/unrelated.rs"]);
+        let changed = strs(&["src/digest.ts", "src/parser.rs"]);
+        let already: HashSet<&str> = ["src/digest.test.ts"].into_iter().collect();
+        let picked = pick_related_test_paths(&tree, &changed, &already);
+        assert_eq!(picked, vec!["tests/parser.rs".to_string()]);
+    }
+
+    #[test]
+    fn pick_related_test_paths_caps_at_five_deterministically() {
+        let tree: Vec<String> = (0..9).map(|i| format!("tests/digest_{}.rs", i)).collect();
+        let changed = strs(&["src/digest.rs"]);
+        let already = HashSet::new();
+        let picked = pick_related_test_paths(&tree, &changed, &already);
+        // All score 1 → tie broken by path asc, capped at 5.
+        assert_eq!(
+            picked,
+            strs(&[
+                "tests/digest_0.rs",
+                "tests/digest_1.rs",
+                "tests/digest_2.rs",
+                "tests/digest_3.rs",
+                "tests/digest_4.rs",
+            ])
+        );
+    }
+
+    #[test]
+    fn pick_related_test_paths_ranks_by_score_then_path() {
+        let tree = strs(&["tests/z_digest_parser.rs", "tests/digest_only.rs", "tests/parser_only.rs"]);
+        let changed = strs(&["src/digest.rs", "src/parser.rs"]);
+        let already = HashSet::new();
+        let picked = pick_related_test_paths(&tree, &changed, &already);
+        // Two-stem match outranks single-stem matches despite its later path.
+        assert_eq!(
+            picked,
+            strs(&["tests/z_digest_parser.rs", "tests/digest_only.rs", "tests/parser_only.rs"])
+        );
+    }
+
+    #[test]
+    fn pick_related_test_paths_ignores_short_stems_and_changed_test_files() {
+        // "db.rs" stem is too short to seed matches; changed test files don't
+        // seed stems either.
+        let tree = strs(&["tests/db_backup.rs", "tests/digest.rs"]);
+        let changed = strs(&["src/db.rs", "tests/digest.rs"]);
+        let already = HashSet::new();
+        let picked = pick_related_test_paths(&tree, &changed, &already);
+        assert!(picked.is_empty());
     }
 }
