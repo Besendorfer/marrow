@@ -28,6 +28,9 @@ describe("isChatAction", () => {
       { action: "show_comments", open: true },
       { action: "draft_comment", path: "app/src/App.tsx", line: 42, body: "Consider a guard here." },
       { action: "draft_comment", path: "app/src/App.tsx", line: 42, start_line: 40, body: "This range races." },
+      { action: "draft_pr_comment", body: "Nice cleanup overall — one nit inline." },
+      // Extra fields are tolerated, consistent with every other action.
+      { action: "draft_pr_comment", body: "LGTM", extra: true },
     ];
     for (const a of valid) expect(isChatAction(a)).toBe(true);
   });
@@ -54,6 +57,9 @@ describe("isChatAction", () => {
       { action: "draft_comment", path: "x.ts", line: 5, start_line: 5, body: "t" }, // start_line must be < line
       { action: "draft_comment", path: "x.ts", line: 5, start_line: 9, body: "t" }, // inverted range
       { action: "draft_comment", path: "x.ts", line: 0, body: "t" }, // line must be positive
+      { action: "draft_pr_comment" }, // missing body
+      { action: "draft_pr_comment", body: "" }, // empty body
+      { action: "draft_pr_comment", body: 7 }, // body must be a string
     ];
     for (const a of invalid) expect(isChatAction(a)).toBe(false);
   });

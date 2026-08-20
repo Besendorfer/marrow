@@ -62,7 +62,7 @@ Guidelines:
 - Be concise and direct. Reviewers want fast, high-signal answers — a few sentences, not an essay.
 - When useful, reference specific files and line numbers from the diff.
 - Use Markdown. Put code in fenced code blocks.
-- You are reviewing, not writing the PR — don't propose to make edits; explain, assess risk, and surface what's worth a closer look. The one exception: when the user asks you to comment on something, drafting a PR comment for them (via the draft_comment action) is allowed and encouraged — the user reviews and posts it themselves."#;
+- You are reviewing, not writing the PR — don't propose to make edits; explain, assess risk, and surface what's worth a closer look. The one exception: when the user asks you to comment on something, drafting a PR comment for them (via the draft_comment / draft_pr_comment actions) is allowed and encouraged — the user reviews and posts it themselves."#;
 
 /// Documents the `marrow-action` fenced-block protocol: a way for the model to
 /// drive the app's view (open a file, flip a filter, hop to a commit) instead
@@ -87,6 +87,7 @@ Available actions (the complete list — never invent others):
 - {"action":"set_view_mode","mode":"split|unified"} — set the diff layout
 - {"action":"show_comments","open":true|false} — open or close the comments panel
 - {"action":"draft_comment","path":"<repo path>","line":<number>,"start_line":<optional number>,"body":"<comment text>"} — propose a PR comment draft: the app opens its inline comment composer at that location with `body` prefilled, and the user edits and posts it themselves. `line` is the anchor (last) line on the head side; optional `start_line` (must be < line) makes it a multi-line range. Anchor ONLY to line numbers visible in the provided diffs as changed (+) or context lines within hunks — GitHub rejects comments anchored outside diff hunks. Write `body` as the final comment in the reviewer's own voice: concise and actionable, no AI-severity prefixes, no meta-commentary.
+- {"action":"draft_pr_comment","body":"<comment text>"} — propose a PR-level (conversation) comment draft, not anchored to any file or line: the app opens the Comments panel with its compose box prefilled, and the user edits and posts it themselves. Use it for overall feedback on the PR. Same `body` rules as draft_comment: final comment in the reviewer's own voice, no AI prefixes.
 
 Usage rules:
 - Act only when the user asks to see/navigate/show something, or it clearly helps them get there — a plain answer needs no actions.
@@ -94,7 +95,7 @@ Usage rules:
 - Put the action block AFTER the sentence explaining what you're doing, never instead of it.
 - Never invent a path — only use files listed under FILES IN SCOPE.
 - One JSON object per fence; use separate fences for multiple actions.
-- draft_comment only when the user asked for a comment (or explicitly confirm intent first), and at most 2 drafts per reply. Its chip never runs automatically — the user clicks it to open the composer, so nothing is posted without them."#;
+- draft_comment / draft_pr_comment only when the user asked for a comment (or explicitly confirm intent first), and at most 2 drafts per reply shared across both. Neither chip ever runs automatically — the user clicks it to open the composer, so nothing is posted without them."#;
 
 /// Documents the `marrow-card` fenced-block protocol: a way for the model to
 /// present a tabular or enumerated answer as a structured, renderable card
@@ -311,8 +312,9 @@ mod tests {
         // fixed-overhead margin covers the constant instructional text
         // (preamble, UI actions protocol, answer cards protocol, repo tools
         // protocol, section labels) — bumped when the repo-tools protocol
-        // (issue #150) and the draft_comment action (issue #185) were added.
-        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 6500);
+        // (issue #150) and the draft_comment and draft_pr_comment actions
+        // (issue #185) were added.
+        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 7000);
     }
 
     #[test]

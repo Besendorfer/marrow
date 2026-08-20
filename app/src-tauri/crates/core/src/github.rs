@@ -1,4 +1,4 @@
-use crate::types::{CheckAnnotation, CheckFailures, CheckRunInfo, CommentAuthor, CommitDiff, CommitDiffFile, MyReviewState, PrChecksStatus, PrCommit, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CheckAnnotation, CheckFailures, CheckRunInfo, CommentAuthor, CommitDiff, CommitDiffFile, MyReviewState, PrChecksStatus, PrCommit, PrConversationComment, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
 use std::collections::HashMap;
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -1476,6 +1476,60 @@ impl GithubClient {
             .ok_or("Missing thread in response")?;
 
         Ok(parse_review_thread(thread))
+    }
+
+    /// Fetch the most recent top-level conversation comments on a PR (GitHub
+    /// "issue comments") — the ones `add_pr_comment` creates, not review
+    /// threads (issue #185). Newest 50, oldest first.
+    pub async fn get_pr_conversation(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<PrConversationComment>, String> {
+        let query = format!(
+            r#"{{
+                repository(owner: "{}", name: "{}") {{
+                    pullRequest(number: {}) {{
+                        comments(last: 50) {{
+                            nodes {{
+                                id
+                                author {{ login }}
+                                body
+                                createdAt
+                                url
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            owner, repo, pr_number
+        );
+
+        let body = serde_json::json!({ "query": query });
+        let result = self.graphql_request(body).await?;
+
+        let nodes = result
+            .pointer("/data/repository/pullRequest/comments/nodes")
+            .and_then(|v| v.as_array())
+            .ok_or("Missing comments in response")?;
+
+        Ok(nodes
+            .iter()
+            .filter_map(|c| {
+                Some(PrConversationComment {
+                    id: c.get("id")?.as_str()?.to_string(),
+                    author: c
+                        .pointer("/author/login")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("ghost")
+                        .to_string(),
+                    body: c.get("body")?.as_str()?.to_string(),
+                    created_at: c.get("createdAt")?.as_str()?.to_string(),
+                    url: c.get("url")?.as_str()?.to_string(),
+                })
+            })
+            .collect())
     }
 
     /// Add a top-level conversation comment to a PR (a GitHub "issue comment").

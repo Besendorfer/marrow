@@ -6636,6 +6636,23 @@ mark.search-highlight-current {
   background: var(--diff-remove-bg);
 }
 
+/* PR-level conversation section (issue #185) — sits above the per-file
+   thread groups; the compose box is always available. */
+.comments-panel-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--chip-border);
+}
+
+/* Static section label — same look as the file-group headers, sans button. */
+.comments-panel-section-header {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .comments-panel-file-group {
   display: flex;
   flex-direction: column;

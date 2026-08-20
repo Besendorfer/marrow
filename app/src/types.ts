@@ -211,6 +211,16 @@ export interface ReviewThread {
   comments: ReviewComment[];
 }
 
+/** A top-level PR conversation comment (GitHub "issue comment") — not part of
+ * a review thread and not anchored to a diff line (issue #185). */
+export interface PrConversationComment {
+  id: string;
+  author: string;
+  body: string;
+  created_at: string;
+  url: string;
+}
+
 export type CommentThreadsState =
   | { status: "idle" }
   | { status: "loading" }
@@ -275,7 +285,11 @@ export type ChatAction =
   // comment composer prefilled with `body`; the user edits and posts it.
   // `line` anchors the comment (last line, head side); optional `start_line`
   // (< line) makes it a multi-line range.
-  | { action: "draft_comment"; path: string; line: number; start_line?: number; body: string };
+  | { action: "draft_comment"; path: string; line: number; start_line?: number; body: string }
+  // Manual-only like draft_comment — clicking the chip opens the Comments
+  // panel with the PR-level compose box prefilled with `body`; the user edits
+  // and posts. Not anchored to any file or line.
+  | { action: "draft_pr_comment"; body: string };
 
 /** A structured answer card the chat model can emit as a fenced ```marrow-card
  * JSON block (see `CHAT_ANSWER_CARDS` in `crates/core/src/chat.rs`, the single
@@ -397,6 +411,12 @@ export interface Tab {
   checkAnnotations: CheckAnnotationsState;
   /** Whether the right-dock comments panel is open (mutually exclusive with `chat.open`). */
   commentsOpen?: boolean;
+  /** Top-level PR conversation comments (issue #185). null/undefined = not
+   * loaded yet — fetched best-effort alongside the review threads. */
+  prConversation?: PrConversationComment[] | null;
+  /** Pending PR-level comment draft (from the chat draft_pr_comment chip) —
+   * prefills the Comments panel's compose box. null = no draft. */
+  prCommentDraft?: string | null;
   sidebarView: SidebarView;
   isRefreshing?: boolean;
   lastCommentCount?: number;

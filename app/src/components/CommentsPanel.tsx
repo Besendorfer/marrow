@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import type { CommentThreadsState, ReviewComment, ReviewThread } from "../types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CommentThreadsState, PrConversationComment, ReviewComment, ReviewThread } from "../types";
 import { getFileName, timeAgo } from "../utils";
 import { CommentBodyRendered, ReactionBar, detectLanguage } from "./DiffViewer";
 
@@ -7,6 +7,16 @@ type CommentsFilter = "unresolved" | "all";
 
 interface CommentsPanelProps {
   commentThreads: CommentThreadsState;
+  /** Top-level PR conversation comments (issue #185). null = not loaded yet
+   * (fetched best-effort alongside the threads) — the list area stays empty. */
+  conversation: PrConversationComment[] | null;
+  /** Pending draft from the chat draft_pr_comment chip — seeds the compose
+   * box (which remounts per new draft). null = start empty. */
+  composeInitialBody: string | null;
+  /** Post a PR-level conversation comment; resolves true on success. */
+  onPostPrComment: (body: string) => Promise<boolean>;
+  /** Discard the pending compose draft (after a successful post or Cancel). */
+  onClearComposeDraft: () => void;
   onRetry: () => void;
   onReply: (threadId: string, commentId: string, body: string) => void;
   onToggleResolved: (threadId: string, resolve: boolean) => void;
@@ -231,6 +241,78 @@ function ThreadCard({
   );
 }
 
+/** Always-available compose box for a new PR-level conversation comment.
+ * Remounted (keyed on the draft) whenever a new chat draft arrives, so the
+ * prefill is mount-only — same pattern as DiffViewer's InlineCommentForm. */
+function ConversationComposeForm({
+  initialBody,
+  onPost,
+  onClearDraft,
+}: {
+  initialBody: string | null;
+  onPost: (body: string) => Promise<boolean>;
+  onClearDraft: () => void;
+}) {
+  const [text, setText] = useState(initialBody ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Pre-filled drafts start with the caret at the end so the reviewer can
+  // edit immediately; an empty composer is unaffected. Mount-only by design
+  // (see the key on this component) — mirrors InlineCommentForm.
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (ta && ta.value) ta.setSelectionRange(ta.value.length, ta.value.length);
+  }, []);
+
+  async function handleSubmit() {
+    if (!text.trim() || submitting) return;
+    setSubmitting(true);
+    const ok = await onPost(text.trim());
+    setSubmitting(false);
+    if (ok) {
+      // Parent also clears the draft on success; this covers the un-prefilled
+      // case and resets the box either way.
+      setText("");
+      if (initialBody !== null) onClearDraft();
+    }
+    // On failure the text stays — the user shouldn't lose their comment.
+  }
+
+  return (
+    <div className="thread-reply-form">
+      <textarea
+        ref={textareaRef}
+        className="reply-textarea"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Comment on this PR…"
+        rows={3}
+        autoFocus={initialBody !== null}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSubmit();
+        }}
+      />
+      <div className="reply-actions">
+        {initialBody !== null && (
+          <button
+            className="reply-cancel"
+            onClick={() => {
+              setText("");
+              onClearDraft();
+            }}
+          >
+            Cancel
+          </button>
+        )}
+        <button className="reply-submit" disabled={!text.trim() || submitting} onClick={handleSubmit}>
+          Post
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Sort key: unresolved threads first, then by line number. */
 function threadSortKey(t: ReviewThread): number {
   return (t.is_resolved ? 1_000_000 : 0) + (t.line ?? t.original_line ?? 0);
@@ -238,6 +320,10 @@ function threadSortKey(t: ReviewThread): number {
 
 export function CommentsPanel({
   commentThreads,
+  conversation,
+  composeInitialBody,
+  onPostPrComment,
+  onClearComposeDraft,
   onRetry,
   onReply,
   onToggleResolved,
@@ -309,6 +395,29 @@ export function CommentsPanel({
       </div>
 
       <div className="comments-panel-body">
+        <div className="comments-panel-conversation">
+          <div className="comments-panel-section-header">PR conversation</div>
+          {conversation !== null && conversation.length === 0 && (
+            <div className="comments-panel-empty">No conversation comments yet</div>
+          )}
+          {conversation?.map((c) => (
+            <div key={c.id} className="thread-comment">
+              <div className="comment-header">
+                <span className="comment-author">@{c.author}</span>
+                <span className="comment-time">{timeAgo(c.created_at)}</span>
+              </div>
+              <CommentBodyRendered body={c.body} />
+            </div>
+          ))}
+          {/* Keyed so a new chat draft remounts the form and takes over the box. */}
+          <ConversationComposeForm
+            key={composeInitialBody ?? "blank"}
+            initialBody={composeInitialBody}
+            onPost={onPostPrComment}
+            onClearDraft={onClearComposeDraft}
+          />
+        </div>
+
         {commentThreads.status === "error" ? (
           <div className="comments-panel-error" role="alert">
             {commentThreads.message}
