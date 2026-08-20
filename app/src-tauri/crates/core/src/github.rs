@@ -1481,6 +1481,11 @@ impl GithubClient {
     /// Fetch the most recent top-level conversation comments on a PR (GitHub
     /// "issue comments") — the ones `add_pr_comment` creates, not review
     /// threads (issue #185). Newest 50, oldest first.
+    ///
+    /// The 50-comment cap is deliberate and unpaginated: it bounds the query
+    /// for the panel's supplementary section, and 50 recent comments covers
+    /// any sanely-sized PR conversation. Add pagination only when a real PR
+    /// demonstrates the need (decision on PR #187).
     pub async fn get_pr_conversation(
         &self,
         owner: &str,
