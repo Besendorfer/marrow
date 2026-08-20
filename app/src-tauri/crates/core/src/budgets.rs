@@ -25,7 +25,7 @@ pub const HIGHLIGHT_BODY: usize = 10_000;
 
 /// Triage pass, per-file diff cap (ordering needs signatures/imports, not
 /// full bodies — still tighter than the highlight pass).
-pub const TRIAGE_PER_FILE: usize = 10_000;
+pub const TRIAGE_PER_FILE: usize = 25_000;
 /// Triage pass, shared diff pool.
 /// Worst case: 100k diffs + file info + instructions ≈ 110k chars.
 pub const TRIAGE_TOTAL: usize = 100_000;
