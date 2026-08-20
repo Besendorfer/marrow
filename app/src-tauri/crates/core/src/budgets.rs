@@ -35,9 +35,9 @@ pub const COVERAGE_PER_FILE: usize = 25_000;
 /// Coverage pass, shared pool for changed test + inline-test diffs.
 pub const COVERAGE_TOTAL: usize = 100_000;
 /// Coverage pass, per-file cap for existing (unchanged) test files.
-pub const COVERAGE_EXISTING_PER_FILE: usize = 10_000;
+pub const COVERAGE_EXISTING_PER_FILE: usize = 25_000;
 /// Coverage pass, shared pool for existing test files.
-pub const COVERAGE_EXISTING_TOTAL: usize = 40_000;
+pub const COVERAGE_EXISTING_TOTAL: usize = 75_000;
 /// Coverage pass, per-issue cap for linked-issue text. Reserved: no builder
 /// consumes linked issues yet — sized here so that section lands pre-budgeted.
 pub const COVERAGE_ISSUE_PER_ISSUE: usize = 5_000;
