@@ -16,6 +16,19 @@ struct ContentsResponse {
     encoding: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct TreeResponse {
+    #[serde(default)]
+    tree: Vec<TreeEntry>,
+}
+
+#[derive(Deserialize)]
+struct TreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+}
+
 /// One entry of a directory listing from the contents API.
 pub struct DirEntry {
     pub name: String,
@@ -909,6 +922,35 @@ impl GithubClient {
             Some(content) => Ok(content),
             None => Ok(String::new()),
         }
+    }
+
+    /// List all blob (file) paths in the repo tree at `ref_sha`. GitHub
+    /// truncates very large trees (`"truncated": true` in the response) —
+    /// callers get whatever was returned; best-effort by design.
+    pub async fn get_tree_paths(
+        &self,
+        owner: &str,
+        repo: &str,
+        ref_sha: &str,
+    ) -> Result<Vec<String>, String> {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+            owner, repo, ref_sha
+        );
+
+        let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
+
+        let tree: TreeResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse git tree: {}", e))?;
+
+        Ok(tree
+            .tree
+            .into_iter()
+            .filter(|e| e.entry_type == "blob")
+            .map(|e| e.path)
+            .collect())
     }
 
     /// Search this repository's code (GitHub only indexes the default

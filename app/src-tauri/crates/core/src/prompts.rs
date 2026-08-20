@@ -144,14 +144,14 @@ pub const REQUIREMENTS_COVERAGE_PROMPT: &str = r#"You are a code review assistan
 
 Step 1: Extract the explicit requirements or acceptance criteria. When a "USER-PROVIDED REQUIREMENTS" section is present below, extract from IT — it is authoritative — and use the PR description only as supporting context. Otherwise extract from the PR title/description. Never invent or infer a requirement the author didn't state. Skip boilerplate (checklists about code style, formatting, unrelated process items). Extract at most 8 requirements; each must be a short, standalone statement of what the PR is supposed to do or guarantee. Quote each requirement's "text" using the source's own wording as closely as possible (verbatim phrases, not a paraphrase) so re-running this extraction yields identical text. If the source states no real requirements, return {"requirements": [], "orphan_tests": []}.
 
-Step 2: For each requirement, judge it ONLY against the provided test-file diffs (you are not shown the implementation, only tests):
-- "covered": a shown test genuinely asserts this requirement.
+Step 2: For each requirement, judge it ONLY against the provided test evidence. Evidence comes from up to three sections below: diffs of test files changed in this PR, implementation-file diffs that ADD inline tests (e.g. Rust `#[cfg(test)]` modules), and existing test files unchanged in this PR (shown as full content). In implementation diffs, ONLY the added test code counts as evidence — the implementation changes themselves never make a requirement covered.
+- "covered": a shown test genuinely asserts this requirement. The test may come from any provided section: a changed test-file diff, an existing unchanged test file, or the test code inside an implementation diff.
 - "partial": a shown test touches this requirement but asserts something weaker than stated — say what's missing in "note".
 - "uncovered": no shown test exercises this requirement.
 - "untestable": not verifiable by an automated test (e.g. visual polish, subjective wording).
-Some diffs may end with "... (truncated)". If truncation is what prevents you from confirming coverage, prefer "partial" with a note saying the diff was cut — never a confident "uncovered".
+Some diffs or files may end with "... (truncated)". If truncation is what prevents you from confirming coverage, prefer "partial" with a note saying the content was cut — never a confident "uncovered".
 
-For each requirement's "tests", list ONLY paths from the test files you were given — never invent a path.
+For each requirement's "tests", list ONLY paths from the files you were given, citing the file's path regardless of which section it appeared in — never invent a path.
 
 Step 3: List "orphan_tests" — provided test files whose new assertions match none of the extracted requirements. For each, "note" says what it actually tests instead.
 
@@ -183,9 +183,57 @@ pub fn is_test_path(path: &str) -> bool {
     })
 }
 
+/// Detect inline tests ADDED by a diff to an implementation file — Rust
+/// `#[cfg(test)]` modules live inside the file they test, invisible to the
+/// path-based `is_test_path`. Only added lines count: a marker on a context
+/// or removed line is pre-existing (or deleted) test code, not evidence this
+/// PR added tests.
+pub fn has_inline_test_markers(unified_diff: &str) -> bool {
+    unified_diff.lines().any(|line| {
+        line.starts_with('+')
+            && !line.starts_with("+++")
+            && (line.contains("#[test]")
+                || line.contains("#[cfg(test)]")
+                || line.contains("mod tests"))
+    })
+}
+
+/// Append one budgeted file section (header + possibly-truncated text) to
+/// `out`, drawing from the shared `remaining` pool. Mirrors the per-file
+/// loop in `build_triage_prompt`.
+fn append_budgeted_file(
+    out: &mut String,
+    header: &str,
+    text: &str,
+    remaining: &mut usize,
+    per_file_cap: usize,
+) {
+    if *remaining == 0 {
+        return;
+    }
+    out.push_str(header);
+    let cap = per_file_cap.min(*remaining);
+    if text.chars().count() > cap {
+        let snippet: String = text.chars().take(cap).collect();
+        out.push_str(&snippet);
+        out.push_str("\n... (truncated)\n");
+        *remaining = remaining.saturating_sub(cap);
+    } else {
+        out.push_str(text);
+        *remaining = remaining.saturating_sub(text.chars().count());
+    }
+    out.push_str("\n\n");
+}
+
 /// Build the requirements-coverage prompt: PR title/body plus the diffs of
 /// changed test files only (the model judges coverage from tests, never from
 /// implementation). Budgeted like `build_triage_prompt`.
+///
+/// `inline_test_diffs` are implementation-file diffs that add inline tests
+/// (see `has_inline_test_markers`); they share `test_diffs`' budget pool.
+/// `existing_tests` are (path, full content) of unchanged test files related
+/// to the PR's changes, under their own smaller budget so full files never
+/// crowd out the PR's own test changes.
 ///
 /// `user_requirements` is the reviewer's local override (issue #179 phase 2,
 /// see `pr_requirements.rs`) — when present and non-empty it's inserted
@@ -197,11 +245,15 @@ pub fn build_requirements_coverage_prompt(
     pr_title: &str,
     pr_body: &str,
     test_diffs: &[(String, String)],
+    inline_test_diffs: &[(String, String)],
+    existing_tests: &[(String, String)],
     changed_paths: &[String],
     user_requirements: Option<&str>,
 ) -> String {
     const PER_FILE_BUDGET: usize = 1500;
     const TOTAL_BUDGET: usize = 20000;
+    const EXISTING_PER_FILE_BUDGET: usize = 2000;
+    const EXISTING_TOTAL_BUDGET: usize = 10000;
 
     let body = match truncate_chars(pr_body, 10000) {
         Some(t) => format!("{}\n... (truncated)", t),
@@ -223,28 +275,44 @@ pub fn build_requirements_coverage_prompt(
 
     let mut diffs = String::new();
     let mut remaining = TOTAL_BUDGET;
-    if test_diffs.is_empty() {
+    if test_diffs.is_empty() && inline_test_diffs.is_empty() {
         diffs.push_str("(no test files changed in this PR)\n");
     }
     for (path, diff) in test_diffs {
-        if remaining == 0 {
-            break;
-        }
-        diffs.push_str(&format!("=== TEST FILE: {} ===\n", path));
-        let cap = PER_FILE_BUDGET.min(remaining);
-        if diff.chars().count() > cap {
-            let snippet: String = diff.chars().take(cap).collect();
-            diffs.push_str(&snippet);
-            diffs.push_str("\n... (truncated)\n");
-            remaining = remaining.saturating_sub(cap);
-        } else {
-            diffs.push_str(diff);
-            remaining = remaining.saturating_sub(diff.chars().count());
-        }
-        diffs.push_str("\n\n");
+        append_budgeted_file(
+            &mut diffs,
+            &format!("=== TEST FILE: {} ===\n", path),
+            diff,
+            &mut remaining,
+            PER_FILE_BUDGET,
+        );
     }
 
-    format!(
+    // Same pool as test_diffs: inline tests are the same kind of evidence.
+    let mut inline_diffs = String::new();
+    for (path, diff) in inline_test_diffs {
+        append_budgeted_file(
+            &mut inline_diffs,
+            &format!("=== IMPLEMENTATION FILE: {} ===\n", path),
+            diff,
+            &mut remaining,
+            PER_FILE_BUDGET,
+        );
+    }
+
+    let mut existing = String::new();
+    let mut existing_remaining = EXISTING_TOTAL_BUDGET;
+    for (path, content) in existing_tests {
+        append_budgeted_file(
+            &mut existing,
+            &format!("=== EXISTING TEST FILE: {} ===\n", path),
+            content,
+            &mut existing_remaining,
+            EXISTING_PER_FILE_BUDGET,
+        );
+    }
+
+    let mut prompt = format!(
         "{}\n\n---\n\nPR Title: {}\n\n{}PR Description:\n{}\n\nChanged files ({} total):\n{}\n\n=== TEST FILE DIFFS ===\n\n{}",
         REQUIREMENTS_COVERAGE_PROMPT,
         pr_title,
@@ -253,7 +321,20 @@ pub fn build_requirements_coverage_prompt(
         changed_paths.len(),
         changed_paths.join("\n"),
         diffs
-    )
+    );
+    if !inline_test_diffs.is_empty() {
+        prompt.push_str(&format!(
+            "=== IMPLEMENTATION DIFFS WITH INLINE TESTS ===\n\n{}",
+            inline_diffs
+        ));
+    }
+    if !existing_tests.is_empty() {
+        prompt.push_str(&format!(
+            "=== EXISTING TEST FILES (unchanged in this PR; full content, may be truncated) ===\n\n{}",
+            existing
+        ));
+    }
+    prompt
 }
 
 /// Build the triage prompt: structured per-file info (path, category, risk,
@@ -553,6 +634,8 @@ mod tests {
             "Title",
             "PR body",
             &[],
+            &[],
+            &[],
             &["a.rs".to_string()],
             Some("The endpoint must return 404 for unknown ids."),
         );
@@ -566,10 +649,100 @@ mod tests {
             "Title",
             "PR body",
             &[],
+            &[],
+            &[],
             &["a.rs".to_string()],
             None,
         );
         assert!(!prompt.contains("=== USER-PROVIDED REQUIREMENTS (authoritative) ==="));
+    }
+
+    #[test]
+    fn has_inline_test_markers_detects_each_marker_on_added_lines() {
+        assert!(has_inline_test_markers("@@ -1 +1 @@\n+#[test]\n+fn works() {}\n"));
+        assert!(has_inline_test_markers("@@ -1 +1 @@\n+#[cfg(test)]\n"));
+        assert!(has_inline_test_markers("@@ -1 +1 @@\n+mod tests {\n"));
+    }
+
+    #[test]
+    fn has_inline_test_markers_ignores_context_removed_and_header_lines() {
+        // Markers on context or removed lines are pre-existing/deleted tests.
+        assert!(!has_inline_test_markers("@@ -1 +1 @@\n #[cfg(test)]\n mod tests {\n"));
+        assert!(!has_inline_test_markers("@@ -1 +1 @@\n-#[test]\n-mod tests {\n"));
+        // "+++ b/..." file headers start with '+' but aren't added lines.
+        assert!(!has_inline_test_markers("--- a/mod tests.rs\n+++ b/#[cfg(test)].rs\n"));
+    }
+
+    #[test]
+    fn has_inline_test_markers_negative_on_unrelated_diff() {
+        assert!(!has_inline_test_markers("@@ -1 +1 @@\n-old\n+new\n+fn helper() {}\n"));
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_includes_inline_and_existing_sections() {
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[("tests/a.rs".to_string(), "+assert!(a());".to_string())],
+            &[("src/impl.rs".to_string(), "+#[cfg(test)]\n+mod tests {}".to_string())],
+            &[("tests/old.rs".to_string(), "fn existing() {}".to_string())],
+            &["src/impl.rs".to_string()],
+            None,
+        );
+        assert!(prompt.contains("=== TEST FILE: tests/a.rs ==="));
+        assert!(prompt.contains("=== IMPLEMENTATION DIFFS WITH INLINE TESTS ==="));
+        assert!(prompt.contains("=== IMPLEMENTATION FILE: src/impl.rs ==="));
+        assert!(prompt.contains(
+            "=== EXISTING TEST FILES (unchanged in this PR; full content, may be truncated) ==="
+        ));
+        assert!(prompt.contains("=== EXISTING TEST FILE: tests/old.rs ==="));
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_placeholder_only_when_no_changed_test_evidence() {
+        // Inline test diffs alone suppress the "(no test files changed)" line.
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &[("src/impl.rs".to_string(), "+#[test]".to_string())],
+            &[],
+            &["src/impl.rs".to_string()],
+            None,
+        );
+        assert!(!prompt.contains("(no test files changed in this PR)"));
+
+        // Existing unchanged tests do NOT — they aren't changed in this PR.
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &[],
+            &[("tests/old.rs".to_string(), "fn existing() {}".to_string())],
+            &["src/impl.rs".to_string()],
+            None,
+        );
+        assert!(prompt.contains("(no test files changed in this PR)"));
+        assert!(!prompt.contains("=== IMPLEMENTATION DIFFS WITH INLINE TESTS ==="));
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_existing_tests_have_own_budget() {
+        let big = "y".repeat(2500);
+        let prompt = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[],
+            &[],
+            &[("tests/big.rs".to_string(), big)],
+            &["src/impl.rs".to_string()],
+            None,
+        );
+        // 2500 chars > the 2000-char per-file cap for existing test files.
+        assert!(prompt.contains("=== EXISTING TEST FILE: tests/big.rs ==="));
+        assert!(prompt.contains("... (truncated)"));
+        assert!(!prompt.contains(&"y".repeat(2001)));
+        assert!(prompt.contains(&"y".repeat(2000)));
     }
 
     #[test]
