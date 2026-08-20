@@ -199,6 +199,32 @@ pub fn has_inline_test_markers(unified_diff: &str) -> bool {
     })
 }
 
+/// Slice an implementation diff down to its test-relevant tail: keep hunks
+/// from the first marker-containing hunk onward (Rust convention puts test
+/// modules at the bottom of a file, so once a hunk adds test code, later
+/// hunks are test territory too). Budgets then spend on the tests the file
+/// was included for, not implementation preamble — a 19k-char impl diff was
+/// still truncating away its tests at a 10k cap (issue #191 live-test).
+/// Falls back to the whole diff when no hunk boundary or marker is found.
+pub fn extract_test_hunks(unified_diff: &str) -> String {
+    let mut hunks: Vec<Vec<&str>> = Vec::new();
+    for line in unified_diff.lines() {
+        if line.starts_with("@@") || hunks.is_empty() {
+            hunks.push(Vec::new());
+        }
+        hunks.last_mut().unwrap().push(line);
+    }
+    let first_marker = hunks.iter().position(|h| has_inline_test_markers(&h.join("\n")));
+    match first_marker {
+        Some(i) => hunks[i..]
+            .iter()
+            .map(|h| h.join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => unified_diff.to_string(),
+    }
+}
+
 /// Append one budgeted file section (header + possibly-truncated text) to
 /// `out`, drawing from the shared `remaining` pool. Shared by the highlight,
 /// triage, and coverage builders. Returns true when the section was cut (or
@@ -837,6 +863,27 @@ mod tests {
         assert!(!has_inline_test_markers("@@ -1 +1 @@\n-#[test]\n-mod tests {\n"));
         // "+++ b/..." file headers start with '+' but aren't added lines.
         assert!(!has_inline_test_markers("--- a/mod tests.rs\n+++ b/#[cfg(test)].rs\n"));
+    }
+
+    #[test]
+    fn extract_test_hunks_keeps_from_first_marker_hunk_onward() {
+        let diff = "@@ -1,3 +1,4 @@\n fn real() {}\n+fn added() {}\n@@ -20,2 +21,4 @@\n+#[cfg(test)]\n+mod tests {\n@@ -30,1 +33,2 @@\n+    #[test]\n+    fn t() {}";
+        let sliced = extract_test_hunks(diff);
+        assert!(!sliced.contains("fn added()"));
+        assert!(sliced.contains("#[cfg(test)]"));
+        assert!(sliced.contains("fn t() {}"));
+    }
+
+    #[test]
+    fn extract_test_hunks_whole_diff_when_marker_in_first_hunk() {
+        let diff = "@@ -1,1 +1,2 @@\n+#[test]\n+fn t() {}";
+        assert_eq!(extract_test_hunks(diff), diff);
+    }
+
+    #[test]
+    fn extract_test_hunks_falls_back_when_no_marker_hunks() {
+        let diff = "no hunk headers at all";
+        assert_eq!(extract_test_hunks(diff), diff);
     }
 
     #[test]

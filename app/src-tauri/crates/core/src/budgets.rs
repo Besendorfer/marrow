@@ -31,7 +31,7 @@ pub const TRIAGE_PER_FILE: usize = 10_000;
 pub const TRIAGE_TOTAL: usize = 100_000;
 
 /// Coverage pass, per-file cap for changed test / inline-test diffs.
-pub const COVERAGE_PER_FILE: usize = 10_000;
+pub const COVERAGE_PER_FILE: usize = 25_000;
 /// Coverage pass, shared pool for changed test + inline-test diffs.
 pub const COVERAGE_TOTAL: usize = 100_000;
 /// Coverage pass, per-file cap for existing (unchanged) test files.

@@ -7,7 +7,7 @@ use crate::pr_parser::parse_pr_ref;
 use crate::pr_requirements;
 use crate::prompts::{
     build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_requirements_coverage_prompt,
-    build_summary_prompt, build_triage_prompt, has_inline_test_markers, is_test_path, PriorNote,
+    build_summary_prompt, build_triage_prompt, extract_test_hunks, has_inline_test_markers, is_test_path, PriorNote,
 };
 use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, LinkedIssue,
@@ -104,7 +104,7 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         .files
         .iter()
         .filter(|f| !is_test_path(&f.path) && has_inline_test_markers(&f.unified_diff))
-        .map(|f| (f.path.clone(), f.unified_diff.clone()))
+        .map(|f| (f.path.clone(), extract_test_hunks(&f.unified_diff)))
         .collect();
     let changed_paths: Vec<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
 
@@ -275,6 +275,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         .filter(|p| !is_test_path(p))
         .filter_map(|p| per_file_diff_map.get(p).map(|d| (p.clone(), d.clone())))
         .filter(|(_, d)| has_inline_test_markers(d))
+        .map(|(p, d)| (p, extract_test_hunks(&d)))
         .collect();
     let mut highlights_by_path: HashMap<String, Vec<Highlight>> = HashMap::new();
     let mut summary = String::new();
