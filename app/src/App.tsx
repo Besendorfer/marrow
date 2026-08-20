@@ -1358,7 +1358,19 @@ function App() {
   /** Line to reveal once the DiffViewer for a newly-selected file mounts —
    * the viewer remounts per file (key={path}), so the jump must wait for it. */
   const pendingRevealLineRef = useRef<number | null>(null);
+  /** Composer to open once the DiffViewer for a newly-selected file mounts —
+   * set by the chat draft_comment action when the target file/lens isn't the
+   * one currently rendered; same deferral as pendingRevealLineRef. */
+  const pendingComposerRef = useRef<{ startLine: number; endLine: number; side: "LEFT" | "RIGHT"; initialBody: string } | null>(null);
   useEffect(() => {
+    const composer = pendingComposerRef.current;
+    if (composer) {
+      pendingComposerRef.current = null;
+      // Next frame, so the fresh DiffViewer instance has attached its ref.
+      requestAnimationFrame(() => {
+        diffViewerRef.current?.openComposer(composer.startLine, composer.endLine, composer.side, composer.initialBody);
+      });
+    }
     const line = pendingRevealLineRef.current;
     if (line == null) return;
     pendingRevealLineRef.current = null;
@@ -1373,9 +1385,12 @@ function App() {
   // ---- Chat ```marrow-action view-control blocks (issue #166) ----
 
   /** Run one chat-emitted view-control action against the active tab. No
-   * mutating actions here — everything is navigation/view state. Returns
-   * whether the action resolved (e.g. the file/commit it names actually
-   * exists) so the caller can render a done/failed chip. */
+   * mutating actions here — everything is navigation/view state, with one
+   * carve-out: draft_comment, which is manual-only (never auto-executed; the
+   * user must click its chip) and still posts nothing — it only opens the
+   * local comment composer prefilled, and posting stays behind the composer's
+   * own submit. Returns whether the action resolved (e.g. the file/commit it
+   * names actually exists) so the caller can render a done/failed chip. */
   function executeChatAction(a: ChatAction): boolean {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return false;
@@ -1419,6 +1434,29 @@ function App() {
           chat: a.open ? { ...t.chat, open: false } : t.chat,
         }));
         return true;
+      case "draft_comment": {
+        const target = resolveManifestFile(tab.manifest.files, a.path);
+        if (!target) return false;
+        const composer = {
+          startLine: a.start_line ?? a.line,
+          endLine: a.line,
+          side: "RIGHT" as const,
+          initialBody: a.body,
+        };
+        if (target.path === tab.selectedFile?.path && tab.lens === "files") {
+          // Already viewing the file — the mounted DiffViewer can open directly.
+          return diffViewerRef.current?.openComposer(composer.startLine, composer.endLine, composer.side, composer.initialBody) ?? false;
+        } else if (target.path === tab.selectedFile?.path) {
+          // Right file, wrong lens: switch to Files and let the pending-composer
+          // effect open once the viewer mounts (same deferral as reveals).
+          pendingComposerRef.current = composer;
+          updateTab(tab.id, (t) => ({ ...t, lens: "files" }));
+        } else {
+          pendingComposerRef.current = composer;
+          setSelectedFile(target);
+        }
+        return true;
+      }
       default:
         return false;
     }
@@ -1462,6 +1500,10 @@ function App() {
     const executed = chatExecutedActionsRef.current[tabId] ?? (chatExecutedActionsRef.current[tabId] = new Set());
     fences.forEach((entry, blockIndex) => {
       if (!entry.action) return;
+      // draft_comment is manual-only: never auto-run (it would pop a composer
+      // in the user's face mid-stream), and it doesn't consume the auto-exec
+      // cap or the executed set — its chip stays neutral until clicked.
+      if (entry.action.action === "draft_comment") return;
       // The prompt says "at most a few actions per reply", but the prompt
       // isn't enforcement: cap auto-execution per turn so a runaway reply
       // can't thrash the view. Blocks past the cap render as neutral

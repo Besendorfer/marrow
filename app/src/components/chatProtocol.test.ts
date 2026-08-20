@@ -26,6 +26,8 @@ describe("isChatAction", () => {
       { action: "set_view_mode", mode: "split" },
       { action: "set_view_mode", mode: "unified" },
       { action: "show_comments", open: true },
+      { action: "draft_comment", path: "app/src/App.tsx", line: 42, body: "Consider a guard here." },
+      { action: "draft_comment", path: "app/src/App.tsx", line: 42, start_line: 40, body: "This range races." },
     ];
     for (const a of valid) expect(isChatAction(a)).toBe(true);
   });
@@ -45,6 +47,13 @@ describe("isChatAction", () => {
       { action: "set_view_mode", mode: "side-by-side" },
       { action: "show_comments", open: "yes" },
       { action: "resolve_note", key: "x" }, // mutating actions don't exist
+      { action: "draft_comment", path: "x.ts", line: 5 }, // missing body
+      { action: "draft_comment", path: "x.ts", line: 5, body: "" }, // empty body
+      { action: "draft_comment", path: "x.ts", body: "text" }, // missing line
+      { action: "draft_comment", path: "", line: 5, body: "text" }, // empty path
+      { action: "draft_comment", path: "x.ts", line: 5, start_line: 5, body: "t" }, // start_line must be < line
+      { action: "draft_comment", path: "x.ts", line: 5, start_line: 9, body: "t" }, // inverted range
+      { action: "draft_comment", path: "x.ts", line: 0, body: "t" }, // line must be positive
     ];
     for (const a of invalid) expect(isChatAction(a)).toBe(false);
   });
