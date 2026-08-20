@@ -238,6 +238,10 @@ fn append_budgeted_file(
     per_file_cap: usize,
 ) -> bool {
     if *remaining == 0 {
+        // Leave a stub so the model knows the file exists but went unseen —
+        // silently absent files read as "unchanged", which is worse.
+        out.push_str(header);
+        out.push_str("(omitted — analysis budget exhausted)\n\n");
         return true;
     }
     out.push_str(header);
