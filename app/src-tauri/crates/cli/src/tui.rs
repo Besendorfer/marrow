@@ -2263,6 +2263,7 @@ mod tests {
             triage: None,
             requirements_coverage: None,
             analysis_truncated: false,
+            truncated_passes: Vec::new(),
             body: String::new(),
             commits: Vec::new(),
             files: vec![

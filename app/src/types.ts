@@ -153,6 +153,7 @@ export interface ReviewManifest {
    * the run that produced this manifest — surfaced as a muted Overview line.
    * Absent on manifests cached before the field existed. */
   analysis_truncated?: boolean;
+  truncated_passes?: string[];
   files: FileDiff[];
 }
 

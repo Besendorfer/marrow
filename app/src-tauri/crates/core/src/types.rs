@@ -198,6 +198,10 @@ pub struct ReviewManifest {
     /// manifests cached before the field existed.
     #[serde(default)]
     pub analysis_truncated: bool,
+    /// Which passes truncated (e.g. "highlights", "coverage") — attribution
+    /// for the Overview notice and for debugging budget overflows.
+    #[serde(default)]
+    pub truncated_passes: Vec<String>,
     pub files: Vec<FileDiff>,
 }
 

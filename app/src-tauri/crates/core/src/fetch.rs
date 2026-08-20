@@ -148,6 +148,9 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
     // may be owed to the other passes, which weren't re-built here.
     if coverage_truncated {
         manifest.analysis_truncated = true;
+        if !manifest.truncated_passes.iter().any(|p| p == "coverage") {
+            manifest.truncated_passes.push("coverage".to_string());
+        }
     }
 
     // The AI call above is slow — a concurrent full Refresh may have written
@@ -235,10 +238,15 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
 
     let (classification_prompt, classification_truncated) =
         build_classification_prompt(&pr_title, &file_list, &full_diff);
-    // OR of every pass's truncation flag this run — ends up on the manifest
-    // so the Overview can surface that analysis saw less than the full PR.
+    // Every pass's truncation flag this run, by name — ends up on the
+    // manifest so the Overview can surface that analysis saw less than the
+    // full PR, and WHICH pass was affected (attribution earned its keep the
+    // very first time the flag fired: three debugging rounds on #192).
     // Summary/grouping never truncate (see build_file_context_prompt).
-    let mut analysis_truncated = classification_truncated;
+    let mut truncated_passes: Vec<String> = Vec::new();
+    if classification_truncated {
+        truncated_passes.push("classification".to_string());
+    }
 
     let classification_raw = ai.invoke(&classification_prompt).await?;
 
@@ -328,13 +336,17 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         let prior_notes = build_prior_notes(&previous_manifest, &parsed.owner, &parsed.repo, parsed.number);
         let (highlight_prompt, highlight_truncated) =
             build_highlight_prompt(&pr_title, &pr_body, &per_file_diffs, &prior_notes);
-        analysis_truncated |= highlight_truncated;
+        if highlight_truncated {
+            truncated_passes.push("highlights".to_string());
+        }
 
         let summary_prompt = build_summary_prompt(&pr_title, &relevant);
         let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
         let triage_prompt = if run_triage {
             let (prompt, truncated) = build_triage_prompt(&pr_title, &relevant, &per_file_diffs);
-            analysis_truncated |= truncated;
+            if truncated {
+                truncated_passes.push("triage".to_string());
+            }
             prompt
         } else {
             String::new()
@@ -357,7 +369,9 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 user_requirements_text,
                 &linked_issues,
             );
-            analysis_truncated |= truncated;
+            if truncated {
+                truncated_passes.push("coverage".to_string());
+            }
             prompt
         } else {
             String::new()
@@ -602,7 +616,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         requirements_coverage,
         body: truncate_chars(&pr_body, 10000),
         commits,
-        analysis_truncated,
+        analysis_truncated: !truncated_passes.is_empty(),
+        truncated_passes,
         files: file_diffs,
     };
 
