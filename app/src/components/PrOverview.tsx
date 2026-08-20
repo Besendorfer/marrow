@@ -383,6 +383,11 @@ export function PrOverview({
             your review time.
           </div>
         )}
+        {manifest.analysis_truncated && (
+          <div className="overview-card overview-noise">
+            Some inputs were truncated for analysis — very large PR.
+          </div>
+        )}
       </div>
       <div className="overview-rail">
         <AttentionDigest

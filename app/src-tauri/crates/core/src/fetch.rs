@@ -111,7 +111,7 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
     let existing_tests =
         fetch_related_existing_tests(&github, &parsed.owner, &parsed.repo, &manifest.head_sha, &changed_paths).await;
 
-    let prompt = build_requirements_coverage_prompt(
+    let (prompt, coverage_truncated) = build_requirements_coverage_prompt(
         &manifest.pr_title,
         &manifest.body,
         &test_diffs,
@@ -142,6 +142,12 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         if let Some(c) = manifest.requirements_coverage.as_mut() {
             c.source_issues = linked_issues.iter().map(|i| i.number).collect();
         }
+    }
+    // Asymmetric on purpose: this re-analysis re-runs ONLY the coverage pass,
+    // so it can add the truncated flag but never clear it — a prior `true`
+    // may be owed to the other passes, which weren't re-built here.
+    if coverage_truncated {
+        manifest.analysis_truncated = true;
     }
 
     // The AI call above is slow — a concurrent full Refresh may have written
@@ -227,8 +233,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     emit_progress(app, 3, "Classifying files with AI", FetchStatus::Running, None, None);
     let ai = AiBackend::from_settings(settings).await?;
 
-    let classification_prompt =
+    let (classification_prompt, classification_truncated) =
         build_classification_prompt(&pr_title, &file_list, &full_diff);
+    // OR of every pass's truncation flag this run — ends up on the manifest
+    // so the Overview can surface that analysis saw less than the full PR.
+    // Summary/grouping never truncate (see build_file_context_prompt).
+    let mut analysis_truncated = classification_truncated;
 
     let classification_raw = ai.invoke(&classification_prompt).await?;
 
@@ -315,12 +325,16 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         emit_progress(app, 4, "Analyzing highlights, summary, grouping, and coverage", FetchStatus::Running, None, Some((0, ai_total)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
         let prior_notes = build_prior_notes(&previous_manifest, &parsed.owner, &parsed.repo, parsed.number);
-        let highlight_prompt = build_highlight_prompt(&pr_title, &pr_body, &per_file_diffs, &prior_notes);
+        let (highlight_prompt, highlight_truncated) =
+            build_highlight_prompt(&pr_title, &pr_body, &per_file_diffs, &prior_notes);
+        analysis_truncated |= highlight_truncated;
 
         let summary_prompt = build_summary_prompt(&pr_title, &relevant);
         let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
         let triage_prompt = if run_triage {
-            build_triage_prompt(&pr_title, &relevant, &per_file_diffs)
+            let (prompt, truncated) = build_triage_prompt(&pr_title, &relevant, &per_file_diffs);
+            analysis_truncated |= truncated;
+            prompt
         } else {
             String::new()
         };
@@ -332,7 +346,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             Vec::new()
         };
         let coverage_prompt = if run_coverage {
-            build_requirements_coverage_prompt(
+            let (prompt, truncated) = build_requirements_coverage_prompt(
                 &pr_title,
                 &pr_body,
                 &test_diffs,
@@ -341,7 +355,9 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 &file_list,
                 user_requirements_text,
                 &linked_issues,
-            )
+            );
+            analysis_truncated |= truncated;
+            prompt
         } else {
             String::new()
         };
@@ -585,6 +601,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         requirements_coverage,
         body: truncate_chars(&pr_body, 10000),
         commits,
+        analysis_truncated,
         files: file_diffs,
     };
 

@@ -192,6 +192,12 @@ pub struct ReviewManifest {
     /// field existed, or when the commits fetch failed (best-effort).
     #[serde(default)]
     pub commits: Vec<PrCommit>,
+    /// True when any AI pass in the run that produced this manifest had its
+    /// prompt input cut to fit a budget (see `budgets.rs`) — surfaced as a
+    /// muted Overview notice so truncation is never silent. Defaults false on
+    /// manifests cached before the field existed.
+    #[serde(default)]
+    pub analysis_truncated: bool,
     pub files: Vec<FileDiff>,
 }
 
@@ -514,9 +520,10 @@ pub struct ReviewRequestItem {
 mod tests {
     use super::*;
 
-    /// A `ReviewManifest` JSON blob missing `commits` (a cached manifest saved
-    /// before the field existed) must still deserialize, with `commits`
-    /// defaulting to empty — mirrors `triage`'s cache-compat guarantee.
+    /// A `ReviewManifest` JSON blob missing `commits` and `analysis_truncated`
+    /// (a cached manifest saved before those fields existed) must still
+    /// deserialize, with `commits` defaulting to empty and the truncation flag
+    /// to false — mirrors `triage`'s cache-compat guarantee.
     #[test]
     fn review_manifest_defaults_commits_when_absent() {
         let json = serde_json::json!({
@@ -532,5 +539,6 @@ mod tests {
 
         let manifest: ReviewManifest = serde_json::from_value(json).unwrap();
         assert!(manifest.commits.is_empty());
+        assert!(!manifest.analysis_truncated);
     }
 }
