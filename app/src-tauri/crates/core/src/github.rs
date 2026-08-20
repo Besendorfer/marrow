@@ -1350,8 +1350,12 @@ impl GithubClient {
 
         Ok(nodes
             .iter()
-            .map(|node| LinkedIssue {
-                number: node.get("number").and_then(|v| v.as_u64()).unwrap_or(0),
+            // A node without a real number is malformed — skip it rather than
+            // stamping a placeholder 0 into source_issues.
+            .filter_map(|node| {
+                let number = node.get("number").and_then(|v| v.as_u64())?;
+                Some(LinkedIssue {
+                number,
                 title: node
                     .get("title")
                     .and_then(|v| v.as_str())
@@ -1363,7 +1367,7 @@ impl GithubClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
-            })
+            })})
             .collect())
     }
 
