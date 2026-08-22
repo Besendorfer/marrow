@@ -23,10 +23,10 @@ All app commands run from `app/`. Use **Bun**, not npm.
 - `app/src-tauri/` — Rust workspace root (Tauri desktop crate; `target/` and `Cargo.lock` live here on purpose):
   - `src/commands.rs` — all `#[command]` Tauri commands (thin wrappers)
   - `src/lib.rs` — app setup, deep-link handling, mini-player NSPanel logic, and the `generate_handler![...]` registration list (~line 218)
-  - `crates/core` (`marrow-core`) — ALL business logic: GitHub API, AI providers (Anthropic/OpenAI/Gemini/Bedrock/claude CLI), config, caches. Shared by desktop and CLI. Put new logic here, not in `commands.rs`.
+  - `crates/core` (`marrow-core`) — ALL business logic: GitHub API, AI providers (Anthropic/OpenAI/Gemini/Bedrock/Claude CLI), config, caches. Shared by desktop and CLI. Put new logic here, not in `commands.rs`.
   - `crates/cli` (`marrow-cli`) — terminal frontend (binary named `marrow`), published to crates.io
 - `browser-extension/` — MV3 content script for `github.com/*/*/pull/*` that injects an "Open in Relevant Reviews" button firing the `relevantreviews://` deep link. No build system: `build.sh` just zips Chrome/Firefox variants into `browser-extension/dist/`. It does not talk to the app directly — only via the deep link.
-- `rr` (repo root) — standalone bash predecessor using `gh` + `claude` CLIs; independent of the app.
+- `rr` (repo root) — standalone bash predecessor using `gh` + `Claude` CLIs; independent of the app.
 - `scripts/resolve-highlights.mjs` — dismiss AI highlights from outside the app (writes the same `~/.config/marrow` state files the app reads).
 
 ## Rust ↔ frontend boundary (Tauri IPC)
