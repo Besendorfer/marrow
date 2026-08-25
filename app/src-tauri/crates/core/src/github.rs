@@ -1,4 +1,4 @@
-use crate::types::{CheckAnnotation, CheckFailures, CheckRunInfo, CommentAuthor, CommitDiff, CommitDiffFile, MyReviewState, PrChecksStatus, PrCommit, PrConversationComment, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
+use crate::types::{CheckAnnotation, CheckFailures, CheckRunInfo, CommentAuthor, CommitDiff, CommitDiffFile, LinkedIssue, MyReviewState, PrChecksStatus, PrCommit, PrConversationComment, PrFile, PrLabel, PrMetadata, ReactionGroup, ReviewComment, ReviewRequestItem, ReviewThread};
 use std::collections::HashMap;
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -1316,6 +1316,59 @@ impl GithubClient {
         }
 
         Ok(all_threads)
+    }
+
+    /// Issues this PR closes ("Fixes #N" references / manually linked) —
+    /// GraphQL `closingIssuesReferences`. Callers treat a failure as "no
+    /// linked issues" (best-effort).
+    pub async fn get_linked_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<LinkedIssue>, String> {
+        let query = format!(
+            r#"{{
+                repository(owner: "{}", name: "{}") {{
+                    pullRequest(number: {}) {{
+                        closingIssuesReferences(first: 5) {{
+                            nodes {{ number title body }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            owner, repo, pr_number
+        );
+
+        let body = serde_json::json!({ "query": query });
+        let result = self.graphql_request(body).await?;
+
+        let nodes = result
+            .pointer("/data/repository/pullRequest/closingIssuesReferences/nodes")
+            .and_then(|v| v.as_array())
+            .ok_or("Missing closingIssuesReferences in response")?;
+
+        Ok(nodes
+            .iter()
+            // A node without a real number is malformed — skip it rather than
+            // stamping a placeholder 0 into source_issues.
+            .filter_map(|node| {
+                let number = node.get("number").and_then(|v| v.as_u64())?;
+                Some(LinkedIssue {
+                number,
+                title: node
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                // body is null on issues created empty — treat as no text.
+                body: node
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })})
+            .collect())
     }
 
     pub async fn reply_to_review_thread(

@@ -80,6 +80,10 @@ export interface RequirementEntry {
 export interface RequirementsCoverage {
   requirements: RequirementEntry[];
   orphan_tests: TestRef[];
+  /** Numbers of the linked issues whose text fed the extraction. Empty (or
+   * absent on manifests cached before this field existed) when requirements
+   * came from the PR body or the user's local text. */
+  source_issues?: number[];
 }
 
 // ── Attention digest (issue #180) ───────────────────────────────────────────

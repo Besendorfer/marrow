@@ -296,8 +296,15 @@ export function RequirementsCard({
         {covered} of {requirements.length} covered · {addressedKeys.size} addressed
       </div>
       {analyzing && <div className="requirements-card-source">analyzing requirements…</div>}
-      {hasLocal && (
+      {hasLocal ? (
         <div className="requirements-card-source">using your local requirements</div>
+      ) : (
+        (coverage.source_issues?.length ?? 0) > 0 && (
+          <div className="requirements-card-source">
+            requirements from linked issue{coverage.source_issues!.length > 1 ? "s" : ""}{" "}
+            {coverage.source_issues!.map((n) => `#${n}`).join(", ")}
+          </div>
+        )
       )}
       {requirements.map((req, i) => {
         const key = `req:${i}`;
