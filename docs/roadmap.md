@@ -27,8 +27,13 @@ more surfaces.
 
 - [x] Ship linked-issue requirements coverage (#189 / PR #190). Shipped in v0.36.0.
 - [x] Ship model-scale analysis budgets and visible truncation (#191 / PR #192). Shipped in v0.36.0.
-- [ ] Resolve or narrow the parent requirements issue (#179).
-- [ ] Review older open PR #178 and either finish or close it.
+- [x] Resolve or narrow the parent requirements issue (#179). Closed as
+      shipped + narrowed 2026-08-25: remaining scope split into #194
+      (hunk-level linkage + untested-hunks filter), #195 (traceability map),
+      and #196 (test-quality lens).
+- [x] Review older open PR #178 and either finish or close it. Finished:
+      rebased, converged, and merged 2026-08-25 (prefix fix + search reveal
+      + search perf).
 
 ## Phase 2: Reliability Foundation
 
