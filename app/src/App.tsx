@@ -2562,9 +2562,10 @@ function App() {
     };
   }, []);
 
-  // Re-load dismissed-highlight state from disk when the window regains focus, so
-  // dismissals made outside the app (e.g. an external/AI tool writing the
-  // ~/.config/marrow/dismissed file) show up without reopening the PR.
+  // Re-load dismissed-highlight and resolved-spec state from disk when the
+  // window regains focus, so resolutions made outside the app (e.g. an
+  // external/AI tool writing the ~/.config/marrow/dismissed or resolved_specs
+  // files) show up without reopening the PR.
   useEffect(() => {
     const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (!focused) return;
@@ -2587,6 +2588,25 @@ function App() {
               });
               if (sameKeys && sameRes) return t;
               return { ...t, dismissedHighlights: new Set(keys), noteResolutions: new Map(entries) };
+            });
+          })
+          .catch(() => {});
+        // Same drill for the requirements card's resolved specs — previously
+        // only loaded at PR-open, so external writes were invisible until the
+        // tab was reopened.
+        invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> } | null>("load_resolved_specs", { owner, repo, prNumber: number })
+          .then((saved) => {
+            const keys = saved?.keys ?? [];
+            const resolutions = saved?.resolutions ?? {};
+            updateTab(tab.id, (t) => {
+              const sameKeys = t.resolvedSpecKeys.size === keys.length && keys.every((k) => t.resolvedSpecKeys.has(k));
+              const entries = Object.entries(resolutions);
+              const sameRes = t.specResolutions.size === entries.length && entries.every(([k, r]) => {
+                const cur = t.specResolutions.get(k);
+                return !!cur && cur.state === r.state && (cur.reason ?? "") === (r.reason ?? "") && (cur.at ?? "") === (r.at ?? "");
+              });
+              if (sameKeys && sameRes) return t;
+              return { ...t, resolvedSpecKeys: new Set(keys), specResolutions: new Map(entries) };
             });
           })
           .catch(() => {});

@@ -62,7 +62,11 @@ function RequirementRow({
   return (
     <div className={rowClass}>
       <button className="overview-digest-row-toggle" aria-expanded={expanded} onClick={onToggle}>
-        <span className={`req-glyph req-glyph--${req.status}`}>{STATUS_GLYPH[req.status]}</span>
+        {/* An addressed row reads as checked off — the disposition trumps the
+          * coverage status in the glyph; the affix still says why it's dim. */}
+        <span className={addressed ? "req-glyph req-glyph--addressed" : `req-glyph req-glyph--${req.status}`}>
+          {addressed ? "✓" : STATUS_GLYPH[req.status]}
+        </span>
         <div className="overview-digest-row-main">
           <div className="overview-digest-row-top">
             <span className="overview-digest-row-claim">{req.text}</span>
