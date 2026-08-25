@@ -7102,6 +7102,9 @@ mark.search-highlight-current {
 .req-glyph--partial { color: var(--risk-medium); }
 .req-glyph--uncovered { color: var(--risk-high); }
 .req-glyph--untestable { color: var(--text-muted); }
+/* Reviewer marked it addressed: same check as covered, muted like the rest
+ * of the resolved row — done, but distinguishable from test-backed green. */
+.req-glyph--addressed { color: var(--text-muted); }
 
 .req-card-row-affix {
   flex-shrink: 0;
