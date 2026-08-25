@@ -124,9 +124,6 @@ interface DiffViewerProps {
   reviewThreads?: ReviewThread[];
   /** Inline CI failure annotations for this file, from a loaded CheckFailures. */
   checkAnnotations?: CheckAnnotation[];
-  searchMatches?: SearchMatch[];
-  currentSearchMatch?: SearchMatch | null;
-  searchQuery?: string;
 }
 
 /** Imperative API for keyboard-driven navigation, folding, and the line cursor. */
@@ -169,6 +166,10 @@ export interface DiffViewerHandle {
    * false — without opening — when the line can't be revealed, so a bogus
    * anchor fails the chip instead of opening the composer somewhere odd. */
   openComposer: (startLine: number, endLine: number, side: "LEFT" | "RIGHT", initialBody: string) => boolean;
+  /** Imperative search channel (issue #178): paint marks + promote the
+   * current match without any React state round-trip. */
+  applySearch: (query: string, matches: SearchMatch[], current: SearchMatch | null) => void;
+  clearSearch: () => void;
 }
 
 /** Small keyboard-driven reply box, shown when `r` is pressed on a thread line. */
@@ -1684,7 +1685,7 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, expandAllHunks, dismissedHighlights, noteResolutions, newHighlightKeys, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, checkAnnotations, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps, ref) {
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer({ file, viewMode, onViewModeChange, showHunkSignificance, showAiNotes, expandAllHunks, dismissedHighlights, noteResolutions, newHighlightKeys, onResolveHighlight, onRestoreHighlight, onCreateComment, onEditComment, onReply, onToggleResolved, onToggleReaction, reviewThreads, checkAnnotations }: DiffViewerProps, ref) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
   // "View full file" toggle (modified files). Resets per file via the key prop.
@@ -1768,7 +1769,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 
   function handlePostHighlightAsComment(h: Highlight) {
     if (!onCreateComment) return;
-    openComposer(h.start_line, h.end_line, "RIGHT", `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`);
+    // Just the note text: no severity tag, the posted comment should read as
+    // the reviewer's own words.
+    openComposer(h.start_line, h.end_line, "RIGHT", h.comment);
   }
 
   useEffect(() => {
@@ -1907,9 +1910,21 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   const collapsedHunksRef = useRef(collapsedHunks);
   collapsedHunksRef.current = collapsedHunks;
 
-  // Expand collapsed hunks that contain search matches; restore when search clears
-  useEffect(() => {
-    const hasSearch = searchQuery && searchMatches && searchMatches.length > 0;
+  // ---- Search highlighting (imperative — issue #178 perf) ----
+  // Search deliberately bypasses React state: SearchBar drives these through
+  // the applySearch/clearSearch handle methods, so typing and match
+  // iteration never re-render the (unmemoized, potentially huge) diff row
+  // tree. The highlight work was always imperative DOM surgery — the old
+  // state round-trip through App bought nothing but wholesale re-renders.
+  const searchRef = useRef<{ query: string; matches: SearchMatch[]; current: SearchMatch | null }>({ query: "", matches: [], current: null });
+  /** file+query of the last mark pass — same key means an incremental run. */
+  const lastMarkKeyRef = useRef<string | null>(null);
+
+  /** Expand collapsed hunks that contain search matches; restore the saved
+   * collapsed state when the search clears. */
+  function syncSearchHunks() {
+    const { query, matches } = searchRef.current;
+    const hasSearch = query && matches.length > 0;
 
     if (!hasSearch) {
       // Search ended — restore original collapsed state if we saved one
@@ -1926,7 +1941,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     }
 
     // Find which hunk indices contain search match line numbers
-    const matchLineNums = new Set(searchMatches!.map((m) => m.lineNumber));
+    const matchLineNums = new Set(matches.map((m) => m.lineNumber));
     const hunksToExpand = new Set<number>();
     for (const hunk of hunks) {
       for (const line of hunk.lines) {
@@ -1948,12 +1963,13 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       if (next.size === prev.size) return prev;
       return next;
     });
-  }, [searchQuery, searchMatches, hunks]);
+  }
 
-  // Apply word-level search highlights into the DOM (marks all matches)
-  useEffect(() => {
+  /** Paint (or incrementally extend) search marks over the rendered rows. */
+  function paintMarks() {
     const container = diffContentRef.current;
     if (!container) return;
+    const { query: rawQuery, matches } = searchRef.current;
 
     function clearMarks() {
       container!.querySelectorAll("mark.search-highlight, mark.search-highlight-current").forEach((el) => {
@@ -1966,16 +1982,29 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       container!.querySelectorAll(".search-match-line").forEach((el) => {
         el.classList.remove("search-match-line");
       });
+      container!.querySelectorAll<HTMLElement>("[data-search-marked]").forEach((el) => {
+        delete el.dataset.searchMarked;
+      });
     }
 
-    clearMarks();
+    // Incremental repaint: a run with the same query/file (the effect also
+    // fires on hunk expansion / whole-file reveal via its deps) only walks
+    // rows that haven't been marked yet — wiping and re-walking every
+    // rendered line per reveal is what made match iteration crawl. A changed
+    // query or file still clears and repaints everything.
+    const markKey = `${file.path} ${rawQuery}`;
+    const incremental = lastMarkKeyRef.current === markKey;
+    if (!incremental) clearMarks();
+    lastMarkKeyRef.current = markKey;
 
-    if (!searchQuery || !searchMatches || searchMatches.length === 0) return;
+    if (!rawQuery || matches.length === 0) return;
 
-    const query = searchQuery.toLowerCase();
+    const query = rawQuery.toLowerCase();
 
     const pres = container.querySelectorAll<HTMLElement>(".line-content pre");
     for (const pre of pres) {
+      if (incremental && pre.dataset.searchMarked) continue;
+      pre.dataset.searchMarked = "1";
       const row = pre.closest("tr");
       if (!row) continue;
 
@@ -2040,13 +2069,14 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       if (hasMatch) row.classList.add("search-match-line");
     }
 
-    return clearMarks;
-  }, [searchMatches, searchQuery, file.path]);
+  }
 
-  // Update which mark is the "current" one (lightweight — just swaps classes)
-  useEffect(() => {
+  /** Swap the "current" highlight onto the active match and scroll to it,
+   * revealing the line first when it isn't rendered. */
+  function promoteCurrent() {
     const container = diffContentRef.current;
     if (!container) return;
+    const current = searchRef.current.current;
 
     // Clear previous current mark
     const prev = container.querySelector("mark.search-highlight-current");
@@ -2055,14 +2085,14 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       prev.closest("tr")?.classList.remove("search-current-line");
     }
 
-    if (!currentMatchInFile) return;
+    if (!current) return;
 
     // Find the mark matching the current search match by data attributes
     const marks = container.querySelectorAll<HTMLElement>("mark.search-highlight");
     for (const mark of marks) {
       if (
-        mark.dataset.line === String(currentMatchInFile.lineNumber) &&
-        mark.dataset.offset === String(currentMatchInFile.matchStart)
+        mark.dataset.line === String(current.lineNumber) &&
+        mark.dataset.offset === String(current.matchStart)
       ) {
         mark.className = "search-highlight-current";
         mark.closest("tr")?.classList.add("search-current-line");
@@ -2074,15 +2104,32 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     // Fallback: scroll to the row by line number
     const allLineNums = container.querySelectorAll<HTMLElement>(".line-num");
     for (const el of allLineNums) {
-      if (el.textContent?.trim() === String(currentMatchInFile.lineNumber)) {
+      if (el.textContent?.trim() === String(current.lineNumber)) {
         const row = el.closest("tr");
         if (row) {
           row.scrollIntoView({ block: "center", behavior: "smooth" });
-          break;
+          return;
         }
       }
     }
-  }, [currentMatchInFile]);
+    // Neither a mark nor a visible row: the match sits in a collapsed hunk or
+    // in unchanged code outside the diff (search covers the whole file).
+    // Reveal it — expand the hunk or fall back to the whole-file view — and
+    // the post-reveal effect below repaints and promotes against fresh rows.
+    revealLine(current.lineNumber);
+  }
+
+  // Rows revealed after a paint (hunk expansion, whole-file fallback, the
+  // search auto-expand above) render in a later commit — extend the marks
+  // over them and re-promote the current match once they exist.
+  useEffect(() => {
+    if (!searchRef.current.query) return;
+    paintMarks();
+    promoteCurrent();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collapsedHunks, fullFile]);
+
+
 
   const highHunkCount = hunks.filter((h) => h.significance === "high").length;
   const collapsedCount = collapsedHunks.size;
@@ -2387,6 +2434,17 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     cursorMove, cursorEdge, cursorPage, nextFinding, prevFinding, foldAtCursor,
     commentAtCursor, toggleAnchor, replyAtCursor, resolveAtCursor, scrollToThread,
     revealLine, openComposer,
+    applySearch(query: string, matches: SearchMatch[], current: SearchMatch | null) {
+      searchRef.current = { query, matches, current };
+      syncSearchHunks();
+      paintMarks();
+      promoteCurrent();
+    },
+    clearSearch() {
+      searchRef.current = { query: "", matches: [], current: null };
+      syncSearchHunks();
+      paintMarks(); // key change wipes the marks
+    },
   }));
 
   return (

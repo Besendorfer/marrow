@@ -91,13 +91,12 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
     onOpenChange?.(open);
   }, [open, onOpenChange]);
 
-  // Debounce the query for global search (local stays instant)
+  // Debounce the query in both modes — every settled query triggers a match
+  // recompute AND a full mark repaint in the diff, which is far too heavy to
+  // run per keystroke (especially in whole-file view). Local gets a shorter
+  // window so single-file find still feels immediate.
   useEffect(() => {
-    if (mode === "local") {
-      setDebouncedQuery(query);
-      return;
-    }
-    const timer = setTimeout(() => setDebouncedQuery(query), 150);
+    const timer = setTimeout(() => setDebouncedQuery(query), mode === "local" ? 100 : 150);
     return () => clearTimeout(timer);
   }, [query, mode]);
 
@@ -141,7 +140,7 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
   }, [open, mode, close]);
 
   // Compute matches — local uses instant query, global uses debounced
-  const effectiveQuery = mode === "local" ? query : debouncedQuery;
+  const effectiveQuery = debouncedQuery;
   const allMatches = useMemo(() => {
     if (!effectiveQuery) return [];
     if (mode === "global" && effectiveQuery.length < 2) return [];
@@ -186,14 +185,18 @@ export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function Se
     }
   }, [allMatches.length, currentIndex]);
 
-  // Notify parent of highlights
+  // Notify parent of highlights. selectedFile?.path is a dep because the
+  // highlight channel is imperative (issue #178): a global-search file switch
+  // remounts the DiffViewer, and the fresh instance needs the current search
+  // re-applied once its ref attaches (this effect runs post-commit).
   useEffect(() => {
     if (!open || allMatches.length === 0) {
       onClearHighlights();
       return;
     }
     onHighlightMatches(allMatches, currentIndex, effectiveQuery);
-  }, [allMatches, currentIndex, open]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allMatches, currentIndex, open, selectedFile?.path]);
 
   function goNext() {
     if (allMatches.length === 0) return;
