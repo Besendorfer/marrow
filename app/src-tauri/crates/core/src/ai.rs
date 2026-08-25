@@ -10,6 +10,10 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 /// Google Gemini's OpenAI-compatible endpoint.
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
+fn response_preview(text: &str) -> String {
+    text.chars().take(500).collect()
+}
+
 /// Extract a JSON array from text that may contain markdown fences or preamble.
 pub fn extract_json_array(text: &str) -> Result<serde_json::Value, String> {
     // Try direct parse
@@ -45,7 +49,7 @@ pub fn extract_json_array(text: &str) -> Result<serde_json::Value, String> {
 
     Err(format!(
         "Could not extract JSON array from AI response. Raw response:\n{}",
-        &text[..text.len().min(500)]
+        response_preview(text)
     ))
 }
 
@@ -81,7 +85,7 @@ pub fn extract_json_object(text: &str) -> Result<serde_json::Value, String> {
 
     Err(format!(
         "Could not extract JSON object from AI response. Raw response:\n{}",
-        &text[..text.len().min(500)]
+        response_preview(text)
     ))
 }
 
@@ -881,7 +885,7 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
             output.status,
             stderr.trim(),
             if !stdout.is_empty() {
-                format!("\nstdout: {}", &stdout[..stdout.len().min(500)])
+                format!("\nstdout: {}", response_preview(&stdout))
             } else {
                 String::new()
             }
@@ -899,6 +903,19 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_json_error_preview_is_unicode_safe() {
+        let response = format!("{}é trailing response", "a".repeat(499));
+
+        let array_error = extract_json_array(&response).unwrap_err();
+        let object_error = extract_json_object(&response).unwrap_err();
+
+        assert!(array_error.contains('é'));
+        assert!(object_error.contains('é'));
+        assert!(!array_error.contains("trailing response"));
+        assert!(!object_error.contains("trailing response"));
+    }
 
     // (model, override, has_base_url, has_anthropic_key)
     fn pick(model: &str, ov: &str, base: bool, anthropic: bool) -> Provider {
