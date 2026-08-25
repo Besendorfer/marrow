@@ -320,20 +320,18 @@ pub fn build_requirements_coverage_prompt(
 
     // Linked-issue bodies get their own budget pool (issues can be long, and
     // acceptance criteria usually sit near the top).
-    const ISSUE_PER_ISSUE_BUDGET: usize = 3000;
-    const ISSUE_TOTAL_BUDGET: usize = 8000;
     let mut linked_issues_section = String::new();
     if !linked_issues.is_empty() {
         linked_issues_section
             .push_str("=== LINKED ISSUES (acceptance criteria often live here) ===\n");
-        let mut issue_remaining = ISSUE_TOTAL_BUDGET;
+        let mut issue_remaining = budgets::COVERAGE_ISSUE_TOTAL;
         for issue in linked_issues {
-            append_budgeted_file(
+            truncated |= append_budgeted_file(
                 &mut linked_issues_section,
                 &format!("--- Issue #{}: {} ---\n", issue.number, issue.title),
                 &issue.body,
                 &mut issue_remaining,
-                ISSUE_PER_ISSUE_BUDGET,
+                budgets::COVERAGE_ISSUE_PER_ISSUE,
             );
         }
     }
@@ -769,7 +767,7 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_includes_linked_issues_section() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -798,7 +796,7 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_omits_linked_issues_when_empty() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -813,7 +811,7 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_linked_issues_respect_per_issue_budget() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, truncated) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -821,22 +819,24 @@ mod tests {
             &[],
             &["a.rs".to_string()],
             None,
-            &[linked_issue(1, "Big", &"y".repeat(3500))],
+            &[linked_issue(1, "Big", &"y".repeat(budgets::COVERAGE_ISSUE_PER_ISSUE + 500))],
         );
-        // 3500 chars > the 3000-char per-issue cap.
+        // Exceeds the per-issue cap — cut at the cap.
         assert!(prompt.contains("--- Issue #1: Big ---"));
         assert!(prompt.contains("... (truncated)"));
-        assert!(prompt.contains(&"y".repeat(3000)));
-        assert!(!prompt.contains(&"y".repeat(3001)));
+        assert!(prompt.contains(&"y".repeat(budgets::COVERAGE_ISSUE_PER_ISSUE)));
+        assert!(!prompt.contains(&"y".repeat(budgets::COVERAGE_ISSUE_PER_ISSUE + 1)));
+        assert!(truncated);
     }
 
     #[test]
     fn requirements_coverage_prompt_linked_issues_respect_total_budget() {
-        // Four 3000-char issues against the 8000-char pool: full, full,
-        // truncated to the 2000 remaining, then dropped entirely.
+        // Six 4500-char issues against the 20_000-char pool: four full, the
+        // fifth truncated to the 2000 remaining, the sixth reduced to an
+        // omission stub.
         let issues: Vec<LinkedIssue> =
-            (1..=4).map(|n| linked_issue(n, "Issue", &"z".repeat(3000))).collect();
-        let prompt = build_requirements_coverage_prompt(
+            (1..=6).map(|n| linked_issue(n, "Issue", &"z".repeat(4500))).collect();
+        let (prompt, truncated) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -846,11 +846,15 @@ mod tests {
             None,
             &issues,
         );
-        assert!(prompt.contains("--- Issue #1: Issue ---"));
-        assert!(prompt.contains("--- Issue #2: Issue ---"));
-        assert!(prompt.contains("--- Issue #3: Issue ---"));
-        assert!(!prompt.contains("--- Issue #4: Issue ---"));
+        assert!(prompt.contains("--- Issue #4: Issue ---"));
+        assert!(prompt.contains("--- Issue #5: Issue ---"));
         assert!(prompt.contains("... (truncated)"));
+        assert!(prompt.contains(&"z".repeat(2000)));
+        assert!(prompt.contains("--- Issue #6: Issue ---"));
+        assert!(prompt.contains("(omitted — analysis budget exhausted)"));
+        // No run longer than one full issue survives the caps.
+        assert!(!prompt.contains(&"z".repeat(4501)));
+        assert!(truncated);
     }
 
     #[test]
@@ -977,6 +981,7 @@ mod tests {
             &[("tests/old.rs".to_string(), "fn existing() {}".to_string())],
             &["src/impl.rs".to_string()],
             Some("The endpoint must return 404 for unknown ids."),
+            &[],
         );
         assert!(!truncated);
     }

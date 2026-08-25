@@ -38,16 +38,15 @@ pub const COVERAGE_TOTAL: usize = 100_000;
 pub const COVERAGE_EXISTING_PER_FILE: usize = 25_000;
 /// Coverage pass, shared pool for existing test files.
 pub const COVERAGE_EXISTING_TOTAL: usize = 75_000;
-/// Coverage pass, per-issue cap for linked-issue text. Reserved: no builder
-/// consumes linked issues yet — sized here so that section lands pre-budgeted.
+/// Coverage pass, per-issue cap for linked-issue text.
 pub const COVERAGE_ISSUE_PER_ISSUE: usize = 5_000;
-/// Coverage pass, shared pool for linked-issue text (reserved, see above).
+/// Coverage pass, shared pool for linked-issue text.
 pub const COVERAGE_ISSUE_TOTAL: usize = 20_000;
 /// Coverage pass, PR description cap.
 pub const COVERAGE_BODY: usize = 20_000;
 /// Coverage pass, user-provided requirements cap (same discipline as the body).
-/// Coverage worst case: 100k + 40k + 20k + 20k (+20k reserved) + changed-path
-/// list + instructions ≈ 210k chars.
+/// Coverage worst case: 100k + 75k + 20k + 20k + 20k issues + changed-path
+/// list + instructions ≈ 245k chars.
 pub const COVERAGE_USER_REQS: usize = 20_000;
 
 /// Chat grounding, per-file diff cap.
