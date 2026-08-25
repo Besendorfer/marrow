@@ -1,3 +1,4 @@
+use crate::budgets::{CHAT_PER_FILE_CONTENT, CHAT_PER_FILE_DIFF, CHAT_TOTAL_CONTEXT};
 use serde::Deserialize;
 
 /// An AI review note (highlight) on a file, surfaced to the chat so questions
@@ -35,12 +36,8 @@ pub struct ChatContext {
     pub files: Vec<ChatFileContext>,
 }
 
-/// Per-file diff budget (chars). Matches the highlight pipeline's per-file cap.
-const PER_FILE_DIFF_BUDGET: usize = 5000;
-/// Per-file full-content budget (chars) when head content is included.
-const PER_FILE_CONTENT_BUDGET: usize = 8000;
-/// Overall ceiling on the assembled file context (chars).
-const TOTAL_CONTEXT_BUDGET: usize = 30000;
+// Chat context budgets live in `budgets.rs` alongside the analysis passes'
+// (CHAT_PER_FILE_DIFF / CHAT_PER_FILE_CONTENT / CHAT_TOTAL_CONTEXT).
 
 /// Truncate `s` to at most `max` chars on a char boundary, appending a marker
 /// when truncated. Safe for multibyte input (unlike slicing by byte index).
@@ -170,7 +167,7 @@ pub fn build_chat_system(ctx: &ChatContext, repo_tools: bool) -> String {
     }
 
     out.push_str("\n--- FILES IN SCOPE ---\n");
-    let mut remaining = TOTAL_CONTEXT_BUDGET;
+    let mut remaining = CHAT_TOTAL_CONTEXT;
     for file in &ctx.files {
         if remaining == 0 {
             out.push_str("\n... (additional files omitted to fit context budget)\n");
@@ -192,7 +189,7 @@ pub fn build_chat_system(ctx: &ChatContext, repo_tools: bool) -> String {
             }
         }
 
-        let diff = truncate(&file.unified_diff, PER_FILE_DIFF_BUDGET.min(remaining));
+        let diff = truncate(&file.unified_diff, CHAT_PER_FILE_DIFF.min(remaining));
         remaining = remaining.saturating_sub(diff.chars().count());
         out.push_str("Diff:\n");
         out.push_str(&diff);
@@ -200,7 +197,7 @@ pub fn build_chat_system(ctx: &ChatContext, repo_tools: bool) -> String {
 
         if let Some(content) = &file.head_content {
             if remaining > 0 && !content.trim().is_empty() {
-                let content = truncate(content, PER_FILE_CONTENT_BUDGET.min(remaining));
+                let content = truncate(content, CHAT_PER_FILE_CONTENT.min(remaining));
                 remaining = remaining.saturating_sub(content.chars().count());
                 out.push_str("\nCurrent file contents (post-change):\n");
                 out.push_str(&content);
@@ -314,7 +311,7 @@ mod tests {
         // protocol, section labels) — bumped when the repo-tools protocol
         // (issue #150) and the draft_comment and draft_pr_comment actions
         // (issue #185) were added.
-        assert!(sys.chars().count() < TOTAL_CONTEXT_BUDGET + 7000);
+        assert!(sys.chars().count() < CHAT_TOTAL_CONTEXT + 7000);
     }
 
     #[test]

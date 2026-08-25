@@ -1,3 +1,4 @@
+use crate::budgets;
 use crate::types::{FileClassification, LinkedIssue};
 
 // The test-file glob list below is kept in sync BY HAND with `is_test_path`
@@ -198,31 +199,66 @@ pub fn has_inline_test_markers(unified_diff: &str) -> bool {
     })
 }
 
+/// Slice an implementation diff down to its test-relevant tail: keep hunks
+/// from the first marker-containing hunk onward (Rust convention puts test
+/// modules at the bottom of a file, so once a hunk adds test code, later
+/// hunks are test territory too). Budgets then spend on the tests the file
+/// was included for, not implementation preamble — a 19k-char impl diff was
+/// still truncating away its tests at a 10k cap (issue #191 live-test).
+/// Falls back to the whole diff when no hunk boundary or marker is found.
+pub fn extract_test_hunks(unified_diff: &str) -> String {
+    let mut hunks: Vec<Vec<&str>> = Vec::new();
+    for line in unified_diff.lines() {
+        if line.starts_with("@@") || hunks.is_empty() {
+            hunks.push(Vec::new());
+        }
+        hunks.last_mut().unwrap().push(line);
+    }
+    let first_marker = hunks.iter().position(|h| has_inline_test_markers(&h.join("\n")));
+    match first_marker {
+        Some(i) => hunks[i..]
+            .iter()
+            .map(|h| h.join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => unified_diff.to_string(),
+    }
+}
+
 /// Append one budgeted file section (header + possibly-truncated text) to
-/// `out`, drawing from the shared `remaining` pool. Mirrors the per-file
-/// loop in `build_triage_prompt`.
+/// `out`, drawing from the shared `remaining` pool. Shared by the highlight,
+/// triage, and coverage builders. Returns true when the section was cut (or
+/// skipped outright because the pool was exhausted) — truncation telemetry
+/// for the manifest's `analysis_truncated` flag.
 fn append_budgeted_file(
     out: &mut String,
     header: &str,
     text: &str,
     remaining: &mut usize,
     per_file_cap: usize,
-) {
+) -> bool {
     if *remaining == 0 {
-        return;
+        // Leave a stub so the model knows the file exists but went unseen —
+        // silently absent files read as "unchanged", which is worse.
+        out.push_str(header);
+        out.push_str("(omitted — analysis budget exhausted)\n\n");
+        return true;
     }
     out.push_str(header);
     let cap = per_file_cap.min(*remaining);
-    if text.chars().count() > cap {
+    let truncated = if text.chars().count() > cap {
         let snippet: String = text.chars().take(cap).collect();
         out.push_str(&snippet);
         out.push_str("\n... (truncated)\n");
         *remaining = remaining.saturating_sub(cap);
+        true
     } else {
         out.push_str(text);
         *remaining = remaining.saturating_sub(text.chars().count());
-    }
+        false
+    };
     out.push_str("\n\n");
+    truncated
 }
 
 /// Build the requirements-coverage prompt: PR title/body plus the diffs of
@@ -255,23 +291,26 @@ pub fn build_requirements_coverage_prompt(
     changed_paths: &[String],
     user_requirements: Option<&str>,
     linked_issues: &[LinkedIssue],
-) -> String {
-    const PER_FILE_BUDGET: usize = 1500;
-    const TOTAL_BUDGET: usize = 20000;
-    const EXISTING_PER_FILE_BUDGET: usize = 2000;
-    const EXISTING_TOTAL_BUDGET: usize = 10000;
+) -> (String, bool) {
+    let mut truncated = false;
 
-    let body = match truncate_chars(pr_body, 10000) {
-        Some(t) => format!("{}\n... (truncated)", t),
+    let body = match truncate_chars(pr_body, budgets::COVERAGE_BODY) {
+        Some(t) => {
+            truncated = true;
+            format!("{}\n... (truncated)", t)
+        }
         None => pr_body.to_string(),
     };
 
-    // Same 10k cap as the PR body — user-provided text gets no exemption
-    // from the prompt budget discipline.
+    // Same cap as the PR body — user-provided text gets no exemption from
+    // the prompt budget discipline.
     let user_requirements_section = match user_requirements {
         Some(text) if !text.trim().is_empty() => {
-            let capped = match truncate_chars(text, 10000) {
-                Some(t) => format!("{}\n... (truncated)", t),
+            let capped = match truncate_chars(text, budgets::COVERAGE_USER_REQS) {
+                Some(t) => {
+                    truncated = true;
+                    format!("{}\n... (truncated)", t)
+                }
                 None => text.to_string(),
             };
             format!("=== USER-PROVIDED REQUIREMENTS (authoritative) ===\n{}\n\n", capped)
@@ -281,60 +320,58 @@ pub fn build_requirements_coverage_prompt(
 
     // Linked-issue bodies get their own budget pool (issues can be long, and
     // acceptance criteria usually sit near the top).
-    const ISSUE_PER_ISSUE_BUDGET: usize = 3000;
-    const ISSUE_TOTAL_BUDGET: usize = 8000;
     let mut linked_issues_section = String::new();
     if !linked_issues.is_empty() {
         linked_issues_section
             .push_str("=== LINKED ISSUES (acceptance criteria often live here) ===\n");
-        let mut issue_remaining = ISSUE_TOTAL_BUDGET;
+        let mut issue_remaining = budgets::COVERAGE_ISSUE_TOTAL;
         for issue in linked_issues {
-            append_budgeted_file(
+            truncated |= append_budgeted_file(
                 &mut linked_issues_section,
                 &format!("--- Issue #{}: {} ---\n", issue.number, issue.title),
                 &issue.body,
                 &mut issue_remaining,
-                ISSUE_PER_ISSUE_BUDGET,
+                budgets::COVERAGE_ISSUE_PER_ISSUE,
             );
         }
     }
 
     let mut diffs = String::new();
-    let mut remaining = TOTAL_BUDGET;
+    let mut remaining = budgets::COVERAGE_TOTAL;
     if test_diffs.is_empty() && inline_test_diffs.is_empty() {
         diffs.push_str("(no test files changed in this PR)\n");
     }
     for (path, diff) in test_diffs {
-        append_budgeted_file(
+        truncated |= append_budgeted_file(
             &mut diffs,
             &format!("=== TEST FILE: {} ===\n", path),
             diff,
             &mut remaining,
-            PER_FILE_BUDGET,
+            budgets::COVERAGE_PER_FILE,
         );
     }
 
     // Same pool as test_diffs: inline tests are the same kind of evidence.
     let mut inline_diffs = String::new();
     for (path, diff) in inline_test_diffs {
-        append_budgeted_file(
+        truncated |= append_budgeted_file(
             &mut inline_diffs,
             &format!("=== IMPLEMENTATION FILE: {} ===\n", path),
             diff,
             &mut remaining,
-            PER_FILE_BUDGET,
+            budgets::COVERAGE_PER_FILE,
         );
     }
 
     let mut existing = String::new();
-    let mut existing_remaining = EXISTING_TOTAL_BUDGET;
+    let mut existing_remaining = budgets::COVERAGE_EXISTING_TOTAL;
     for (path, content) in existing_tests {
-        append_budgeted_file(
+        truncated |= append_budgeted_file(
             &mut existing,
             &format!("=== EXISTING TEST FILE: {} ===\n", path),
             content,
             &mut existing_remaining,
-            EXISTING_PER_FILE_BUDGET,
+            budgets::COVERAGE_EXISTING_PER_FILE,
         );
     }
 
@@ -361,7 +398,7 @@ pub fn build_requirements_coverage_prompt(
             existing
         ));
     }
-    prompt
+    (prompt, truncated)
 }
 
 /// Build the triage prompt: structured per-file info (path, category, risk,
@@ -372,10 +409,7 @@ pub fn build_triage_prompt(
     pr_title: &str,
     relevant_files: &[&FileClassification],
     per_file_diffs: &[(String, String)],
-) -> String {
-    const PER_FILE_BUDGET: usize = 1500;
-    const TOTAL_BUDGET: usize = 20000;
-
+) -> (String, bool) {
     let mut file_info = String::new();
     for f in relevant_files {
         file_info.push_str(&format!(
@@ -385,33 +419,27 @@ pub fn build_triage_prompt(
     }
 
     let mut diffs = String::new();
-    let mut remaining = TOTAL_BUDGET;
+    let mut remaining = budgets::TRIAGE_TOTAL;
+    let mut truncated = false;
     for (path, diff) in per_file_diffs {
-        if remaining == 0 {
-            break;
-        }
-        diffs.push_str(&format!("=== FILE: {} ===\n", path));
-        let cap = PER_FILE_BUDGET.min(remaining);
-        if diff.chars().count() > cap {
-            let snippet: String = diff.chars().take(cap).collect();
-            diffs.push_str(&snippet);
-            diffs.push_str("\n... (truncated)\n");
-            remaining = remaining.saturating_sub(cap);
-        } else {
-            diffs.push_str(diff);
-            remaining = remaining.saturating_sub(diff.chars().count());
-        }
-        diffs.push_str("\n\n");
+        truncated |= append_budgeted_file(
+            &mut diffs,
+            &format!("=== FILE: {} ===\n", path),
+            diff,
+            &mut remaining,
+            budgets::TRIAGE_PER_FILE,
+        );
     }
 
-    format!(
+    let prompt = format!(
         "{}\n\n---\n\nPR Title: {}\n\nRelevant files ({} total):\n\n{}\n\n=== DIFFS ===\n\n{}",
         TRIAGE_PROMPT,
         pr_title,
         relevant_files.len(),
         file_info,
         diffs
-    )
+    );
+    (prompt, truncated)
 }
 
 pub fn build_summary_prompt(
@@ -428,6 +456,8 @@ pub fn build_grouping_prompt(
     build_file_context_prompt(GROUPING_PROMPT, pr_title, relevant_files)
 }
 
+/// Summary/grouping prompts carry only one info line per file (no diffs), so
+/// they never truncate and don't participate in `analysis_truncated`.
 fn build_file_context_prompt(
     system_prompt: &str,
     pr_title: &str,
@@ -466,19 +496,19 @@ pub fn build_classification_prompt(
     pr_title: &str,
     file_list: &[String],
     diff_content: &str,
-) -> String {
+) -> (String, bool) {
     let files_str = file_list.join("\n");
 
-    // Truncate diff to ~30000 chars for the AI prompt
-    let truncated_diff = match truncate_chars(diff_content, 30000) {
-        Some(t) => format!("{}\n\n... (diff truncated for brevity)", t),
-        None => diff_content.to_string(),
+    let (truncated_diff, truncated) = match truncate_chars(diff_content, budgets::CLASSIFICATION_DIFF) {
+        Some(t) => (format!("{}\n\n... (diff truncated for brevity)", t), true),
+        None => (diff_content.to_string(), false),
     };
 
-    format!(
+    let prompt = format!(
         "{}\n\n---\n\nPR Title: {}\n\nFiles changed in this PR:\n\n{}\n\n=== DIFF CONTENT (for context) ===\n\n{}",
         CLASSIFICATION_PROMPT, pr_title, files_str, truncated_diff
-    )
+    );
+    (prompt, truncated)
 }
 
 /// A previously reviewed highlight, fed back into the prompt so re-analysis
@@ -496,26 +526,31 @@ pub fn build_highlight_prompt(
     pr_body: &str,
     per_file_diffs: &[(String, String)], // (path, diff)
     prior_notes: &[PriorNote],
-) -> String {
+) -> (String, bool) {
+    let mut truncated = false;
+
+    // Per-file cap plus a shared pool across all files — one giant file can't
+    // starve the rest, and many large files can't blow the context window.
     let mut context = String::new();
+    let mut remaining = budgets::HIGHLIGHT_TOTAL;
     for (path, diff) in per_file_diffs {
-        context.push_str(&format!("=== FILE: {} ===\n", path));
-        // Truncate per-file diff to 5000 chars
-        match truncate_chars(diff, 5000) {
-            Some(t) => {
-                context.push_str(&t);
-                context.push_str("\n... (truncated)\n");
-            }
-            None => context.push_str(diff),
-        }
-        context.push_str("\n\n");
+        truncated |= append_budgeted_file(
+            &mut context,
+            &format!("=== FILE: {} ===\n", path),
+            diff,
+            &mut remaining,
+            budgets::HIGHLIGHT_PER_FILE,
+        );
     }
 
     let body_section = if pr_body.trim().is_empty() {
         String::new()
     } else {
-        let truncated_body = match truncate_chars(pr_body, 2000) {
-            Some(t) => format!("{}\n... (truncated)", t),
+        let truncated_body = match truncate_chars(pr_body, budgets::HIGHLIGHT_BODY) {
+            Some(t) => {
+                truncated = true;
+                format!("{}\n... (truncated)", t)
+            }
             None => pr_body.to_string(),
         };
         format!("\nPR Description:\n{}\n", truncated_body)
@@ -540,10 +575,11 @@ pub fn build_highlight_prompt(
         s
     };
 
-    format!(
+    let prompt = format!(
         "{}\n\n---\n\nPR Title: {}\n{}{}\n{}",
         HIGHLIGHT_PROMPT, pr_title, body_section, prior_section, context
-    )
+    );
+    (prompt, truncated)
 }
 
 #[cfg(test)]
@@ -552,7 +588,7 @@ mod tests {
 
     #[test]
     fn highlight_prompt_includes_pr_body_section() {
-        let prompt = build_highlight_prompt(
+        let (prompt, _) = build_highlight_prompt(
             "Add retry logic",
             "This PR adds exponential backoff to the fetch client.",
             &[("client.rs".to_string(), "some diff".to_string())],
@@ -564,7 +600,7 @@ mod tests {
 
     #[test]
     fn highlight_prompt_omits_body_section_when_empty() {
-        let prompt = build_highlight_prompt(
+        let (prompt, _) = build_highlight_prompt(
             "Add retry logic",
             "",
             &[("client.rs".to_string(), "some diff".to_string())],
@@ -595,7 +631,7 @@ mod tests {
                 reason: String::new(),
             },
         ];
-        let prompt = build_highlight_prompt("Title", "", &[], &prior_notes);
+        let (prompt, _) = build_highlight_prompt("Title", "", &[], &prior_notes);
         assert!(prompt.contains("PREVIOUSLY REVIEWED NOTES"));
         assert!(prompt.contains("- [fixed] a.rs: Null check removed — reviewer: restored in follow-up commit"));
         assert!(prompt.contains("- [intentional] b.rs: Config default changed"));
@@ -604,36 +640,74 @@ mod tests {
 
     #[test]
     fn highlight_prompt_omits_prior_section_when_empty() {
-        let prompt = build_highlight_prompt("Title", "", &[], &[]);
+        let (prompt, _) = build_highlight_prompt("Title", "", &[], &[]);
         assert!(!prompt.contains("PREVIOUSLY REVIEWED NOTES"));
     }
 
     #[test]
     fn highlight_prompt_per_file_truncation_is_char_safe_on_multibyte() {
-        // A >5000-char diff made entirely of a 3-byte multibyte char would panic
-        // under `&diff[..5000]` byte slicing (it lands mid-character). Chars,
-        // not bytes, must be counted and sliced.
-        let diff: String = std::iter::repeat('★').take(6000).collect();
-        let prompt = build_highlight_prompt(
+        // An over-budget diff made entirely of a 3-byte multibyte char would
+        // panic under byte slicing (it lands mid-character). Chars, not bytes,
+        // must be counted and sliced.
+        let diff: String = std::iter::repeat('★').take(budgets::HIGHLIGHT_PER_FILE + 1000).collect();
+        let (prompt, truncated) = build_highlight_prompt(
             "Title",
             "",
             &[("weird.rs".to_string(), diff)],
             &[],
         );
         assert!(prompt.contains("... (truncated)"));
+        assert!(truncated);
+    }
+
+    #[test]
+    fn highlight_prompt_reports_no_truncation_for_fitting_input() {
+        // (No marker assertion here: HIGHLIGHT_PROMPT's own instructions
+        // mention the "... (truncated)" marker, so the flag is the signal.)
+        let (_, truncated) = build_highlight_prompt(
+            "Title",
+            "short body",
+            &[("a.rs".to_string(), "small diff".to_string())],
+            &[],
+        );
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn highlight_prompt_total_pool_caps_many_large_files() {
+        // Each file fits its per-file cap, but together they blow the shared
+        // pool — later files must be cut/omitted and the flag must report it.
+        let per_file = budgets::HIGHLIGHT_PER_FILE - 5_000;
+        let n_files = budgets::HIGHLIGHT_TOTAL / per_file + 3;
+        let files: Vec<(String, String)> = (0..n_files)
+            .map(|i| (format!("f{i}.rs"), "d".repeat(per_file)))
+            .collect();
+        let (prompt, truncated) = build_highlight_prompt("Title", "", &files, &[]);
+        assert!(truncated);
+        // Pool + instructions + headers, but nowhere near the raw input sum.
+        assert!(prompt.chars().count() < budgets::HIGHLIGHT_TOTAL + 20_000);
     }
 
     #[test]
     fn classification_prompt_truncation_is_char_safe_on_multibyte() {
-        let diff: String = std::iter::repeat('★').take(31000).collect();
-        let prompt = build_classification_prompt("Title", &["a.rs".to_string()], &diff);
+        let diff: String = std::iter::repeat('★').take(budgets::CLASSIFICATION_DIFF + 1000).collect();
+        let (prompt, truncated) = build_classification_prompt("Title", &["a.rs".to_string()], &diff);
         assert!(prompt.contains("diff truncated for brevity"));
+        assert!(truncated);
+    }
+
+    #[test]
+    fn classification_prompt_reports_no_truncation_for_fitting_diff() {
+        let (prompt, truncated) =
+            build_classification_prompt("Title", &["a.rs".to_string()], "tiny diff");
+        assert!(!prompt.contains("diff truncated for brevity"));
+        assert!(!truncated);
     }
 
     #[test]
     fn pr_body_truncation_is_char_safe_on_multibyte() {
-        let body: String = std::iter::repeat('★').take(2500).collect();
-        let prompt = build_highlight_prompt(
+        let body: String = std::iter::repeat('★').take(budgets::HIGHLIGHT_BODY + 500).collect();
+        let (prompt, truncated) = build_highlight_prompt(
             "Title",
             &body,
             &[],
@@ -641,6 +715,7 @@ mod tests {
         );
         assert!(prompt.contains("PR Description:"));
         assert!(prompt.contains("... (truncated)"));
+        assert!(truncated);
     }
 
     #[test]
@@ -657,7 +732,7 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_includes_user_requirements_when_provided() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -673,7 +748,7 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_omits_user_requirements_when_none() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -692,7 +767,7 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_includes_linked_issues_section() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -721,7 +796,7 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_omits_linked_issues_when_empty() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -736,7 +811,7 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_linked_issues_respect_per_issue_budget() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, truncated) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -744,22 +819,24 @@ mod tests {
             &[],
             &["a.rs".to_string()],
             None,
-            &[linked_issue(1, "Big", &"y".repeat(3500))],
+            &[linked_issue(1, "Big", &"y".repeat(budgets::COVERAGE_ISSUE_PER_ISSUE + 500))],
         );
-        // 3500 chars > the 3000-char per-issue cap.
+        // Exceeds the per-issue cap — cut at the cap.
         assert!(prompt.contains("--- Issue #1: Big ---"));
         assert!(prompt.contains("... (truncated)"));
-        assert!(prompt.contains(&"y".repeat(3000)));
-        assert!(!prompt.contains(&"y".repeat(3001)));
+        assert!(prompt.contains(&"y".repeat(budgets::COVERAGE_ISSUE_PER_ISSUE)));
+        assert!(!prompt.contains(&"y".repeat(budgets::COVERAGE_ISSUE_PER_ISSUE + 1)));
+        assert!(truncated);
     }
 
     #[test]
     fn requirements_coverage_prompt_linked_issues_respect_total_budget() {
-        // Four 3000-char issues against the 8000-char pool: full, full,
-        // truncated to the 2000 remaining, then dropped entirely.
+        // Six 4500-char issues against the 20_000-char pool: four full, the
+        // fifth truncated to the 2000 remaining, the sixth reduced to an
+        // omission stub.
         let issues: Vec<LinkedIssue> =
-            (1..=4).map(|n| linked_issue(n, "Issue", &"z".repeat(3000))).collect();
-        let prompt = build_requirements_coverage_prompt(
+            (1..=6).map(|n| linked_issue(n, "Issue", &"z".repeat(4500))).collect();
+        let (prompt, truncated) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -769,11 +846,15 @@ mod tests {
             None,
             &issues,
         );
-        assert!(prompt.contains("--- Issue #1: Issue ---"));
-        assert!(prompt.contains("--- Issue #2: Issue ---"));
-        assert!(prompt.contains("--- Issue #3: Issue ---"));
-        assert!(!prompt.contains("--- Issue #4: Issue ---"));
+        assert!(prompt.contains("--- Issue #4: Issue ---"));
+        assert!(prompt.contains("--- Issue #5: Issue ---"));
         assert!(prompt.contains("... (truncated)"));
+        assert!(prompt.contains(&"z".repeat(2000)));
+        assert!(prompt.contains("--- Issue #6: Issue ---"));
+        assert!(prompt.contains("(omitted — analysis budget exhausted)"));
+        // No run longer than one full issue survives the caps.
+        assert!(!prompt.contains(&"z".repeat(4501)));
+        assert!(truncated);
     }
 
     #[test]
@@ -793,13 +874,34 @@ mod tests {
     }
 
     #[test]
+    fn extract_test_hunks_keeps_from_first_marker_hunk_onward() {
+        let diff = "@@ -1,3 +1,4 @@\n fn real() {}\n+fn added() {}\n@@ -20,2 +21,4 @@\n+#[cfg(test)]\n+mod tests {\n@@ -30,1 +33,2 @@\n+    #[test]\n+    fn t() {}";
+        let sliced = extract_test_hunks(diff);
+        assert!(!sliced.contains("fn added()"));
+        assert!(sliced.contains("#[cfg(test)]"));
+        assert!(sliced.contains("fn t() {}"));
+    }
+
+    #[test]
+    fn extract_test_hunks_whole_diff_when_marker_in_first_hunk() {
+        let diff = "@@ -1,1 +1,2 @@\n+#[test]\n+fn t() {}";
+        assert_eq!(extract_test_hunks(diff), diff);
+    }
+
+    #[test]
+    fn extract_test_hunks_falls_back_when_no_marker_hunks() {
+        let diff = "no hunk headers at all";
+        assert_eq!(extract_test_hunks(diff), diff);
+    }
+
+    #[test]
     fn has_inline_test_markers_negative_on_unrelated_diff() {
         assert!(!has_inline_test_markers("@@ -1 +1 @@\n-old\n+new\n+fn helper() {}\n"));
     }
 
     #[test]
     fn requirements_coverage_prompt_includes_inline_and_existing_sections() {
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[("tests/a.rs".to_string(), "+assert!(a());".to_string())],
@@ -821,7 +923,7 @@ mod tests {
     #[test]
     fn requirements_coverage_prompt_placeholder_only_when_no_changed_test_evidence() {
         // Inline test diffs alone suppress the "(no test files changed)" line.
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -834,7 +936,7 @@ mod tests {
         assert!(!prompt.contains("(no test files changed in this PR)"));
 
         // Existing unchanged tests do NOT — they aren't changed in this PR.
-        let prompt = build_requirements_coverage_prompt(
+        let (prompt, _) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -850,8 +952,8 @@ mod tests {
 
     #[test]
     fn requirements_coverage_prompt_existing_tests_have_own_budget() {
-        let big = "y".repeat(2500);
-        let prompt = build_requirements_coverage_prompt(
+        let big = "y".repeat(budgets::COVERAGE_EXISTING_PER_FILE + 500);
+        let (prompt, truncated) = build_requirements_coverage_prompt(
             "Title",
             "PR body",
             &[],
@@ -861,11 +963,27 @@ mod tests {
             None,
             &[],
         );
-        // 2500 chars > the 2000-char per-file cap for existing test files.
+        // Exceeds the per-file cap for existing test files — cut at the cap.
         assert!(prompt.contains("=== EXISTING TEST FILE: tests/big.rs ==="));
         assert!(prompt.contains("... (truncated)"));
-        assert!(!prompt.contains(&"y".repeat(2001)));
-        assert!(prompt.contains(&"y".repeat(2000)));
+        assert!(!prompt.contains(&"y".repeat(budgets::COVERAGE_EXISTING_PER_FILE + 1)));
+        assert!(prompt.contains(&"y".repeat(budgets::COVERAGE_EXISTING_PER_FILE)));
+        assert!(truncated);
+    }
+
+    #[test]
+    fn requirements_coverage_prompt_reports_no_truncation_for_fitting_input() {
+        let (_, truncated) = build_requirements_coverage_prompt(
+            "Title",
+            "PR body",
+            &[("tests/a.rs".to_string(), "+assert!(a());".to_string())],
+            &[],
+            &[("tests/old.rs".to_string(), "fn existing() {}".to_string())],
+            &["src/impl.rs".to_string()],
+            Some("The endpoint must return 404 for unknown ids."),
+            &[],
+        );
+        assert!(!truncated);
     }
 
     #[test]

@@ -149,6 +149,11 @@ export interface ReviewManifest {
   /** This PR's commits, oldest first. Empty on manifests fetched before this
    * field existed, or when the commits fetch failed (best-effort). */
   commits: PrCommit[];
+  /** True when any AI pass had its prompt input cut to fit a budget during
+   * the run that produced this manifest — surfaced as a muted Overview line.
+   * Absent on manifests cached before the field existed. */
+  analysis_truncated?: boolean;
+  truncated_passes?: string[];
   files: FileDiff[];
 }
 

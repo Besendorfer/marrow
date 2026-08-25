@@ -7,7 +7,7 @@ use crate::pr_parser::parse_pr_ref;
 use crate::pr_requirements;
 use crate::prompts::{
     build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_requirements_coverage_prompt,
-    build_summary_prompt, build_triage_prompt, has_inline_test_markers, is_test_path, PriorNote,
+    build_summary_prompt, build_triage_prompt, extract_test_hunks, has_inline_test_markers, is_test_path, PriorNote,
 };
 use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, LinkedIssue,
@@ -104,14 +104,14 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         .files
         .iter()
         .filter(|f| !is_test_path(&f.path) && has_inline_test_markers(&f.unified_diff))
-        .map(|f| (f.path.clone(), f.unified_diff.clone()))
+        .map(|f| (f.path.clone(), extract_test_hunks(&f.unified_diff)))
         .collect();
     let changed_paths: Vec<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
 
     let existing_tests =
         fetch_related_existing_tests(&github, &parsed.owner, &parsed.repo, &manifest.head_sha, &changed_paths).await;
 
-    let prompt = build_requirements_coverage_prompt(
+    let (prompt, coverage_truncated) = build_requirements_coverage_prompt(
         &manifest.pr_title,
         &manifest.body,
         &test_diffs,
@@ -141,6 +141,15 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
     if !linked_issues.is_empty() {
         if let Some(c) = manifest.requirements_coverage.as_mut() {
             c.source_issues = linked_issues.iter().map(|i| i.number).collect();
+        }
+    }
+    // Asymmetric on purpose: this re-analysis re-runs ONLY the coverage pass,
+    // so it can add the truncated flag but never clear it — a prior `true`
+    // may be owed to the other passes, which weren't re-built here.
+    if coverage_truncated {
+        manifest.analysis_truncated = true;
+        if !manifest.truncated_passes.iter().any(|p| p == "coverage") {
+            manifest.truncated_passes.push("coverage".to_string());
         }
     }
 
@@ -227,8 +236,17 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     emit_progress(app, 3, "Classifying files with AI", FetchStatus::Running, None, None);
     let ai = AiBackend::from_settings(settings).await?;
 
-    let classification_prompt =
+    let (classification_prompt, classification_truncated) =
         build_classification_prompt(&pr_title, &file_list, &full_diff);
+    // Every pass's truncation flag this run, by name — ends up on the
+    // manifest so the Overview can surface that analysis saw less than the
+    // full PR, and WHICH pass was affected (attribution earned its keep the
+    // very first time the flag fired: three debugging rounds on #192).
+    // Summary/grouping never truncate (see build_file_context_prompt).
+    let mut truncated_passes: Vec<String> = Vec::new();
+    if classification_truncated {
+        truncated_passes.push("classification".to_string());
+    }
 
     let classification_raw = ai.invoke(&classification_prompt).await?;
 
@@ -265,6 +283,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         .filter(|p| !is_test_path(p))
         .filter_map(|p| per_file_diff_map.get(p).map(|d| (p.clone(), d.clone())))
         .filter(|(_, d)| has_inline_test_markers(d))
+        .map(|(p, d)| (p, extract_test_hunks(&d)))
         .collect();
     let mut highlights_by_path: HashMap<String, Vec<Highlight>> = HashMap::new();
     let mut summary = String::new();
@@ -315,12 +334,20 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         emit_progress(app, 4, "Analyzing highlights, summary, grouping, and coverage", FetchStatus::Running, None, Some((0, ai_total)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
         let prior_notes = build_prior_notes(&previous_manifest, &parsed.owner, &parsed.repo, parsed.number);
-        let highlight_prompt = build_highlight_prompt(&pr_title, &pr_body, &per_file_diffs, &prior_notes);
+        let (highlight_prompt, highlight_truncated) =
+            build_highlight_prompt(&pr_title, &pr_body, &per_file_diffs, &prior_notes);
+        if highlight_truncated {
+            truncated_passes.push("highlights".to_string());
+        }
 
         let summary_prompt = build_summary_prompt(&pr_title, &relevant);
         let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
         let triage_prompt = if run_triage {
-            build_triage_prompt(&pr_title, &relevant, &per_file_diffs)
+            let (prompt, truncated) = build_triage_prompt(&pr_title, &relevant, &per_file_diffs);
+            if truncated {
+                truncated_passes.push("triage".to_string());
+            }
+            prompt
         } else {
             String::new()
         };
@@ -332,7 +359,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             Vec::new()
         };
         let coverage_prompt = if run_coverage {
-            build_requirements_coverage_prompt(
+            let (prompt, truncated) = build_requirements_coverage_prompt(
                 &pr_title,
                 &pr_body,
                 &test_diffs,
@@ -341,7 +368,11 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 &file_list,
                 user_requirements_text,
                 &linked_issues,
-            )
+            );
+            if truncated {
+                truncated_passes.push("coverage".to_string());
+            }
+            prompt
         } else {
             String::new()
         };
@@ -585,6 +616,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         requirements_coverage,
         body: truncate_chars(&pr_body, 10000),
         commits,
+        analysis_truncated: !truncated_passes.is_empty(),
+        truncated_passes,
         files: file_diffs,
     };
 

@@ -5,6 +5,7 @@
 pub mod activity;
 pub mod ai;
 pub mod bedrock;
+pub mod budgets;
 pub mod chat;
 pub mod chat_agent;
 pub mod chat_history;
