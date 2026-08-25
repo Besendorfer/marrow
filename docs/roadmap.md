@@ -25,8 +25,8 @@ more surfaces.
 
 ## Phase 1: Finish Active Work
 
-- [ ] Ship linked-issue requirements coverage (#189 / PR #190).
-- [ ] Ship model-scale analysis budgets and visible truncation (#191 / PR #192).
+- [x] Ship linked-issue requirements coverage (#189 / PR #190). Shipped in v0.36.0.
+- [x] Ship model-scale analysis budgets and visible truncation (#191 / PR #192). Shipped in v0.36.0.
 - [ ] Resolve or narrow the parent requirements issue (#179).
 - [ ] Review older open PR #178 and either finish or close it.
 
