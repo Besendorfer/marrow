@@ -660,8 +660,23 @@ fn parse_highlights_strict(raw: Result<String, String>) -> Result<Vec<HighlightR
     let raw = raw.map_err(|e| format!("The highlights analysis failed — keeping any previous results. {e}"))?;
     let json = extract_json_array(&raw)
         .map_err(|e| format!("The highlights analysis returned an unusable response — keeping any previous results. {e}"))?;
-    serde_json::from_value(json)
-        .map_err(|e| format!("The highlights analysis returned an unusable response — keeping any previous results. {e}"))
+    let entries = json.as_array().cloned().unwrap_or_default();
+    let total = entries.len();
+    // Per-element salvage: one malformed entry must not discard the valid
+    // findings around it. But an array where NOTHING parses is an unusable
+    // response, same as no array at all — that hard-fails.
+    let parsed: Vec<HighlightResult> = entries
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    if parsed.is_empty() && total > 0 {
+        return Err(
+            "The highlights analysis returned an unusable response — keeping any previous results. \
+             None of the returned entries matched the expected shape."
+                .to_string(),
+        );
+    }
+    Ok(parsed)
 }
 
 /// Parse a degradable JSON-array pass (e.g. grouping). `Err` means the pass
@@ -1493,8 +1508,21 @@ mod tests {
     fn highlights_unusable_json_fails_the_fetch() {
         let err = parse_highlights_strict(Ok("I'm sorry, I can't do that".to_string())).unwrap_err();
         assert!(err.contains("unusable response"), "{err}");
-        // Well-formed array with the wrong shape is also unusable.
+        // Well-formed array where nothing matches the shape is also unusable.
         assert!(parse_highlights_strict(Ok("[{\"nope\": 1}]".to_string())).is_err());
+    }
+
+    #[test]
+    fn highlights_salvage_valid_entries_around_a_malformed_one() {
+        let raw = r#"[
+            {"path":"a.rs","start_line":1,"end_line":2,"severity":"info","comment":"x"},
+            {"malformed": true},
+            {"path":"b.rs","start_line":3,"end_line":4,"severity":"warning","comment":"y"}
+        ]"#;
+        let ok = parse_highlights_strict(Ok(raw.to_string())).unwrap();
+        assert_eq!(ok.len(), 2);
+        assert_eq!(ok[0].path, "a.rs");
+        assert_eq!(ok[1].path, "b.rs");
     }
 
     #[test]
