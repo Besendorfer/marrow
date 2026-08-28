@@ -73,6 +73,25 @@ pub fn retryable_response_delay(status: StatusCode, headers: &HeaderMap, attempt
     }
 }
 
+/// Friendly message for a rate-limited response we chose not to wait out —
+/// either the primary quota is exhausted (reset-time message) or the server
+/// directed a wait longer than `RETRY_AFTER_CAP`. `None` when the response
+/// isn't a rate limit at all (callers fall back to the raw body).
+pub fn rate_limited_message(status: StatusCode, headers: &HeaderMap) -> Option<String> {
+    if primary_rate_limited(status, headers) {
+        return Some(rate_limit_message(headers));
+    }
+    if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
+        if let Some(wait) = retry_after(headers) {
+            return Some(format!(
+                "GitHub asked us to back off — try again in about {} seconds.",
+                wait.as_secs()
+            ));
+        }
+    }
+    None
+}
+
 /// True when the response is GitHub saying the primary rate quota is spent.
 pub fn primary_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
     (status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS)
@@ -182,6 +201,23 @@ mod tests {
         assert!(msg.contains("minute"), "{msg}");
         let msg = rate_limit_message(&HeaderMap::new());
         assert!(msg.contains("within the hour"), "{msg}");
+    }
+
+    #[test]
+    fn long_server_directed_waits_get_a_friendly_message() {
+        // Retry-After beyond the inline cap: not retried (tested above), but
+        // the surfaced error must still communicate the retry timing.
+        let long = headers(&[("retry-after", "120")]);
+        let msg = rate_limited_message(StatusCode::FORBIDDEN, &long).unwrap();
+        assert!(msg.contains("120 seconds"), "{msg}");
+        // Exhausted primary quota still gets the reset-time message.
+        let primary = headers(&[("x-ratelimit-remaining", "0")]);
+        assert!(rate_limited_message(StatusCode::TOO_MANY_REQUESTS, &primary)
+            .unwrap()
+            .contains("rate limit exceeded"));
+        // A plain 403 (auth failure, SSO) is not a rate limit — raw body path.
+        assert!(rate_limited_message(StatusCode::FORBIDDEN, &HeaderMap::new()).is_none());
+        assert!(rate_limited_message(StatusCode::NOT_FOUND, &HeaderMap::new()).is_none());
     }
 
     #[test]

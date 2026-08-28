@@ -488,8 +488,8 @@ impl GithubClient {
                     continue;
                 }
             }
-            if crate::net::primary_rate_limited(status, resp.headers()) {
-                return Err(crate::net::rate_limit_message(resp.headers()));
+            if let Some(msg) = crate::net::rate_limited_message(status, resp.headers()) {
+                return Err(msg);
             }
             let body = resp.text().await.unwrap_or_default();
             return Err(format!("GitHub API error ({}): {}", status, body));
@@ -549,8 +549,8 @@ impl GithubClient {
                         continue;
                     }
                 }
-                if crate::net::primary_rate_limited(status, resp.headers()) {
-                    return Err(crate::net::rate_limit_message(resp.headers()));
+                if let Some(msg) = crate::net::rate_limited_message(status, resp.headers()) {
+                    return Err(msg);
                 }
                 let body = resp.text().await.unwrap_or_default();
                 return Err(format!("GraphQL error ({}): {}", status, body));
