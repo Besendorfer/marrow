@@ -14,8 +14,12 @@ fn response_preview(text: &str) -> String {
     text.chars().take(500).collect()
 }
 
-/// POST with bounded retries on transient failures (connect/timeout, 5xx,
-/// 429) — safe for AI chat/inference calls, which have no side effects.
+/// POST with bounded retries on transient failures — safe for AI
+/// chat/inference calls, which have no side effects. Transport retries are
+/// connect-only: a request that timed out after minutes of inference is
+/// expensive slowness, not transience, and retrying it would double the wait
+/// before an honest error (the AI deadline is already generous — see
+/// `net::AI_REQUEST_TIMEOUT`). Response-status retries cover 5xx/429.
 /// Returns the first non-transient response, which may still be an error
 /// status: callers keep their own provider-specific error shaping. Streaming
 /// callers use this too — a retry can only happen before any stream bytes
@@ -39,7 +43,7 @@ async fn post_with_retries(
                 }
                 return Ok(resp);
             }
-            Err(e) if crate::net::transient_transport_error(&e) && attempt < crate::net::MAX_ATTEMPTS => {
+            Err(e) if crate::net::unsent_transport_error(&e) && attempt < crate::net::MAX_ATTEMPTS => {
                 tokio::time::sleep(crate::net::backoff_delay(attempt)).await;
                 attempt += 1;
             }

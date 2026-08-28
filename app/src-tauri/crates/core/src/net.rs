@@ -13,8 +13,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Overall deadline for GitHub REST/GraphQL calls (bounded JSON bodies).
 pub const GITHUB_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Overall deadline for non-streaming AI invokes (big prompts, slow models).
-pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// Overall deadline for non-streaming AI invokes. Generous on purpose: a
+/// budget-capped highlights prompt on a slow provider can legitimately run
+/// several minutes, and since the highlights pass hard-fails the fetch, a
+/// too-tight deadline would turn honest slowness into failure. This bounds
+/// hangs, not inference. AI timeouts are NOT retried (see `post_with_retries`).
+pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 /// Total attempts (first try + retries) for transient failures.
 pub const MAX_ATTEMPTS: u32 = 3;
 /// Longest server-directed wait we'll honor inline; beyond this the wait is
