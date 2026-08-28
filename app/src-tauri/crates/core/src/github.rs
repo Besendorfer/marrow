@@ -421,6 +421,22 @@ fn normalize_ci_state(state: &str) -> String {
     }
 }
 
+/// Whether a GraphQL payload gets mutation retry semantics (connect-only).
+/// Fails SAFE: only text that provably starts a query document — `query` or
+/// the shorthand `{` — gets query semantics; anything unrecognized (leading
+/// comments, fragment-first documents, missing text) is treated as a
+/// mutation, because over-classifying merely loses retries while
+/// under-classifying risks duplicate posts.
+fn graphql_is_mutation(body: &serde_json::Value) -> bool {
+    !body
+        .get("query")
+        .and_then(|q| q.as_str())
+        .is_some_and(|q| {
+            let q = q.trim_start();
+            q.starts_with("query") || q.starts_with('{')
+        })
+}
+
 impl GithubClient {
     pub fn new(token: Option<String>) -> Self {
         Self {
@@ -483,16 +499,17 @@ impl GithubClient {
     /// Send a GraphQL request and return the parsed JSON response.
     /// Handles POST, headers, status check, and GraphQL-level error checking.
     ///
-    /// Retry policy keys off the operation itself: a mutation (query text
-    /// starting with `mutation`) retries only when the request provably never
-    /// left (connect error) — anything later is ambiguous and a retry could
-    /// post a duplicate comment/review. Queries retry the full transient set
-    /// (connect/timeout, 5xx, 429, secondary rate limits).
+    /// Retry policy keys off the operation itself: a mutation retries only
+    /// when the request provably never left (connect error) — anything later
+    /// is ambiguous and a retry could post a duplicate comment/review.
+    /// Queries retry the full transient set (connect/timeout, 5xx, 429,
+    /// secondary rate limits). Classification fails SAFE: only text that
+    /// provably starts a query document gets query semantics; anything
+    /// unrecognized (comments, fragments-first, missing text) is treated as
+    /// a mutation, because the worst case of over-classifying is lost
+    /// retries, while under-classifying risks duplicate posts.
     async fn graphql_request(&self, body: serde_json::Value) -> Result<serde_json::Value, String> {
-        let is_mutation = body
-            .get("query")
-            .and_then(|q| q.as_str())
-            .is_some_and(|q| q.trim_start().starts_with("mutation"));
+        let is_mutation = graphql_is_mutation(&body);
         let mut attempt = 1u32;
         loop {
             let mut req = self
@@ -2663,7 +2680,24 @@ pub struct CollectedActivity {
 
 #[cfg(test)]
 mod tests {
-    use super::{failing_conclusion, first_line, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+    use super::{failing_conclusion, first_line, graphql_is_mutation, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+
+    #[test]
+    fn graphql_mutation_classification_fails_safe() {
+        let q = |s: &str| serde_json::json!({ "query": s });
+        // The two shapes every in-repo query uses get query semantics.
+        assert!(!graphql_is_mutation(&q("query($id: ID!) { node(id: $id) { id } }")));
+        assert!(!graphql_is_mutation(&q("{ viewer { login } }")));
+        assert!(!graphql_is_mutation(&q("  \n{ viewer { login } }")));
+        // Mutations are mutations.
+        assert!(graphql_is_mutation(&q("mutation($id: ID!) { addComment(input: {}) { id } }")));
+        // Anything unrecognized fails SAFE to mutation semantics: leading
+        // comments, fragment-first documents, or a missing/odd query field.
+        assert!(graphql_is_mutation(&q("# a comment\nmutation { x }")));
+        assert!(graphql_is_mutation(&q("fragment F on PR { id } query { ...F }")));
+        assert!(graphql_is_mutation(&serde_json::json!({})));
+        assert!(graphql_is_mutation(&serde_json::json!({ "query": 42 })));
+    }
 
     #[test]
     fn first_line_extracts_headline_from_multi_line_message() {
