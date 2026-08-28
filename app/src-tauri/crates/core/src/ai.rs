@@ -14,6 +14,44 @@ fn response_preview(text: &str) -> String {
     text.chars().take(500).collect()
 }
 
+/// POST with bounded retries on transient failures — safe for AI
+/// chat/inference calls, which have no side effects. Transport retries are
+/// connect-only: a request that timed out after minutes of inference is
+/// expensive slowness, not transience, and retrying it would double the wait
+/// before an honest error (the AI deadline is already generous — see
+/// `net::AI_REQUEST_TIMEOUT`). Response-status retries cover 5xx/429.
+/// Returns the first non-transient response, which may still be an error
+/// status: callers keep their own provider-specific error shaping. Streaming
+/// callers use this too — a retry can only happen before any stream bytes
+/// were consumed.
+async fn post_with_retries(
+    build: impl Fn() -> reqwest::RequestBuilder,
+    label: &str,
+) -> Result<reqwest::Response, String> {
+    let mut attempt = 1u32;
+    loop {
+        match build().send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() && attempt < crate::net::MAX_ATTEMPTS {
+                    if let Some(delay) =
+                        crate::net::retryable_response_delay(resp.status(), resp.headers(), attempt)
+                    {
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+                }
+                return Ok(resp);
+            }
+            Err(e) if crate::net::unsent_transport_error(&e) && attempt < crate::net::MAX_ATTEMPTS => {
+                tokio::time::sleep(crate::net::backoff_delay(attempt)).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(format!("{label}: {e}")),
+        }
+    }
+}
+
 /// Extract a JSON array from text that may contain markdown fences or preamble.
 pub fn extract_json_array(text: &str) -> Result<serde_json::Value, String> {
     // Try direct parse
@@ -413,15 +451,18 @@ async fn stream_anthropic(
         "system": system,
         "messages": turns_to_messages(turns),
     });
-    let resp = reqwest::Client::new()
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Anthropic API request failed: {e}"))?;
+    let resp = post_with_retries(
+        || {
+            crate::net::http_client()
+                .post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body)
+        },
+        "Anthropic API request failed",
+    )
+    .await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -464,14 +505,17 @@ async fn stream_openai_compatible(
         "stream": true,
         "messages": messages,
     });
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .header("authorization", format!("Bearer {api_key}"))
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("OpenAI-compatible request to {url} failed: {e}"))?;
+    let resp = post_with_retries(
+        || {
+            crate::net::http_client()
+                .post(&url)
+                .header("authorization", format!("Bearer {api_key}"))
+                .header("content-type", "application/json")
+                .json(&body)
+        },
+        "OpenAI-compatible request failed",
+    )
+    .await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -723,15 +767,19 @@ async fn invoke_anthropic(api_key: &str, model: &str, prompt: &str) -> Result<St
         "max_tokens": ANTHROPIC_MAX_TOKENS,
         "messages": [{ "role": "user", "content": prompt }],
     });
-    let resp = reqwest::Client::new()
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Anthropic API request failed: {e}"))?;
+    let resp = post_with_retries(
+        || {
+            crate::net::http_client()
+                .post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .timeout(crate::net::AI_REQUEST_TIMEOUT)
+                .json(&body)
+        },
+        "Anthropic API request failed",
+    )
+    .await?;
 
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("Anthropic API read failed: {e}"))?;
@@ -772,14 +820,18 @@ async fn invoke_openai_compatible(
         "model": model,
         "messages": [{ "role": "user", "content": prompt }],
     });
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .header("authorization", format!("Bearer {api_key}"))
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("OpenAI-compatible request to {url} failed: {e}"))?;
+    let resp = post_with_retries(
+        || {
+            crate::net::http_client()
+                .post(&url)
+                .header("authorization", format!("Bearer {api_key}"))
+                .header("content-type", "application/json")
+                .timeout(crate::net::AI_REQUEST_TIMEOUT)
+                .json(&body)
+        },
+        "OpenAI-compatible request failed",
+    )
+    .await?;
 
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("OpenAI-compatible read failed: {e}"))?;

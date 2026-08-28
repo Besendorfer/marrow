@@ -392,6 +392,13 @@ export function PrOverview({
             — very large PR.
           </div>
         )}
+        {(manifest.failed_passes?.length ?? 0) > 0 && (
+          <div className="overview-card overview-noise">
+            Analysis incomplete — the {manifest.failed_passes!.join(", ")}{" "}
+            {manifest.failed_passes!.length === 1 ? "pass" : "passes"} failed;
+            those sections show defaults, not results. Refresh to retry.
+          </div>
+        )}
       </div>
       <div className="overview-rail">
         <AttentionDigest

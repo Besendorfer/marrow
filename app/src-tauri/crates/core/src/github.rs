@@ -421,10 +421,26 @@ fn normalize_ci_state(state: &str) -> String {
     }
 }
 
+/// Whether a GraphQL payload gets mutation retry semantics (connect-only).
+/// Fails SAFE: only text that provably starts a query document — `query` or
+/// the shorthand `{` — gets query semantics; anything unrecognized (leading
+/// comments, fragment-first documents, missing text) is treated as a
+/// mutation, because over-classifying merely loses retries while
+/// under-classifying risks duplicate posts.
+fn graphql_is_mutation(body: &serde_json::Value) -> bool {
+    !body
+        .get("query")
+        .and_then(|q| q.as_str())
+        .is_some_and(|q| {
+            let q = q.trim_start();
+            q.starts_with("query") || q.starts_with('{')
+        })
+}
+
 impl GithubClient {
     pub fn new(token: Option<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::net::http_client().clone(),
             token: token.unwrap_or_default(),
         }
     }
@@ -443,56 +459,131 @@ impl GithubClient {
         req
     }
 
-    async fn send_checked(&self, url: &str, accept: &str) -> Result<reqwest::Response, String> {
-        let resp = self
-            .request(url, accept)
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
+    /// Send a GET with retries and a deadline, returning the final response
+    /// WITHOUT judging non-success statuses — for callers that special-case
+    /// a status (e.g. 404-means-file-absent). Everything else goes through
+    /// `send_checked`. Non-retryable statuses come back as `Ok(resp)`.
+    async fn send_with_retries(
+        &self,
+        url: &str,
+        accept: &str,
+        timeout: std::time::Duration,
+    ) -> Result<reqwest::Response, String> {
+        let mut attempt = 1u32;
+        loop {
+            let sent = self.request(url, accept).timeout(timeout).send().await;
+            let resp = match sent {
+                Ok(resp) => resp,
+                Err(e) if crate::net::transient_transport_error(&e) && attempt < crate::net::MAX_ATTEMPTS => {
+                    tokio::time::sleep(crate::net::backoff_delay(attempt)).await;
+                    attempt += 1;
+                    continue;
+                }
+                Err(e) => return Err(format!("GitHub API request failed: {}", e)),
+            };
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub API error ({}): {}", status, body));
+            if !resp.status().is_success() && attempt < crate::net::MAX_ATTEMPTS {
+                if let Some(delay) = crate::net::retryable_response_delay(resp.status(), resp.headers(), attempt) {
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                    continue;
+                }
+            }
+            return Ok(resp);
         }
+    }
 
-        Ok(resp)
+    async fn send_checked(&self, url: &str, accept: &str) -> Result<reqwest::Response, String> {
+        // Whole-PR diffs are bulk content — a multi-MB payload on a slow
+        // connection legitimately outlives the metadata deadline.
+        let timeout = if accept.ends_with(".diff") {
+            crate::net::GITHUB_BULK_TIMEOUT
+        } else {
+            crate::net::GITHUB_REQUEST_TIMEOUT
+        };
+        let resp = self.send_with_retries(url, accept, timeout).await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        if let Some(msg) = crate::net::rate_limited_message(status, resp.headers()) {
+            return Err(msg);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(format!("GitHub API error ({}): {}", status, body))
     }
 
     /// Send a GraphQL request and return the parsed JSON response.
     /// Handles POST, headers, status check, and GraphQL-level error checking.
+    ///
+    /// Retry policy keys off the operation itself: a mutation retries only
+    /// when the request provably never left (connect error) — anything later
+    /// is ambiguous and a retry could post a duplicate comment/review.
+    /// Queries retry the full transient set (connect/timeout, 5xx, 429,
+    /// secondary rate limits). Classification fails SAFE: only text that
+    /// provably starts a query document gets query semantics; anything
+    /// unrecognized (comments, fragments-first, missing text) is treated as
+    /// a mutation, because the worst case of over-classifying is lost
+    /// retries, while under-classifying risks duplicate posts.
     async fn graphql_request(&self, body: serde_json::Value) -> Result<serde_json::Value, String> {
-        let mut req = self
-            .client
-            .post("https://api.github.com/graphql")
-            .header(USER_AGENT, "relevant-reviews");
+        let is_mutation = graphql_is_mutation(&body);
+        let mut attempt = 1u32;
+        loop {
+            let mut req = self
+                .client
+                .post("https://api.github.com/graphql")
+                .header(USER_AGENT, "relevant-reviews")
+                .timeout(crate::net::GITHUB_REQUEST_TIMEOUT);
 
-        if !self.token.is_empty() {
-            req = req.header(AUTHORIZATION, format!("Bearer {}", self.token));
-        }
+            if !self.token.is_empty() {
+                req = req.header(AUTHORIZATION, format!("Bearer {}", self.token));
+            }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("GraphQL request failed: {}", e))?;
+            let sent = req.json(&body).send().await;
+            let resp = match sent {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let transient = if is_mutation {
+                        crate::net::unsent_transport_error(&e)
+                    } else {
+                        crate::net::transient_transport_error(&e)
+                    };
+                    if transient && attempt < crate::net::MAX_ATTEMPTS {
+                        tokio::time::sleep(crate::net::backoff_delay(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(format!("GraphQL request failed: {}", e));
+                }
+            };
 
-        if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GraphQL error ({}): {}", status, body));
+            if !status.is_success() {
+                if !is_mutation && attempt < crate::net::MAX_ATTEMPTS {
+                    if let Some(delay) = crate::net::retryable_response_delay(status, resp.headers(), attempt) {
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+                }
+                if let Some(msg) = crate::net::rate_limited_message(status, resp.headers()) {
+                    return Err(msg);
+                }
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("GraphQL error ({}): {}", status, body));
+            }
+
+            let result: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse GraphQL response: {}", e))?;
+
+            if let Some(errors) = result.get("errors") {
+                return Err(format!("GraphQL errors: {}", errors));
+            }
+
+            return Ok(result);
         }
-
-        let result: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse GraphQL response: {}", e))?;
-
-        if let Some(errors) = result.get("errors") {
-            return Err(format!("GraphQL errors: {}", errors));
-        }
-
-        Ok(result)
     }
 
     /// Lightweight check: returns (head_sha, review_comment_count, merged) from a
@@ -888,11 +979,12 @@ impl GithubClient {
             owner, repo, path, ref_sha
         );
 
+        // File contents are bulk downloads; this path had NO deadline or
+        // retries before #198 because its 404 special case bypassed
+        // send_checked — send_with_retries keeps the status visible.
         let resp = self
-            .request(&url, "application/vnd.github.v3+json")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
+            .send_with_retries(&url, "application/vnd.github.v3+json", crate::net::GITHUB_BULK_TIMEOUT)
+            .await?;
 
         if resp.status().as_u16() == 404 {
             // File doesn't exist at this ref (added or deleted)
@@ -901,6 +993,9 @@ impl GithubClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
+            if let Some(msg) = crate::net::rate_limited_message(status, resp.headers()) {
+                return Err(msg);
+            }
             let body = resp.text().await.unwrap_or_default();
             return Err(format!("GitHub API error ({}): {}", status, body));
         }
@@ -2606,7 +2701,24 @@ pub struct CollectedActivity {
 
 #[cfg(test)]
 mod tests {
-    use super::{failing_conclusion, first_line, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+    use super::{failing_conclusion, first_line, graphql_is_mutation, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+
+    #[test]
+    fn graphql_mutation_classification_fails_safe() {
+        let q = |s: &str| serde_json::json!({ "query": s });
+        // The two shapes every in-repo query uses get query semantics.
+        assert!(!graphql_is_mutation(&q("query($id: ID!) { node(id: $id) { id } }")));
+        assert!(!graphql_is_mutation(&q("{ viewer { login } }")));
+        assert!(!graphql_is_mutation(&q("  \n{ viewer { login } }")));
+        // Mutations are mutations.
+        assert!(graphql_is_mutation(&q("mutation($id: ID!) { addComment(input: {}) { id } }")));
+        // Anything unrecognized fails SAFE to mutation semantics: leading
+        // comments, fragment-first documents, or a missing/odd query field.
+        assert!(graphql_is_mutation(&q("# a comment\nmutation { x }")));
+        assert!(graphql_is_mutation(&q("fragment F on PR { id } query { ...F }")));
+        assert!(graphql_is_mutation(&serde_json::json!({})));
+        assert!(graphql_is_mutation(&serde_json::json!({ "query": 42 })));
+    }
 
     #[test]
     fn first_line_extracts_headline_from_multi_line_message() {
