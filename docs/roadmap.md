@@ -37,11 +37,18 @@ more surfaces.
 
 ## Phase 2: Reliability Foundation
 
-- [ ] Add explicit network connection and request timeouts.
-- [ ] Add bounded retries with jitter for transient GitHub and AI-provider failures.
-- [ ] Handle GitHub rate limits explicitly and communicate retry timing.
+- [x] Add explicit network connection and request timeouts. (#198 / PR #199,
+      merged 2026-08-28: shared client, 10s connect, 30s/120s/600s deadlines.)
+- [x] Add bounded retries with jitter for transient GitHub and AI-provider
+      failures. (#198 / PR #199: 3 attempts, jittered backoff; mutations
+      connect-only; timed-out inference never retried.)
+- [x] Handle GitHub rate limits explicitly and communicate retry timing.
+      (#198 / PR #199: Retry-After honored ≤30s, every declined wait names
+      its timing.)
 - [ ] Record each AI pass as complete, truncated, failed, or not run.
-- [ ] Ensure pass failures cannot silently become empty successful results.
+- [x] Ensure pass failures cannot silently become empty successful results.
+      (#198 / PR #199: highlights failure fails the fetch; other passes record
+      `failed_passes` + Overview "analysis incomplete" notice.)
 - [ ] Fingerprint cached analysis using pipeline version, model/provider, prompts,
       budgets, relevant settings, and PR metadata.
 - [ ] Make local state writes atomic and synchronize concurrent updates.
