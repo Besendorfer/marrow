@@ -459,14 +459,19 @@ impl GithubClient {
         req
     }
 
-    async fn send_checked(&self, url: &str, accept: &str) -> Result<reqwest::Response, String> {
+    /// Send a GET with retries and a deadline, returning the final response
+    /// WITHOUT judging non-success statuses — for callers that special-case
+    /// a status (e.g. 404-means-file-absent). Everything else goes through
+    /// `send_checked`. Non-retryable statuses come back as `Ok(resp)`.
+    async fn send_with_retries(
+        &self,
+        url: &str,
+        accept: &str,
+        timeout: std::time::Duration,
+    ) -> Result<reqwest::Response, String> {
         let mut attempt = 1u32;
         loop {
-            let sent = self
-                .request(url, accept)
-                .timeout(crate::net::GITHUB_REQUEST_TIMEOUT)
-                .send()
-                .await;
+            let sent = self.request(url, accept).timeout(timeout).send().await;
             let resp = match sent {
                 Ok(resp) => resp,
                 Err(e) if crate::net::transient_transport_error(&e) && attempt < crate::net::MAX_ATTEMPTS => {
@@ -477,23 +482,35 @@ impl GithubClient {
                 Err(e) => return Err(format!("GitHub API request failed: {}", e)),
             };
 
-            let status = resp.status();
-            if status.is_success() {
-                return Ok(resp);
-            }
-            if attempt < crate::net::MAX_ATTEMPTS {
-                if let Some(delay) = crate::net::retryable_response_delay(status, resp.headers(), attempt) {
+            if !resp.status().is_success() && attempt < crate::net::MAX_ATTEMPTS {
+                if let Some(delay) = crate::net::retryable_response_delay(resp.status(), resp.headers(), attempt) {
                     tokio::time::sleep(delay).await;
                     attempt += 1;
                     continue;
                 }
             }
-            if let Some(msg) = crate::net::rate_limited_message(status, resp.headers()) {
-                return Err(msg);
-            }
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub API error ({}): {}", status, body));
+            return Ok(resp);
         }
+    }
+
+    async fn send_checked(&self, url: &str, accept: &str) -> Result<reqwest::Response, String> {
+        // Whole-PR diffs are bulk content — a multi-MB payload on a slow
+        // connection legitimately outlives the metadata deadline.
+        let timeout = if accept.ends_with(".diff") {
+            crate::net::GITHUB_BULK_TIMEOUT
+        } else {
+            crate::net::GITHUB_REQUEST_TIMEOUT
+        };
+        let resp = self.send_with_retries(url, accept, timeout).await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        if let Some(msg) = crate::net::rate_limited_message(status, resp.headers()) {
+            return Err(msg);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(format!("GitHub API error ({}): {}", status, body))
     }
 
     /// Send a GraphQL request and return the parsed JSON response.
@@ -962,11 +979,12 @@ impl GithubClient {
             owner, repo, path, ref_sha
         );
 
+        // File contents are bulk downloads; this path had NO deadline or
+        // retries before #198 because its 404 special case bypassed
+        // send_checked — send_with_retries keeps the status visible.
         let resp = self
-            .request(&url, "application/vnd.github.v3+json")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
+            .send_with_retries(&url, "application/vnd.github.v3+json", crate::net::GITHUB_BULK_TIMEOUT)
+            .await?;
 
         if resp.status().as_u16() == 404 {
             // File doesn't exist at this ref (added or deleted)
@@ -975,6 +993,9 @@ impl GithubClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
+            if let Some(msg) = crate::net::rate_limited_message(status, resp.headers()) {
+                return Err(msg);
+            }
             let body = resp.text().await.unwrap_or_default();
             return Err(format!("GitHub API error ({}): {}", status, body));
         }

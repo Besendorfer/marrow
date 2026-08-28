@@ -13,6 +13,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Overall deadline for GitHub REST/GraphQL calls (bounded JSON bodies).
 pub const GITHUB_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Overall deadline for GitHub bulk-content downloads (whole-PR diffs, file
+/// contents). Multi-megabyte payloads on slow connections legitimately
+/// outlive the metadata deadline — this bounds hangs without aborting them.
+pub const GITHUB_BULK_TIMEOUT: Duration = Duration::from_secs(120);
 /// Overall deadline for non-streaming AI invokes. Generous on purpose: a
 /// budget-capped highlights prompt on a slow provider can legitimately run
 /// several minutes, and since the highlights pass hard-fails the fetch, a
