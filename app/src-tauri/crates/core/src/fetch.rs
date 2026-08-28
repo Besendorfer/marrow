@@ -152,6 +152,10 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
             manifest.truncated_passes.push("coverage".to_string());
         }
     }
+    // Unlike truncation, a coverage FAILURE mark can be cleared here: this
+    // path just re-ran exactly that pass and got a usable result (failure
+    // would have errored out above).
+    manifest.failed_passes.retain(|p| p != "coverage");
 
     // The AI call above is slow — a concurrent full Refresh may have written
     // a newer-head manifest to this cache file meanwhile. Only persist onto
@@ -287,6 +291,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         .collect();
     let mut highlights_by_path: HashMap<String, Vec<Highlight>> = HashMap::new();
     let mut summary = String::new();
+    let mut failed_passes: Vec<String> = Vec::new();
     let mut change_groups: Vec<ChangeGroup> = Vec::new();
     // Triage guidance (top risks + contract-first order). Only computed for large
     // PRs (see the gate below); None means the UI falls back to its normal views.
@@ -411,22 +416,26 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         }
         emit_progress(app, 4, "Analyzing highlights, summary, grouping, and coverage", FetchStatus::Done, None, None);
 
-        let highlights_raw = highlights_raw.unwrap_or_else(|_| "[]".to_string());
+        // The highlights pass is load-bearing: a failure errors the whole
+        // fetch (keeping any cached manifest) rather than rendering as a
+        // clean review with zero findings (issue #198).
+        let highlight_results = parse_highlights_strict(highlights_raw)?;
 
-        let highlights_json = extract_json_array(&highlights_raw).unwrap_or_else(|_| {
-            serde_json::Value::Array(vec![])
-        });
+        // The remaining passes degrade gracefully, but a failure is recorded
+        // in `failed_passes` so the Overview can say the analysis is
+        // incomplete instead of the section quietly reading as empty.
+        match summary_raw {
+            Ok(raw) => summary = raw,
+            Err(_) => failed_passes.push("summary".to_string()),
+        }
 
-        let highlight_results: Vec<HighlightResult> =
-            serde_json::from_value(highlights_json).unwrap_or_default();
-
-        summary = summary_raw.unwrap_or_default();
-
-        change_groups = grouping_raw
-            .ok()
-            .and_then(|raw| extract_json_array(&raw).ok())
-            .and_then(|json| serde_json::from_value(json).ok())
-            .unwrap_or_default();
+        change_groups = match parse_array_pass::<ChangeGroup>(grouping_raw) {
+            Ok(groups) => groups,
+            Err(_) => {
+                failed_passes.push("grouping".to_string());
+                Vec::new()
+            }
+        };
 
         // Index highlights by file path
         for h in highlight_results {
@@ -450,6 +459,11 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 .and_then(|raw| extract_json_object(&raw).ok())
                 .and_then(|json| serde_json::from_value::<TriageReport>(json).ok())
                 .filter(|t| !t.review_order.is_empty());
+            // The deterministic fallback keeps the UI working, but it is not
+            // the AI ordering the user asked for — record the pass as failed.
+            if parsed.is_none() {
+                failed_passes.push("triage".to_string());
+            }
             let mut report = parsed.unwrap_or_else(|| fallback_triage(&relevant, &highlights_by_path));
             finalize_triage(&mut report, &relevant);
             triage = Some(report);
@@ -463,6 +477,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 .ok()
                 .and_then(|raw| extract_json_object(&raw).ok())
                 .and_then(|json| serde_json::from_value(json).ok());
+            // Absence because the pass errored or returned unusable JSON is a
+            // failure; absence from `finalize_coverage` (nothing extracted)
+            // is a legitimate result and stays silent.
+            if parsed_cov.is_none() {
+                failed_passes.push("coverage".to_string());
+            }
             let known_tests: HashSet<&str> = test_diffs
                 .iter()
                 .chain(inline_test_diffs.iter())
@@ -618,6 +638,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         commits,
         analysis_truncated: !truncated_passes.is_empty(),
         truncated_passes,
+        failed_passes,
         files: file_diffs,
     };
 
@@ -631,6 +652,27 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
 const TRIAGE_MIN_FILES: usize = 5;
 
 /// Rank a risk level for ordering (lower = riskier, comes first).
+/// Parse the highlights pass output strictly. The highlights pass is the
+/// review's core product, so an AI error or unusable JSON is a fetch-level
+/// error — "no findings" must mean the analysis succeeded and found nothing
+/// (issue #198). The error keeps any previously cached manifest in place.
+fn parse_highlights_strict(raw: Result<String, String>) -> Result<Vec<HighlightResult>, String> {
+    let raw = raw.map_err(|e| format!("The highlights analysis failed — keeping any previous results. {e}"))?;
+    let json = extract_json_array(&raw)
+        .map_err(|e| format!("The highlights analysis returned an unusable response — keeping any previous results. {e}"))?;
+    serde_json::from_value(json)
+        .map_err(|e| format!("The highlights analysis returned an unusable response — keeping any previous results. {e}"))
+}
+
+/// Parse a degradable JSON-array pass (e.g. grouping). `Err` means the pass
+/// failed — AI error or unusable JSON — and belongs in `failed_passes`; the
+/// caller substitutes a default so the rest of the manifest still ships.
+fn parse_array_pass<T: serde::de::DeserializeOwned>(raw: Result<String, String>) -> Result<Vec<T>, String> {
+    let raw = raw?;
+    let json = extract_json_array(&raw)?;
+    serde_json::from_value(json).map_err(|e| e.to_string())
+}
+
 fn risk_rank(level: &str) -> u8 {
     match level {
         "critical" => 0,
@@ -1436,6 +1478,42 @@ fn strip_diff_header(diff: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::classify_diff_type;
+    use super::{parse_array_pass, parse_highlights_strict};
+    use crate::types::ChangeGroup;
+
+    #[test]
+    fn highlights_ai_error_fails_the_fetch_not_empties_it() {
+        let err = parse_highlights_strict(Err("connection reset".to_string())).unwrap_err();
+        assert!(err.contains("highlights analysis failed"), "{err}");
+        assert!(err.contains("keeping any previous results"), "{err}");
+        assert!(err.contains("connection reset"), "{err}");
+    }
+
+    #[test]
+    fn highlights_unusable_json_fails_the_fetch() {
+        let err = parse_highlights_strict(Ok("I'm sorry, I can't do that".to_string())).unwrap_err();
+        assert!(err.contains("unusable response"), "{err}");
+        // Well-formed array with the wrong shape is also unusable.
+        assert!(parse_highlights_strict(Ok("[{\"nope\": 1}]".to_string())).is_err());
+    }
+
+    #[test]
+    fn highlights_valid_and_empty_responses_parse() {
+        let ok = parse_highlights_strict(Ok(
+            r#"[{"path":"a.rs","start_line":1,"end_line":2,"severity":"info","comment":"x"}]"#.to_string(),
+        ))
+        .unwrap();
+        assert_eq!(ok.len(), 1);
+        // A genuinely empty result is a success — that's the honest "no findings".
+        assert!(parse_highlights_strict(Ok("[]".to_string())).unwrap().is_empty());
+    }
+
+    #[test]
+    fn degradable_array_pass_reports_failure_distinctly_from_empty() {
+        assert!(parse_array_pass::<ChangeGroup>(Err("boom".to_string())).is_err());
+        assert!(parse_array_pass::<ChangeGroup>(Ok("not json".to_string())).is_err());
+        assert!(parse_array_pass::<ChangeGroup>(Ok("[]".to_string())).unwrap().is_empty());
+    }
 
     #[test]
     fn github_status_is_authoritative() {

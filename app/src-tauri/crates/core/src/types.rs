@@ -202,6 +202,12 @@ pub struct ReviewManifest {
     /// for the Overview notice and for debugging budget overflows.
     #[serde(default)]
     pub truncated_passes: Vec<String>,
+    /// AI passes that errored or returned an unparseable response, so their
+    /// section of the manifest is absent/defaulted rather than a real result
+    /// (issue #198). The highlights pass never appears here — its failure
+    /// fails the whole fetch instead of masquerading as "no findings".
+    #[serde(default)]
+    pub failed_passes: Vec<String>,
     pub files: Vec<FileDiff>,
 }
 

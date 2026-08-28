@@ -424,7 +424,7 @@ fn normalize_ci_state(state: &str) -> String {
 impl GithubClient {
     pub fn new(token: Option<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::net::http_client().clone(),
             token: token.unwrap_or_default(),
         }
     }
@@ -444,55 +444,112 @@ impl GithubClient {
     }
 
     async fn send_checked(&self, url: &str, accept: &str) -> Result<reqwest::Response, String> {
-        let resp = self
-            .request(url, accept)
-            .send()
-            .await
-            .map_err(|e| format!("GitHub API request failed: {}", e))?;
+        let mut attempt = 1u32;
+        loop {
+            let sent = self
+                .request(url, accept)
+                .timeout(crate::net::GITHUB_REQUEST_TIMEOUT)
+                .send()
+                .await;
+            let resp = match sent {
+                Ok(resp) => resp,
+                Err(e) if crate::net::transient_transport_error(&e) && attempt < crate::net::MAX_ATTEMPTS => {
+                    tokio::time::sleep(crate::net::backoff_delay(attempt)).await;
+                    attempt += 1;
+                    continue;
+                }
+                Err(e) => return Err(format!("GitHub API request failed: {}", e)),
+            };
 
-        if !resp.status().is_success() {
             let status = resp.status();
+            if status.is_success() {
+                return Ok(resp);
+            }
+            if attempt < crate::net::MAX_ATTEMPTS {
+                if let Some(delay) = crate::net::retryable_response_delay(status, resp.headers(), attempt) {
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                    continue;
+                }
+            }
+            if crate::net::primary_rate_limited(status, resp.headers()) {
+                return Err(crate::net::rate_limit_message(resp.headers()));
+            }
             let body = resp.text().await.unwrap_or_default();
             return Err(format!("GitHub API error ({}): {}", status, body));
         }
-
-        Ok(resp)
     }
 
     /// Send a GraphQL request and return the parsed JSON response.
     /// Handles POST, headers, status check, and GraphQL-level error checking.
+    ///
+    /// Retry policy keys off the operation itself: a mutation (query text
+    /// starting with `mutation`) retries only when the request provably never
+    /// left (connect error) — anything later is ambiguous and a retry could
+    /// post a duplicate comment/review. Queries retry the full transient set
+    /// (connect/timeout, 5xx, 429, secondary rate limits).
     async fn graphql_request(&self, body: serde_json::Value) -> Result<serde_json::Value, String> {
-        let mut req = self
-            .client
-            .post("https://api.github.com/graphql")
-            .header(USER_AGENT, "relevant-reviews");
+        let is_mutation = body
+            .get("query")
+            .and_then(|q| q.as_str())
+            .is_some_and(|q| q.trim_start().starts_with("mutation"));
+        let mut attempt = 1u32;
+        loop {
+            let mut req = self
+                .client
+                .post("https://api.github.com/graphql")
+                .header(USER_AGENT, "relevant-reviews")
+                .timeout(crate::net::GITHUB_REQUEST_TIMEOUT);
 
-        if !self.token.is_empty() {
-            req = req.header(AUTHORIZATION, format!("Bearer {}", self.token));
-        }
+            if !self.token.is_empty() {
+                req = req.header(AUTHORIZATION, format!("Bearer {}", self.token));
+            }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("GraphQL request failed: {}", e))?;
+            let sent = req.json(&body).send().await;
+            let resp = match sent {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let transient = if is_mutation {
+                        crate::net::unsent_transport_error(&e)
+                    } else {
+                        crate::net::transient_transport_error(&e)
+                    };
+                    if transient && attempt < crate::net::MAX_ATTEMPTS {
+                        tokio::time::sleep(crate::net::backoff_delay(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(format!("GraphQL request failed: {}", e));
+                }
+            };
 
-        if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GraphQL error ({}): {}", status, body));
+            if !status.is_success() {
+                if !is_mutation && attempt < crate::net::MAX_ATTEMPTS {
+                    if let Some(delay) = crate::net::retryable_response_delay(status, resp.headers(), attempt) {
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+                }
+                if crate::net::primary_rate_limited(status, resp.headers()) {
+                    return Err(crate::net::rate_limit_message(resp.headers()));
+                }
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("GraphQL error ({}): {}", status, body));
+            }
+
+            let result: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse GraphQL response: {}", e))?;
+
+            if let Some(errors) = result.get("errors") {
+                return Err(format!("GraphQL errors: {}", errors));
+            }
+
+            return Ok(result);
         }
-
-        let result: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse GraphQL response: {}", e))?;
-
-        if let Some(errors) = result.get("errors") {
-            return Err(format!("GraphQL errors: {}", errors));
-        }
-
-        Ok(result)
     }
 
     /// Lightweight check: returns (head_sha, review_comment_count, merged) from a

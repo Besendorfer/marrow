@@ -15,6 +15,7 @@ pub mod dismissed_highlights;
 pub mod fetch;
 pub mod github;
 pub mod manifest_cache;
+pub mod net;
 pub mod pr_parser;
 pub mod pr_requirements;
 pub mod prompts;

@@ -154,6 +154,9 @@ export interface ReviewManifest {
    * Absent on manifests cached before the field existed. */
   analysis_truncated?: boolean;
   truncated_passes?: string[];
+  /** AI passes that errored or returned an unusable response — their manifest
+   * sections are absent/defaulted, not real results (issue #198). */
+  failed_passes?: string[];
   files: FileDiff[];
 }
 
