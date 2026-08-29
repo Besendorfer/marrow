@@ -100,19 +100,11 @@ pub fn save_dismissed(
     pr_number: u64,
     state: &DismissedHighlights,
 ) -> Result<(), String> {
-    let dir = dismissed_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dismissed dir: {}", e))?;
     let path = dismissed_path(owner, repo, pr_number);
     let json =
         serde_json::to_string_pretty(state).map_err(|e| format!("Failed to serialize: {}", e))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write dismissed state: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = fs::set_permissions(&path, perms);
-    }
+    crate::state_io::write_atomic(&path, json.as_bytes())
+        .map_err(|e| format!("Failed to write dismissed state: {}", e))?;
 
     Ok(())
 }

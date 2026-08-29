@@ -17,6 +17,7 @@ pub mod github;
 pub mod manifest_cache;
 pub mod net;
 pub mod pr_parser;
+pub mod state_io;
 pub mod pr_requirements;
 pub mod prompts;
 pub mod resolved_specs;

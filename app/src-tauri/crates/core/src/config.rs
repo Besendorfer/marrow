@@ -260,15 +260,10 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     content.push_str(&format!("setup_done={}\n", settings.setup_done));
     content.push_str(&format!("expand_all_hunks={}\n", settings.expand_all_hunks));
 
-    fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;
-
-    // Set restrictive permissions since we're storing a token
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = fs::set_permissions(&path, perms);
-    }
+    // Atomic + created 0600 from the first byte: the token never touches
+    // disk world-readable, even transiently.
+    crate::state_io::write_atomic(&path, content.as_bytes())
+        .map_err(|e| format!("Failed to save settings: {}", e))?;
 
     Ok(())
 }

@@ -1,5 +1,4 @@
 use crate::config::app_config_dir;
-use std::fs;
 use std::path::PathBuf;
 
 fn dismiss_dir() -> PathBuf {
@@ -15,9 +14,8 @@ pub fn is_dismissed(owner: &str, repo: &str, pr_number: u64) -> bool {
 }
 
 pub fn set_dismissed(owner: &str, repo: &str, pr_number: u64) -> Result<(), String> {
-    let dir = dismiss_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dismiss dir: {}", e))?;
     let path = dismiss_path(owner, repo, pr_number);
-    fs::write(&path, "").map_err(|e| format!("Failed to write dismiss marker: {}", e))?;
+    crate::state_io::write_atomic(&path, b"")
+        .map_err(|e| format!("Failed to write dismiss marker: {}", e))?;
     Ok(())
 }

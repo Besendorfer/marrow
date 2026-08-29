@@ -46,19 +46,11 @@ pub fn load_chat(owner: &str, repo: &str, pr_number: u64) -> Option<StoredChat> 
 }
 
 pub fn save_chat(owner: &str, repo: &str, pr_number: u64, state: &StoredChat) -> Result<(), String> {
-    let dir = chat_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create chat dir: {}", e))?;
     let path = chat_path(owner, repo, pr_number);
     let json =
         serde_json::to_string_pretty(state).map_err(|e| format!("Failed to serialize: {}", e))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write chat history: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = fs::set_permissions(&path, perms);
-    }
+    crate::state_io::write_atomic(&path, json.as_bytes())
+        .map_err(|e| format!("Failed to write chat history: {}", e))?;
 
     Ok(())
 }
