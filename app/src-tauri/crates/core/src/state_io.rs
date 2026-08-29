@@ -156,6 +156,38 @@ mod tests {
     }
 
     #[test]
+    fn locked_pair_writes_never_cross() {
+        // The manifest-cache pattern: one logical update = two files that
+        // must correspond. Concurrent writers under with_lock + write_atomic
+        // must leave a matching pair — never A's first file with B's second.
+        let d = tmp_dir("pair");
+        let (main, side, lock) = (d.join("m.json"), d.join("m.meta.json"), d.join("m.lock"));
+        let mut handles = Vec::new();
+        for tag in ["A", "B", "C", "D"] {
+            let (main, side, lock) = (main.clone(), side.clone(), lock.clone());
+            handles.push(std::thread::spawn(move || {
+                for i in 0..25 {
+                    let v = format!("{}{}", tag, i);
+                    with_lock(&lock, || -> Result<(), String> {
+                        write_atomic(&main, v.as_bytes())?;
+                        // Widen the race window between the pair's writes.
+                        std::thread::sleep(std::time::Duration::from_micros(200));
+                        write_atomic(&side, v.as_bytes())
+                    })
+                    .unwrap()
+                    .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let (m, s) = (fs::read_to_string(&main).unwrap(), fs::read_to_string(&side).unwrap());
+        assert_eq!(m, s, "pair must correspond after concurrent writers");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn with_lock_serializes_concurrent_writers() {
         use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc;

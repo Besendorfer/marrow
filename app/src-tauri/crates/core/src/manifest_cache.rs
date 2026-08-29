@@ -63,6 +63,13 @@ pub fn save_cached_manifest(
     // fetch completions could otherwise pair A's manifest with B's metadata.
     // The per-PR lock serializes the pair; each write is still atomic on its
     // own, so even unlocked writers (none today) can't tear a single file.
+    //
+    // Write ORDER is deliberate: manifest (authoritative content) first,
+    // metadata (queue-display cosmetics) second. If the meta write fails, or
+    // an unlocked reader lands between the two writes, the worst case is a
+    // correct new manifest labeled by a stale sidecar — self-healed by the
+    // next save. The reverse order could advertise an analysis that isn't
+    // there.
     let lock = lock_path(owner, repo, pr_number);
     crate::state_io::with_lock(&lock, || -> Result<(), String> {
         crate::state_io::write_atomic(&path, json.as_bytes())
