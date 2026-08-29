@@ -59,7 +59,8 @@ more surfaces.
       (#200 / PR #201, merged 2026-08-28: state_io atomic replace for all 11
       state modules, locked manifest+meta pair, migration lint-test.)
 - [x] Make diagnostic and provider-response truncation Unicode-safe.
-- [ ] Bound concurrent GitHub file-content requests.
+- [x] Bound concurrent GitHub file-content requests. (#206 / PR #207, merged
+      2026-08-29: 5 files ×2 requests ≤10 in flight, peak-concurrency tested.)
 - [ ] Reduce unnecessary diff/content duplication for large PRs.
 - [ ] Fix Claude CLI streaming argument construction and concurrent stderr draining.
 - [ ] Route review-body generation through the provider-neutral AI abstraction.
