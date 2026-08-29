@@ -22,6 +22,17 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Restrict a persistence-key component (an `owner`/`repo` arriving over the
+/// IPC boundary) to a safe charset, so a hostile value like `../../x` can't
+/// traverse out of the state directory. A no-op for real GitHub names. The
+/// single shared copy — every keyed state module builds filenames through
+/// this (issue #208).
+pub fn sanitize_key(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
 /// Atomically replace `path` with `bytes`. The temp file lives in the same
 /// directory (rename must not cross filesystems) and is created `0o600` on
 /// unix from the first byte — state files carry tokens and private code, so
@@ -136,6 +147,16 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn sanitize_key_blocks_traversal_and_keeps_real_names() {
+        assert_eq!(sanitize_key("../../etc/passwd"), ".._.._etc_passwd");
+        assert_eq!(sanitize_key("owner/../x"), "owner_.._x");
+        assert_eq!(sanitize_key("Besendorfer"), "Besendorfer");
+        assert_eq!(sanitize_key("clairescott.dev"), "clairescott.dev");
+        assert_eq!(sanitize_key("my-repo_2"), "my-repo_2");
+        assert!(!sanitize_key("a/b\\c:d").contains(['/', '\\', ':']));
     }
 
     #[test]

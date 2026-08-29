@@ -421,6 +421,13 @@ fn normalize_ci_state(state: &str) -> String {
     }
 }
 
+/// Percent-encode a repo-relative path for a URL, per segment — `/` stays a
+/// separator, but `#`, `?`, spaces, `%` etc. inside a segment must not
+/// terminate or corrupt the URL (paths with spaces exist in real repos).
+fn encode_path(path: &str) -> String {
+    path.split('/').map(|seg| urlencoding::encode(seg).into_owned()).collect::<Vec<_>>().join("/")
+}
+
 /// Whether a GraphQL payload gets mutation retry semantics (connect-only).
 /// Fails SAFE: only text that provably starts a query document — `query` or
 /// the shorthand `{` — gets query semantics; anything unrecognized (leading
@@ -976,7 +983,7 @@ impl GithubClient {
     ) -> Result<String, String> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-            owner, repo, path, ref_sha
+            owner, repo, encode_path(path), urlencoding::encode(ref_sha)
         );
 
         // File contents are bulk downloads; this path had NO deadline or
@@ -1092,7 +1099,7 @@ impl GithubClient {
     ) -> Result<Vec<DirEntry>, String> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-            owner, repo, path, ref_sha
+            owner, repo, encode_path(path), urlencoding::encode(ref_sha)
         );
 
         let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
@@ -2701,7 +2708,15 @@ pub struct CollectedActivity {
 
 #[cfg(test)]
 mod tests {
-    use super::{failing_conclusion, first_line, graphql_is_mutation, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+    use super::{encode_path, failing_conclusion, first_line, graphql_is_mutation, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+
+    #[test]
+    fn encode_path_escapes_segments_but_keeps_separators() {
+        assert_eq!(encode_path("src/lib.rs"), "src/lib.rs");
+        assert_eq!(encode_path("docs/my file.md"), "docs/my%20file.md");
+        assert_eq!(encode_path("a#b/c?d.rs"), "a%23b/c%3Fd.rs");
+        assert_eq!(encode_path("100%/done.txt"), "100%25/done.txt");
+    }
 
     #[test]
     fn graphql_mutation_classification_fails_safe() {

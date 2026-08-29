@@ -11,16 +11,16 @@ fn cache_dir() -> PathBuf {
 }
 
 fn cache_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
-    cache_dir().join(format!("{}_{}_{}.json", owner, repo, pr_number))
+    cache_dir().join(format!("{}_{}_{}.json", crate::state_io::sanitize_key(owner), crate::state_io::sanitize_key(repo), pr_number))
 }
 
 fn meta_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
-    cache_dir().join(format!("{}_{}_{}.meta.json", owner, repo, pr_number))
+    cache_dir().join(format!("{}_{}_{}.meta.json", crate::state_io::sanitize_key(owner), crate::state_io::sanitize_key(repo), pr_number))
 }
 
 /// Per-PR advisory lock serializing the manifest + metadata pair write.
 fn lock_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
-    cache_dir().join(format!("{}_{}_{}.lock", owner, repo, pr_number))
+    cache_dir().join(format!("{}_{}_{}.lock", crate::state_io::sanitize_key(owner), crate::state_io::sanitize_key(repo), pr_number))
 }
 
 pub fn delete_cached_manifest(owner: &str, repo: &str, pr_number: u64) {

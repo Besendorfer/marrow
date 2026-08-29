@@ -14,7 +14,7 @@ fn viewed_dir() -> PathBuf {
 }
 
 fn viewed_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
-    viewed_dir().join(format!("{}_{}_{}.json", owner, repo, pr_number))
+    viewed_dir().join(format!("{}_{}_{}.json", crate::state_io::sanitize_key(owner), crate::state_io::sanitize_key(repo), pr_number))
 }
 
 pub fn load_viewed_state(owner: &str, repo: &str, pr_number: u64) -> Option<ViewedFileState> {

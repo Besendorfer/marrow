@@ -565,14 +565,20 @@ async fn stream_claude_cli(
     // token-level `content_block_delta` events. Plain `--print` buffers the whole
     // answer and prints it at the end (no visible streaming), so we parse the
     // event stream instead.
+    // No model configured → let the CLI use its own default; `--model ""` is
+    // a 400 from the API (same guard as invoke_claude_cli).
+    let mut args: Vec<&str> = Vec::new();
+    if !model.is_empty() {
+        args.extend(["--model", model]);
+    }
+    args.extend([
+        "--print",
+        "--output-format", "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+    ]);
     let mut child = Command::new(resolve_claude_binary())
-        .args([
-            "--model", model,
-            "--print",
-            "--output-format", "stream-json",
-            "--include-partial-messages",
-            "--verbose",
-        ])
+        .args(&args)
         .env("CLAUDECODE", "") // prevent recursive Claude Code invocation
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -595,6 +601,28 @@ async fn stream_claude_cli(
             .map_err(|e| format!("Failed to write prompt to claude stdin: {}", e))?;
         // Drop stdin to close it, signaling EOF.
     }
+
+    // Drain stderr CONCURRENTLY with the stdout loop below — `--verbose`
+    // makes the CLI chatty on stderr, and a child blocking on a full ~64KB
+    // stderr pipe while we block reading stdout is a classic deadlock. The
+    // drained (capped) text feeds the error message on failure.
+    let stderr_task = child.stderr.take().map(|mut err| {
+        tokio::spawn(async move {
+            let mut buf = Vec::with_capacity(4096);
+            let mut chunk = [0u8; 4096];
+            loop {
+                match err.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if buf.len() < 64 * 1024 {
+                            buf.extend_from_slice(&chunk[..n]);
+                        } // beyond the cap: keep draining, stop keeping
+                    }
+                }
+            }
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+    });
 
     // Read NDJSON line by line. The CLI runs as an agent: it emits a text block,
     // may call tools, then emits another text block. We stream `text_delta`s as
@@ -675,10 +703,10 @@ async fn stream_claude_cli(
         return Err(format!("claude CLI error: {msg}"));
     }
     if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut err) = child.stderr.take() {
-            let _ = err.read_to_string(&mut stderr).await;
-        }
+        let stderr = match stderr_task {
+            Some(task) => task.await.unwrap_or_default(),
+            None => String::new(),
+        };
         let detail = stderr.trim();
         return Err(if detail.is_empty() {
             format!("claude CLI exited with {status} (no error output). Check the model name in settings and that you're signed in to the claude CLI.")
@@ -908,6 +936,9 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Dropped mid-await (cancelled analysis) must not leak a running
+        // `claude` process — parity with the streaming path.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| {
             format!(
