@@ -49,8 +49,10 @@ more surfaces.
 - [x] Ensure pass failures cannot silently become empty successful results.
       (#198 / PR #199: highlights failure fails the fetch; other passes record
       `failed_passes` + Overview "analysis incomplete" notice.)
-- [ ] Fingerprint cached analysis using pipeline version, model/provider, prompts,
-      budgets, relevant settings, and PR metadata.
+- [x] Fingerprint cached analysis using pipeline version, model/provider, prompts,
+      budgets, relevant settings, and PR metadata. (#202 / PR #203, merged
+      2026-08-29: analysis_fingerprint stamped per manifest, Overview flags
+      stale caches; head_sha remains the PR-content leg.)
 - [x] Make local state writes atomic and synchronize concurrent updates.
       (#200 / PR #201, merged 2026-08-28: state_io atomic replace for all 11
       state modules, locked manifest+meta pair, migration lint-test.)
