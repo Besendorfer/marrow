@@ -34,6 +34,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::create_dir_all(parent)
         .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
 
+    // pid + per-process counter + nanos: unique even for two unlocked writes
+    // to the same path in the same nanosecond (create_new would otherwise
+    // fail one of them with "File exists").
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
@@ -43,7 +48,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .ok_or_else(|| format!("No file name in {}", path.display()))?
         .to_string_lossy()
         .into_owned();
-    let tmp = parent.join(format!("{}.tmp-{}-{}", base, std::process::id(), nanos));
+    let tmp = parent.join(format!("{}.tmp-{}-{}-{}", base, std::process::id(), seq, nanos));
 
     let mut opts = OpenOptions::new();
     opts.write(true).create_new(true);
@@ -67,7 +72,15 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         #[cfg(windows)]
         let _ = fs::remove_file(path);
         fs::rename(&tmp, path)
-            .map_err(|e| format!("Failed to replace {}: {}", path.display(), e))
+            .map_err(|e| format!("Failed to replace {}: {}", path.display(), e))?;
+        // Best-effort: sync the directory entry too, so a crash right after
+        // can't lose the rename itself. Failure here costs durability of
+        // this one write, never atomicity — the prior file stays parseable.
+        #[cfg(unix)]
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
     })();
 
     if result.is_err() {
@@ -153,6 +166,28 @@ mod tests {
         write_atomic(&p, b"x").unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "x");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn every_state_module_writes_through_write_atomic() {
+        // Regression lint: the point of issue #200 is that NO state module
+        // does a raw fs::write. Checks each migrated module's non-test code;
+        // a new raw write (or a new state module added to this list) must go
+        // through write_atomic.
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let modules = [
+            "config.rs", "session.rs", "manifest_cache.rs", "dismissed_highlights.rs",
+            "resolved_specs.rs", "viewed_state.rs", "chat_history.rs", "watches.rs",
+            "pr_requirements.rs", "checks_dismiss.rs", "activity.rs",
+        ];
+        for m in modules {
+            let text = fs::read_to_string(src.join(m)).unwrap();
+            let non_test = text.split("#[cfg(test)]").next().unwrap();
+            assert!(
+                !non_test.contains("fs::write("),
+                "{m} has a raw fs::write outside tests — use state_io::write_atomic"
+            );
+        }
     }
 
     #[test]
