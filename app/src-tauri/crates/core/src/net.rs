@@ -25,6 +25,12 @@ pub const GITHUB_BULK_TIMEOUT: Duration = Duration::from_secs(120);
 pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 /// Total attempts (first try + retries) for transient failures.
 pub const MAX_ATTEMPTS: u32 = 3;
+/// Files whose contents are fetched concurrently during a review fetch
+/// (issue #206). Each file requests base AND head at once, so the HTTP
+/// concurrency is 2× this — 10 in-flight requests, inside GitHub's
+/// secondary-rate-limit comfort zone. An unbounded fan-out on a
+/// 100-relevant-file PR meant ~200 simultaneous requests.
+pub const MAX_CONCURRENT_CONTENT_FILES: usize = 5;
 /// Longest server-directed wait we'll honor inline; beyond this the wait is
 /// surfaced to the user instead of silently blocking a pass.
 const RETRY_AFTER_CAP: Duration = Duration::from_secs(30);
