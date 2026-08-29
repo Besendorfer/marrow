@@ -25,6 +25,12 @@ pub const GITHUB_BULK_TIMEOUT: Duration = Duration::from_secs(120);
 pub const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 /// Total attempts (first try + retries) for transient failures.
 pub const MAX_ATTEMPTS: u32 = 3;
+/// Files whose contents are fetched concurrently during a review fetch
+/// (issue #206). Each file requests base AND head at once, so the HTTP
+/// concurrency is 2× this — 10 in-flight requests, inside GitHub's
+/// secondary-rate-limit comfort zone. An unbounded fan-out on a
+/// 100-relevant-file PR meant ~200 simultaneous requests.
+pub const MAX_CONCURRENT_CONTENT_FILES: usize = 5;
 /// Longest server-directed wait we'll honor inline; beyond this the wait is
 /// surfaced to the user instead of silently blocking a pass.
 const RETRY_AFTER_CAP: Duration = Duration::from_secs(30);
@@ -222,6 +228,33 @@ mod tests {
         // A plain 403 (auth failure, SSO) is not a rate limit — raw body path.
         assert!(rate_limited_message(StatusCode::FORBIDDEN, &HeaderMap::new()).is_none());
         assert!(rate_limited_message(StatusCode::NOT_FOUND, &HeaderMap::new()).is_none());
+    }
+
+    #[tokio::test]
+    async fn content_fan_out_respects_the_bound() {
+        // Drive 20 tasks through the exact buffer_unordered shape the step-5
+        // content fetch uses (issue #206), counting peak concurrency.
+        use futures::StreamExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let inside = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let tasks = (0..20).map(|_| {
+            let (inside, peak) = (inside.clone(), peak.clone());
+            async move {
+                let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                inside.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        futures::stream::iter(tasks)
+            .buffer_unordered(MAX_CONCURRENT_CONTENT_FILES)
+            .collect::<Vec<_>>()
+            .await;
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak <= MAX_CONCURRENT_CONTENT_FILES, "bound exceeded: {peak}");
+        assert!(peak >= 2, "tasks should actually overlap, got {peak}");
     }
 
     #[test]

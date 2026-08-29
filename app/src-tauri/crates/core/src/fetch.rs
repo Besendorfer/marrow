@@ -526,7 +526,11 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             })
             .collect();
 
-        let mut stream: FuturesUnordered<_> = content_futures.into_iter().collect();
+        // Bounded fan-out (issue #206): at most MAX_CONCURRENT_CONTENT_FILES
+        // files in flight (×2 requests each) — an unbounded burst on a large
+        // PR is exactly what GitHub's secondary rate limits punish.
+        let mut stream = futures::stream::iter(content_futures)
+            .buffer_unordered(crate::net::MAX_CONCURRENT_CONTENT_FILES);
         let mut files_done: u32 = 0;
         while let Some((path, base_result, head_result)) = stream.next().await {
             files_done += 1;
