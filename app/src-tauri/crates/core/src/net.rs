@@ -230,6 +230,33 @@ mod tests {
         assert!(rate_limited_message(StatusCode::NOT_FOUND, &HeaderMap::new()).is_none());
     }
 
+    #[tokio::test]
+    async fn content_fan_out_respects_the_bound() {
+        // Drive 20 tasks through the exact buffer_unordered shape the step-5
+        // content fetch uses (issue #206), counting peak concurrency.
+        use futures::StreamExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let inside = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let tasks = (0..20).map(|_| {
+            let (inside, peak) = (inside.clone(), peak.clone());
+            async move {
+                let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+                inside.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        futures::stream::iter(tasks)
+            .buffer_unordered(MAX_CONCURRENT_CONTENT_FILES)
+            .collect::<Vec<_>>()
+            .await;
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak <= MAX_CONCURRENT_CONTENT_FILES, "bound exceeded: {peak}");
+        assert!(peak >= 2, "tasks should actually overlap, got {peak}");
+    }
+
     #[test]
     fn backoff_grows_and_stays_bounded() {
         for attempt in 1..=6 {
