@@ -62,10 +62,20 @@ more surfaces.
 - [x] Bound concurrent GitHub file-content requests. (#206 / PR #207, merged
       2026-08-29: 5 files ×2 requests ≤10 in flight, peak-concurrency tested.)
 - [ ] Reduce unnecessary diff/content duplication for large PRs.
-- [ ] Fix Claude CLI streaming argument construction and concurrent stderr draining.
-- [ ] Route review-body generation through the provider-neutral AI abstraction.
-- [ ] Validate and sanitize every owner/repository persistence key.
-- [ ] URL-encode GitHub repository paths and query values correctly.
+- [x] Fix Claude CLI streaming argument construction and concurrent stderr
+      draining. (#208 / PR #209, merged 2026-08-29: empty-model guard +
+      concurrent capped stderr drain + kill_on_drop parity.)
+- [x] ~~Route review-body generation through the provider-neutral AI
+      abstraction.~~ Narrowed 2026-08-29: audit found no review-body
+      generation code outside the AI abstraction — review submission posts
+      user-written text only. Re-open with specifics if the referenced code
+      is found.
+- [x] Validate and sanitize every owner/repository persistence key.
+      (#208 / PR #209: shared `state_io::sanitize_key`, all 7 keyed modules
+      wired, private copies deduped.)
+- [x] URL-encode GitHub repository paths and query values correctly.
+      (#208 / PR #209: per-segment path encoding + ref encoding on both
+      contents endpoints; search endpoints already encoded.)
 - [ ] Merge old and new manifest-cache discovery instead of hiding old entries.
 - [ ] Validate AI classifications, files, severities, and line ranges.
 - [ ] Fix critical-risk ranking in the CLI/TUI.
