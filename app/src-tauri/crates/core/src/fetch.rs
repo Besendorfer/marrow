@@ -159,8 +159,7 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
     // Upsert the unified per-pass record for the pass this path re-ran; a
     // failure never reaches here, so it's truncated-or-complete.
     let status = if coverage_truncated { "truncated" } else { "complete" };
-    manifest.passes.retain(|p| p.pass != "coverage");
-    manifest.passes.push(PassStatus { pass: "coverage".to_string(), status: status.to_string() });
+    upsert_pass(&mut manifest.passes, "coverage", status);
 
     // The AI call above is slow — a concurrent full Refresh may have written
     // a newer-head manifest to this cache file meanwhile. Only persist onto
@@ -695,6 +694,19 @@ fn pass_statuses(
             PassStatus { pass: pass.to_string(), status: status.to_string() }
         })
         .collect()
+}
+
+/// Replace one pass's entry in the unified record — but only when the
+/// record exists. An EMPTY `passes` means the manifest predates per-pass
+/// recording (#204); writing a lone entry there would break the
+/// one-record-per-pass invariant and read as "the other passes are
+/// missing". Empty stays empty until a full fetch rebuilds the record.
+fn upsert_pass(passes: &mut Vec<PassStatus>, pass: &str, status: &str) {
+    if passes.is_empty() {
+        return;
+    }
+    passes.retain(|p| p.pass != pass);
+    passes.push(PassStatus { pass: pass.to_string(), status: status.to_string() });
 }
 
 /// Parse the highlights pass output strictly. The highlights pass is the
@@ -1572,6 +1584,21 @@ mod tests {
         for pass in ["highlights", "summary", "grouping", "triage", "coverage"] {
             assert_eq!(get(pass), "not_run", "{pass}");
         }
+    }
+
+    #[test]
+    fn upsert_pass_replaces_but_never_fabricates_a_record() {
+        use super::{pass_statuses, upsert_pass};
+        // A populated record: coverage's entry is replaced in place.
+        let mut passes = pass_statuses(true, false, true, &[], &["coverage".to_string()]);
+        upsert_pass(&mut passes, "coverage", "complete");
+        assert_eq!(passes.len(), 6);
+        assert_eq!(passes.iter().find(|p| p.pass == "coverage").unwrap().status, "complete");
+        // A pre-#204 cache (empty record): upsert must NOT create a lone
+        // entry — empty means "predates recording", not "one pass ran".
+        let mut empty: Vec<crate::types::PassStatus> = Vec::new();
+        upsert_pass(&mut empty, "coverage", "complete");
+        assert!(empty.is_empty());
     }
 
     #[test]
