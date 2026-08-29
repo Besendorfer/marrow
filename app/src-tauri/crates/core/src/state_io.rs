@@ -94,7 +94,16 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// concurrent writers serialize instead of interleaving. Advisory only:
 /// writers that don't take the lock aren't blocked — pair it with
 /// `write_atomic` so even those can't tear a single file.
-pub fn with_lock<T>(lock_path: &Path, f: impl FnOnce() -> T) -> Result<T, String> {
+///
+/// The closure's own `Result` is flattened into the return value, so call
+/// sites need exactly one `?` — a `-> Result<T, String>, Ok(...)`-wrapping
+/// signature invited dropped `?`s. NEVER unlink a lock file others may hold:
+/// a later locker would open a fresh inode and mutual exclusion is silently
+/// lost.
+pub fn with_lock<T>(
+    lock_path: &Path,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     use fs2::FileExt;
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent)
@@ -110,7 +119,7 @@ pub fn with_lock<T>(lock_path: &Path, f: impl FnOnce() -> T) -> Result<T, String
         .map_err(|e| format!("Failed to lock {}: {}", lock_path.display(), e))?;
     let out = f();
     let _ = fs2::FileExt::unlock(&lock);
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
@@ -169,6 +178,23 @@ mod tests {
     }
 
     #[test]
+    fn write_atomic_cleans_temp_on_failure() {
+        let d = tmp_dir("cleanup");
+        // A directory at the destination makes the final rename fail after
+        // the temp file was created — the error path must not litter.
+        let p = d.join("target");
+        fs::create_dir_all(&p).unwrap();
+        assert!(write_atomic(&p, b"x").is_err());
+        let leftovers: Vec<_> = fs::read_dir(&d)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "failed write must clean its temp file");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn every_state_module_writes_through_write_atomic() {
         // Regression lint: the point of issue #200 is that NO state module
         // does a raw fs::write. Checks each migrated module's non-test code;
@@ -203,13 +229,12 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 for i in 0..25 {
                     let v = format!("{}{}", tag, i);
-                    with_lock(&lock, || -> Result<(), String> {
+                    with_lock(&lock, || {
                         write_atomic(&main, v.as_bytes())?;
                         // Widen the race window between the pair's writes.
                         std::thread::sleep(std::time::Duration::from_micros(200));
                         write_atomic(&side, v.as_bytes())
                     })
-                    .unwrap()
                     .unwrap();
                 }
             }));
@@ -239,6 +264,7 @@ mod tests {
                     peak.fetch_max(now, Ordering::SeqCst);
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     inside.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
                 })
                 .unwrap();
             }));

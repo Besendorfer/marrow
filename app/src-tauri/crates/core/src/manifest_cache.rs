@@ -24,9 +24,15 @@ fn lock_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
 }
 
 pub fn delete_cached_manifest(owner: &str, repo: &str, pr_number: u64) {
-    let _ = fs::remove_file(cache_path(owner, repo, pr_number));
-    let _ = fs::remove_file(meta_path(owner, repo, pr_number));
-    let _ = fs::remove_file(lock_path(owner, repo, pr_number));
+    // Delete under the pair lock so an in-flight save can't interleave. The
+    // lock FILE itself is never unlinked: removing a lock another process
+    // may hold makes the next locker open a fresh inode, silently breaking
+    // mutual exclusion. A stray empty .lock is harmless.
+    let _ = crate::state_io::with_lock(&lock_path(owner, repo, pr_number), || {
+        let _ = fs::remove_file(cache_path(owner, repo, pr_number));
+        let _ = fs::remove_file(meta_path(owner, repo, pr_number));
+        Ok(())
+    });
 }
 
 pub fn load_cached_manifest(owner: &str, repo: &str, pr_number: u64) -> Option<ReviewManifest> {
@@ -71,12 +77,12 @@ pub fn save_cached_manifest(
     // next save. The reverse order could advertise an analysis that isn't
     // there.
     let lock = lock_path(owner, repo, pr_number);
-    crate::state_io::with_lock(&lock, || -> Result<(), String> {
+    crate::state_io::with_lock(&lock, || {
         crate::state_io::write_atomic(&path, json.as_bytes())
             .map_err(|e| format!("Failed to write cached manifest: {}", e))?;
         crate::state_io::write_atomic(&mpath, meta_json.as_bytes())
             .map_err(|e| format!("Failed to write metadata: {}", e))
-    })??;
+    })?;
 
     Ok(())
 }
