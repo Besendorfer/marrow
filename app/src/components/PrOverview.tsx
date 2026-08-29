@@ -10,6 +10,9 @@ import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewSta
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
+  /** Fingerprint of the current analysis environment (issue #202). Empty
+   * until known — nothing is flagged on a blank value. */
+  currentFingerprint?: string;
   checksStatus?: PrChecksStatus | null;
   reviewState: MyReviewState | null;
   viewedCount: number;
@@ -239,6 +242,7 @@ function CommitsCard({
 
 export function PrOverview({
   manifest,
+  currentFingerprint,
   checksStatus,
   reviewState,
   viewedCount,
@@ -397,6 +401,15 @@ export function PrOverview({
             Analysis incomplete — the {manifest.failed_passes!.join(", ")}{" "}
             {manifest.failed_passes!.length === 1 ? "pass" : "passes"} failed;
             those sections show defaults, not results. Refresh to retry.
+          </div>
+        )}
+        {!!currentFingerprint && manifest.analysis_fingerprint !== currentFingerprint && (
+          <div className="overview-card overview-noise">
+            This analysis was produced by{" "}
+            {manifest.analysis_fingerprint
+              ? "a different model or an older pipeline"
+              : "an older Marrow version (before analyses were fingerprinted)"}{" "}
+            — Refresh to re-analyze with the current setup.
           </div>
         )}
       </div>
