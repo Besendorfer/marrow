@@ -42,19 +42,11 @@ pub fn save_pr_requirements(
     pr_number: u64,
     state: &PrRequirements,
 ) -> Result<(), String> {
-    let dir = pr_requirements_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create pr_requirements dir: {}", e))?;
     let path = pr_requirements_path(owner, repo, pr_number);
     let json =
         serde_json::to_string_pretty(state).map_err(|e| format!("Failed to serialize: {}", e))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write pr requirements state: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = fs::set_permissions(&path, perms);
-    }
+    crate::state_io::write_atomic(&path, json.as_bytes())
+        .map_err(|e| format!("Failed to write pr requirements state: {}", e))?;
 
     Ok(())
 }

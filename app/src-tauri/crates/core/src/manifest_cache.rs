@@ -18,9 +18,15 @@ fn meta_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
     cache_dir().join(format!("{}_{}_{}.meta.json", owner, repo, pr_number))
 }
 
+/// Per-PR advisory lock serializing the manifest + metadata pair write.
+fn lock_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
+    cache_dir().join(format!("{}_{}_{}.lock", owner, repo, pr_number))
+}
+
 pub fn delete_cached_manifest(owner: &str, repo: &str, pr_number: u64) {
     let _ = fs::remove_file(cache_path(owner, repo, pr_number));
     let _ = fs::remove_file(meta_path(owner, repo, pr_number));
+    let _ = fs::remove_file(lock_path(owner, repo, pr_number));
 }
 
 pub fn load_cached_manifest(owner: &str, repo: &str, pr_number: u64) -> Option<ReviewManifest> {
@@ -35,16 +41,10 @@ pub fn save_cached_manifest(
     pr_number: u64,
     manifest: &ReviewManifest,
 ) -> Result<(), String> {
-    let dir = cache_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create cache dir: {}", e))?;
-
     let path = cache_path(owner, repo, pr_number);
     let json = serde_json::to_string(manifest)
         .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
-    fs::write(&path, &json).map_err(|e| format!("Failed to write cached manifest: {}", e))?;
-    set_private_permissions(&path);
 
-    // Write lightweight metadata sidecar
     let meta = CachedPrInfo {
         owner: owner.to_string(),
         repo: repo.to_string(),
@@ -58,19 +58,20 @@ pub fn save_cached_manifest(
     let meta_json = serde_json::to_string(&meta)
         .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
     let mpath = meta_path(owner, repo, pr_number);
-    fs::write(&mpath, meta_json).map_err(|e| format!("Failed to write metadata: {}", e))?;
-    set_private_permissions(&mpath);
+
+    // The manifest and its metadata sidecar must correspond — two concurrent
+    // fetch completions could otherwise pair A's manifest with B's metadata.
+    // The per-PR lock serializes the pair; each write is still atomic on its
+    // own, so even unlocked writers (none today) can't tear a single file.
+    let lock = lock_path(owner, repo, pr_number);
+    crate::state_io::with_lock(&lock, || -> Result<(), String> {
+        crate::state_io::write_atomic(&path, json.as_bytes())
+            .map_err(|e| format!("Failed to write cached manifest: {}", e))?;
+        crate::state_io::write_atomic(&mpath, meta_json.as_bytes())
+            .map_err(|e| format!("Failed to write metadata: {}", e))
+    })??;
 
     Ok(())
-}
-
-fn set_private_permissions(_path: &PathBuf) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = fs::set_permissions(_path, perms);
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

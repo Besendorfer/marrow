@@ -34,13 +34,10 @@ pub fn load_session_state() -> Option<SessionState> {
 
 pub fn save_session_state(state: &SessionState) -> Result<(), String> {
     let path = session_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config directory: {}", e))?;
-    }
     let json =
         serde_json::to_string(state).map_err(|e| format!("Failed to serialize session: {}", e))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write session: {}", e))?;
+    crate::state_io::write_atomic(&path, json.as_bytes())
+        .map_err(|e| format!("Failed to write session: {}", e))?;
     Ok(())
 }
 

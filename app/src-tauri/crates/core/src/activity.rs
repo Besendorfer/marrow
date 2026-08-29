@@ -155,19 +155,10 @@ pub fn load_activity_store() -> ActivityStore {
 
 pub fn save_activity_store(store: &ActivityStore) -> Result<(), String> {
     let path = activity_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
-    }
     let json = serde_json::to_string_pretty(store)
         .map_err(|e| format!("Failed to serialize activity store: {}", e))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write activity store: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = fs::set_permissions(&path, perms);
-    }
+    crate::state_io::write_atomic(&path, json.as_bytes())
+        .map_err(|e| format!("Failed to write activity store: {}", e))?;
 
     Ok(())
 }
