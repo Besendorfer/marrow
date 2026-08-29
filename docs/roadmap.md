@@ -79,7 +79,9 @@ more surfaces.
 - [ ] Merge old and new manifest-cache discovery instead of hiding old entries.
 - [ ] Validate AI classifications, files, severities, and line ranges.
 - [ ] Fix critical-risk ranking in the CLI/TUI.
-- [ ] Reconcile the published CLI/core dependency versions.
+- [x] Reconcile the published CLI/core dependency versions. (#208 / PR #209:
+      marrow-core path-dep pin brought to lockstep with the workspace
+      version; crates.io publish remains the manual release-time step.)
 - [ ] Fix or reassess Python barrel-file classification (#71).
 
 ## Phase 3: Quality Measurement
