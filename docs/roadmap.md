@@ -51,7 +51,9 @@ more surfaces.
       `failed_passes` + Overview "analysis incomplete" notice.)
 - [ ] Fingerprint cached analysis using pipeline version, model/provider, prompts,
       budgets, relevant settings, and PR metadata.
-- [ ] Make local state writes atomic and synchronize concurrent updates.
+- [x] Make local state writes atomic and synchronize concurrent updates.
+      (#200 / PR #201, merged 2026-08-28: state_io atomic replace for all 11
+      state modules, locked manifest+meta pair, migration lint-test.)
 - [x] Make diagnostic and provider-response truncation Unicode-safe.
 - [ ] Bound concurrent GitHub file-content requests.
 - [ ] Reduce unnecessary diff/content duplication for large PRs.
