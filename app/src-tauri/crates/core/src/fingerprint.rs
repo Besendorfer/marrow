@@ -19,36 +19,47 @@ pub const PIPELINE_VERSION: u32 = 1;
 /// verbatim, so editing one auto-invalidates caches with no manual bump.
 /// Settings contribute only the analysis-relevant, non-secret fields.
 pub fn analysis_fingerprint(settings: &Settings) -> String {
+    fingerprint_of(
+        PIPELINE_VERSION,
+        &[
+            prompts::CLASSIFICATION_PROMPT,
+            prompts::HIGHLIGHT_PROMPT,
+            prompts::SUMMARY_PROMPT,
+            prompts::GROUPING_PROMPT,
+            prompts::TRIAGE_PROMPT,
+            prompts::REQUIREMENTS_COVERAGE_PROMPT,
+        ],
+        &[
+            budgets::CLASSIFICATION_DIFF,
+            budgets::HIGHLIGHT_PER_FILE,
+            budgets::HIGHLIGHT_TOTAL,
+            budgets::HIGHLIGHT_BODY,
+            budgets::TRIAGE_PER_FILE,
+            budgets::TRIAGE_TOTAL,
+            budgets::COVERAGE_PER_FILE,
+            budgets::COVERAGE_TOTAL,
+            budgets::COVERAGE_EXISTING_PER_FILE,
+            budgets::COVERAGE_EXISTING_TOTAL,
+            budgets::COVERAGE_ISSUE_PER_ISSUE,
+            budgets::COVERAGE_ISSUE_TOTAL,
+            budgets::COVERAGE_BODY,
+            budgets::COVERAGE_USER_REQS,
+        ],
+        settings,
+    )
+}
+
+/// The hash itself, input-injectable so tests can vary prompts/budgets —
+/// the production inputs are constants.
+fn fingerprint_of(version: u32, prompts: &[&str], budgets: &[usize], settings: &Settings) -> String {
     let mut h = Sha256::new();
-    h.update(PIPELINE_VERSION.to_le_bytes());
-    for prompt in [
-        prompts::CLASSIFICATION_PROMPT,
-        prompts::HIGHLIGHT_PROMPT,
-        prompts::SUMMARY_PROMPT,
-        prompts::GROUPING_PROMPT,
-        prompts::TRIAGE_PROMPT,
-        prompts::REQUIREMENTS_COVERAGE_PROMPT,
-    ] {
+    h.update(version.to_le_bytes());
+    for prompt in prompts {
         h.update(prompt.as_bytes());
         h.update([0]); // unambiguous field boundary
     }
-    for budget in [
-        budgets::CLASSIFICATION_DIFF,
-        budgets::HIGHLIGHT_PER_FILE,
-        budgets::HIGHLIGHT_TOTAL,
-        budgets::HIGHLIGHT_BODY,
-        budgets::TRIAGE_PER_FILE,
-        budgets::TRIAGE_TOTAL,
-        budgets::COVERAGE_PER_FILE,
-        budgets::COVERAGE_TOTAL,
-        budgets::COVERAGE_EXISTING_PER_FILE,
-        budgets::COVERAGE_EXISTING_TOTAL,
-        budgets::COVERAGE_ISSUE_PER_ISSUE,
-        budgets::COVERAGE_ISSUE_TOTAL,
-        budgets::COVERAGE_BODY,
-        budgets::COVERAGE_USER_REQS,
-    ] {
-        h.update((budget as u64).to_le_bytes());
+    for budget in budgets {
+        h.update((*budget as u64).to_le_bytes());
     }
     for field in [&settings.provider, &settings.model, &settings.openai_base_url] {
         h.update(field.as_bytes());
@@ -95,6 +106,18 @@ mod tests {
             analysis_fingerprint(&with_key),
             "keys/tokens must not affect (or leak into) the fingerprint"
         );
+    }
+
+    #[test]
+    fn prompt_budget_and_version_changes_invalidate() {
+        let s = settings("m", "", "");
+        let base = fingerprint_of(1, &["prompt A", "prompt B"], &[100, 200], &s);
+        // Editing a prompt auto-invalidates — no manual bump needed.
+        assert_ne!(base, fingerprint_of(1, &["prompt A edited", "prompt B"], &[100, 200], &s));
+        // Retuning a budget invalidates.
+        assert_ne!(base, fingerprint_of(1, &["prompt A", "prompt B"], &[100, 250], &s));
+        // A pipeline bump invalidates even with identical prompts/budgets.
+        assert_ne!(base, fingerprint_of(2, &["prompt A", "prompt B"], &[100, 200], &s));
     }
 
     #[test]
