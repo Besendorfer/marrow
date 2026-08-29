@@ -45,7 +45,9 @@ more surfaces.
 - [x] Handle GitHub rate limits explicitly and communicate retry timing.
       (#198 / PR #199: Retry-After honored ≤30s, every declined wait names
       its timing.)
-- [ ] Record each AI pass as complete, truncated, failed, or not run.
+- [x] Record each AI pass as complete, truncated, failed, or not run.
+      (#204 / PR #205, merged 2026-08-29: unified `passes` record per
+      manifest; skipped passes visible for the first time.)
 - [x] Ensure pass failures cannot silently become empty successful results.
       (#198 / PR #199: highlights failure fails the fetch; other passes record
       `failed_passes` + Overview "analysis incomplete" notice.)
