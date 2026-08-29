@@ -76,16 +76,8 @@ fn dismissed_dir() -> PathBuf {
     app_config_dir().join("dismissed")
 }
 
-/// Restrict a path component to a safe charset so a hostile `owner`/`repo` from
-/// the IPC boundary can't escape the cache dir. A no-op for real GitHub names.
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
-        .collect()
-}
-
 fn dismissed_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
-    dismissed_dir().join(format!("{}_{}_{}.json", sanitize(owner), sanitize(repo), pr_number))
+    dismissed_dir().join(format!("{}_{}_{}.json", crate::state_io::sanitize_key(owner), crate::state_io::sanitize_key(repo), pr_number))
 }
 
 pub fn load_dismissed(owner: &str, repo: &str, pr_number: u64) -> Option<DismissedHighlights> {

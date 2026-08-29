@@ -566,13 +566,7 @@ async fn stream_claude_cli(
     // answer and prints it at the end (no visible streaming), so we parse the
     // event stream instead.
     let mut child = Command::new(resolve_claude_binary())
-        .args([
-            "--model", model,
-            "--print",
-            "--output-format", "stream-json",
-            "--include-partial-messages",
-            "--verbose",
-        ])
+        .args(claude_stream_args(model))
         .env("CLAUDECODE", "") // prevent recursive Claude Code invocation
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -595,6 +589,28 @@ async fn stream_claude_cli(
             .map_err(|e| format!("Failed to write prompt to claude stdin: {}", e))?;
         // Drop stdin to close it, signaling EOF.
     }
+
+    // Drain stderr CONCURRENTLY with the stdout loop below — `--verbose`
+    // makes the CLI chatty on stderr, and a child blocking on a full ~64KB
+    // stderr pipe while we block reading stdout is a classic deadlock. The
+    // drained (capped) text feeds the error message on failure.
+    let stderr_task = child.stderr.take().map(|mut err| {
+        tokio::spawn(async move {
+            let mut buf = Vec::with_capacity(4096);
+            let mut chunk = [0u8; 4096];
+            loop {
+                match err.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if buf.len() < 64 * 1024 {
+                            buf.extend_from_slice(&chunk[..n]);
+                        } // beyond the cap: keep draining, stop keeping
+                    }
+                }
+            }
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+    });
 
     // Read NDJSON line by line. The CLI runs as an agent: it emits a text block,
     // may call tools, then emits another text block. We stream `text_delta`s as
@@ -675,10 +691,10 @@ async fn stream_claude_cli(
         return Err(format!("claude CLI error: {msg}"));
     }
     if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut err) = child.stderr.take() {
-            let _ = err.read_to_string(&mut stderr).await;
-        }
+        let stderr = match stderr_task {
+            Some(task) => task.await.unwrap_or_default(),
+            None => String::new(),
+        };
         let detail = stderr.trim();
         return Err(if detail.is_empty() {
             format!("claude CLI exited with {status} (no error output). Check the model name in settings and that you're signed in to the claude CLI.")
@@ -690,6 +706,21 @@ async fn stream_claude_cli(
         return Err("claude CLI returned an empty response".to_string());
     }
     Ok(full)
+}
+
+/// Arguments for the streaming `claude` invocation. No model configured →
+/// let the CLI use its own default; `--model ""` is a 400 from the API
+/// (same guard as `invoke_claude_cli`).
+fn claude_stream_args(model: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if !model.is_empty() {
+        args.extend(["--model".to_string(), model.to_string()]);
+    }
+    args.extend(
+        ["--print", "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
+            .map(String::from),
+    );
+    args
 }
 
 /// A meaningful event parsed from one NDJSON line of `claude --output-format
@@ -908,6 +939,9 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Dropped mid-await (cancelled analysis) must not leak a running
+        // `claude` process — parity with the streaming path.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| {
             format!(
@@ -955,6 +989,18 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_stream_args_guard_the_empty_model() {
+        // `--model ""` is a 400 from the API — an empty model must let the
+        // CLI pick its own default (the bug: streaming lacked this guard).
+        let bare = claude_stream_args("");
+        assert!(!bare.iter().any(|a| a == "--model"), "{bare:?}");
+        assert!(bare.contains(&"--include-partial-messages".to_string()));
+        let with = claude_stream_args("claude-sonnet-4-6");
+        let i = with.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(with[i + 1], "claude-sonnet-4-6");
+    }
 
     #[test]
     fn malformed_json_error_preview_is_unicode_safe() {

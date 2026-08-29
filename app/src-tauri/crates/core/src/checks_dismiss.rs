@@ -6,7 +6,7 @@ fn dismiss_dir() -> PathBuf {
 }
 
 fn dismiss_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
-    dismiss_dir().join(format!("{}_{}_{}", owner, repo, pr_number))
+    dismiss_dir().join(format!("{}_{}_{}", crate::state_io::sanitize_key(owner), crate::state_io::sanitize_key(repo), pr_number))
 }
 
 pub fn is_dismissed(owner: &str, repo: &str, pr_number: u64) -> bool {
