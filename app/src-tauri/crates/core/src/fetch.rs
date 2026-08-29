@@ -639,6 +639,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         analysis_truncated: !truncated_passes.is_empty(),
         truncated_passes,
         failed_passes,
+        analysis_fingerprint: Some(crate::fingerprint::analysis_fingerprint(settings)),
         files: file_diffs,
     };
 

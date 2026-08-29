@@ -2265,6 +2265,7 @@ mod tests {
             analysis_truncated: false,
             truncated_passes: Vec::new(),
             failed_passes: Vec::new(),
+            analysis_fingerprint: None,
             body: String::new(),
             commits: Vec::new(),
             files: vec![

@@ -208,10 +208,16 @@ pub struct ReviewManifest {
     /// fails the whole fetch instead of masquerading as "no findings".
     #[serde(default)]
     pub failed_passes: Vec<String>,
+    /// Fingerprint of the analysis environment (pipeline version, prompts,
+    /// budgets, provider/model — issue #202) that produced this manifest.
+    /// `None` on caches predating fingerprinting; a mismatch with the
+    /// current environment means "analyzed by an older pipeline/model".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis_fingerprint: Option<String>,
     pub files: Vec<FileDiff>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Settings {
     pub model: String,
     #[serde(default)]

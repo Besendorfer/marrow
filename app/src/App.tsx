@@ -140,13 +140,26 @@ function App() {
   // superseded/cancelled fetch resolving late is dropped instead of filling a tab.
   const fetchTokenRef = useRef(0);
 
+  // Fingerprint of the CURRENT analysis environment (issue #202) — compared
+  // against each manifest's stored fingerprint to flag stale caches. Loaded
+  // on mount and re-loaded when settings close (a model/provider change
+  // changes it). Empty until known: no manifest is flagged on a blank value.
+  const [currentFingerprint, setCurrentFingerprint] = useState("");
+  const refreshFingerprint = useCallback(() => {
+    invoke<string>("current_analysis_fingerprint")
+      .then(setCurrentFingerprint)
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshFingerprint(); }, [refreshFingerprint]);
+
   const handleSettingsClose = useCallback(() => {
     setSettingsOpen(false);
     invoke<Settings>("get_settings").then((s) => {
       settingsRef.current = s;
       setExpandAllHunks(s.expand_all_hunks ?? false);
     }).catch(() => {});
-  }, []);
+    refreshFingerprint();
+  }, [refreshFingerprint]);
 
   const addToast = useCallback((type: ToastData["type"], message: string) => {
     setToasts((prev) => [...prev, createToast(type, message)]);
@@ -2944,6 +2957,7 @@ function App() {
           ) : activeTab.lens === "overview" ? (
             <PrOverview
               manifest={activeTab.manifest}
+              currentFingerprint={currentFingerprint}
               checksStatus={activeChecks ?? null}
               reviewState={activeTab.myReviewState ?? null}
               viewedCount={activeTab.viewedFiles.size}

@@ -251,6 +251,7 @@ pub fn run() {
             commands::create_review_comment,
             commands::toggle_reaction,
             commands::get_settings,
+            commands::current_analysis_fingerprint,
             commands::save_settings,
             commands::sync_file_viewed_to_github,
             commands::fetch_gh_viewed_state,

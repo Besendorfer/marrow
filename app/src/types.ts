@@ -157,6 +157,10 @@ export interface ReviewManifest {
   /** AI passes that errored or returned an unusable response — their manifest
    * sections are absent/defaulted, not real results (issue #198). */
   failed_passes?: string[];
+  /** Fingerprint of the analysis environment that produced this manifest
+   * (issue #202). Absent on pre-fingerprint caches; a mismatch with the
+   * current environment means "analyzed by an older pipeline/model". */
+  analysis_fingerprint?: string;
   files: FileDiff[];
 }
 

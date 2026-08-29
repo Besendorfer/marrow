@@ -47,6 +47,14 @@ pub fn get_settings() -> Settings {
     load_settings()
 }
 
+/// Fingerprint of the CURRENT analysis environment — the frontend compares
+/// it to a cached manifest's stored `analysis_fingerprint` to surface
+/// "analyzed by an older pipeline/model" (issue #202).
+#[command]
+pub fn current_analysis_fingerprint() -> String {
+    marrow_core::fingerprint::analysis_fingerprint(&load_settings())
+}
+
 #[command]
 pub fn save_settings(settings: Settings) -> Result<(), String> {
     save_settings_to_disk(&settings)
