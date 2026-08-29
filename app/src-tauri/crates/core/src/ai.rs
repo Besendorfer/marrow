@@ -565,20 +565,8 @@ async fn stream_claude_cli(
     // token-level `content_block_delta` events. Plain `--print` buffers the whole
     // answer and prints it at the end (no visible streaming), so we parse the
     // event stream instead.
-    // No model configured → let the CLI use its own default; `--model ""` is
-    // a 400 from the API (same guard as invoke_claude_cli).
-    let mut args: Vec<&str> = Vec::new();
-    if !model.is_empty() {
-        args.extend(["--model", model]);
-    }
-    args.extend([
-        "--print",
-        "--output-format", "stream-json",
-        "--include-partial-messages",
-        "--verbose",
-    ]);
     let mut child = Command::new(resolve_claude_binary())
-        .args(&args)
+        .args(claude_stream_args(model))
         .env("CLAUDECODE", "") // prevent recursive Claude Code invocation
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -718,6 +706,21 @@ async fn stream_claude_cli(
         return Err("claude CLI returned an empty response".to_string());
     }
     Ok(full)
+}
+
+/// Arguments for the streaming `claude` invocation. No model configured →
+/// let the CLI use its own default; `--model ""` is a 400 from the API
+/// (same guard as `invoke_claude_cli`).
+fn claude_stream_args(model: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if !model.is_empty() {
+        args.extend(["--model".to_string(), model.to_string()]);
+    }
+    args.extend(
+        ["--print", "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
+            .map(String::from),
+    );
+    args
 }
 
 /// A meaningful event parsed from one NDJSON line of `claude --output-format
@@ -986,6 +989,18 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_stream_args_guard_the_empty_model() {
+        // `--model ""` is a 400 from the API — an empty model must let the
+        // CLI pick its own default (the bug: streaming lacked this guard).
+        let bare = claude_stream_args("");
+        assert!(!bare.iter().any(|a| a == "--model"), "{bare:?}");
+        assert!(bare.contains(&"--include-partial-messages".to_string()));
+        let with = claude_stream_args("claude-sonnet-4-6");
+        let i = with.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(with[i + 1], "claude-sonnet-4-6");
+    }
 
     #[test]
     fn malformed_json_error_preview_is_unicode_safe() {
