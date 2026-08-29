@@ -159,6 +159,18 @@ pub struct PrCommit {
     pub committed_at: String,
 }
 
+/// Outcome of one AI analysis pass (issue #204): "complete", "truncated"
+/// (ran with cut inputs), "failed" (errored or unusable output; the section
+/// shows defaults), or "not_run" (skip condition — small PR, no requirements
+/// source, no relevant files). Failed trumps truncated. Classification and
+/// highlights never record "failed": their failure fails the whole fetch
+/// (#198), so no manifest exists to record it in.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct PassStatus {
+    pub pass: String,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewManifest {
     pub pr_title: String,
@@ -214,6 +226,10 @@ pub struct ReviewManifest {
     /// current environment means "analyzed by an older pipeline/model".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analysis_fingerprint: Option<String>,
+    /// One record per AI pass (issue #204) — the unified view the partial
+    /// signals above summarize. Empty on caches predating it.
+    #[serde(default)]
+    pub passes: Vec<PassStatus>,
     pub files: Vec<FileDiff>,
 }
 

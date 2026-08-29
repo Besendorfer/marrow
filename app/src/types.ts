@@ -161,6 +161,9 @@ export interface ReviewManifest {
    * (issue #202). Absent on pre-fingerprint caches; a mismatch with the
    * current environment means "analyzed by an older pipeline/model". */
   analysis_fingerprint?: string;
+  /** One record per AI pass (issue #204): status is "complete" |
+   * "truncated" | "failed" | "not_run". Empty on caches predating it. */
+  passes?: { pass: string; status: string }[];
   files: FileDiff[];
 }
 

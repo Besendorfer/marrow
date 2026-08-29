@@ -11,7 +11,7 @@ use crate::prompts::{
 };
 use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, LinkedIssue,
-    RequirementsCoverage, ReviewManifest, ReviewOrderItem, Settings, TopRisk, TriageReport,
+    PassStatus, RequirementsCoverage, ReviewManifest, ReviewOrderItem, Settings, TopRisk, TriageReport,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use sha2::{Sha256, Digest};
@@ -156,6 +156,11 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
     // path just re-ran exactly that pass and got a usable result (failure
     // would have errored out above).
     manifest.failed_passes.retain(|p| p != "coverage");
+    // Upsert the unified per-pass record for the pass this path re-ran; a
+    // failure never reaches here, so it's truncated-or-complete.
+    let status = if coverage_truncated { "truncated" } else { "complete" };
+    manifest.passes.retain(|p| p.pass != "coverage");
+    manifest.passes.push(PassStatus { pass: "coverage".to_string(), status: status.to_string() });
 
     // The AI call above is slow — a concurrent full Refresh may have written
     // a newer-head manifest to this cache file meanwhile. Only persist onto
@@ -304,6 +309,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     // so NOT_RELEVANT files show their diff but not a full-file view.
     let mut content_by_path: HashMap<String, (String, String)> = HashMap::new();
 
+    // Which passes actually ran — feeds the unified per-pass record (#204).
+    let mut ran = (false, false, false); // (analysis block, triage, coverage)
     if !relevant.is_empty() {
         // Step 4: AI highlight analysis + summary + grouping (+ triage for large
         // PRs), in parallel. The triage pass (top risks + contract-first order) is
@@ -335,6 +342,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         // requirements text or a substantial linked-issue body overrides it.
         let run_coverage =
             coverage_gate_with_issues(&pr_body, user_requirements_text.is_some(), &linked_issues);
+        ran = (true, run_triage, run_coverage);
         let ai_total: u32 = 3 + if run_triage { 1 } else { 0 } + if run_coverage { 1 } else { 0 };
         emit_progress(app, 4, "Analyzing highlights, summary, grouping, and coverage", FetchStatus::Running, None, Some((0, ai_total)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
@@ -636,6 +644,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         requirements_coverage,
         body: truncate_chars(&pr_body, 10000),
         commits,
+        passes: pass_statuses(ran.0, ran.1, ran.2, &truncated_passes, &failed_passes),
         analysis_truncated: !truncated_passes.is_empty(),
         truncated_passes,
         failed_passes,
@@ -653,6 +662,41 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
 const TRIAGE_MIN_FILES: usize = 5;
 
 /// Rank a risk level for ordering (lower = riskier, comes first).
+/// Derive the unified per-pass record (issue #204) from the signals the
+/// pipeline already tracks. `ran_analysis` is false when no files were
+/// relevant (the whole step-4 block is skipped). Failed trumps truncated —
+/// one honest word per pass. Classification always runs (its failure fails
+/// the fetch before any manifest exists).
+fn pass_statuses(
+    ran_analysis: bool,
+    run_triage: bool,
+    run_coverage: bool,
+    truncated: &[String],
+    failed: &[String],
+) -> Vec<PassStatus> {
+    ["classification", "highlights", "summary", "grouping", "triage", "coverage"]
+        .into_iter()
+        .map(|pass| {
+            let ran = match pass {
+                "classification" => true,
+                "triage" => ran_analysis && run_triage,
+                "coverage" => ran_analysis && run_coverage,
+                _ => ran_analysis,
+            };
+            let status = if !ran {
+                "not_run"
+            } else if failed.iter().any(|f| f == pass) {
+                "failed"
+            } else if truncated.iter().any(|t| t == pass) {
+                "truncated"
+            } else {
+                "complete"
+            };
+            PassStatus { pass: pass.to_string(), status: status.to_string() }
+        })
+        .collect()
+}
+
 /// Parse the highlights pass output strictly. The highlights pass is the
 /// review's core product, so an AI error or unusable JSON is a fetch-level
 /// error — "no findings" must mean the analysis succeeded and found nothing
@@ -1496,6 +1540,39 @@ mod tests {
     use super::classify_diff_type;
     use super::{parse_array_pass, parse_highlights_strict};
     use crate::types::ChangeGroup;
+
+    #[test]
+    fn pass_statuses_cover_all_four_states() {
+        use super::pass_statuses;
+        let s = pass_statuses(
+            true,
+            true,
+            false,
+            &["highlights".to_string(), "summary".to_string()],
+            &["summary".to_string()],
+        );
+        let get = |name: &str| s.iter().find(|p| p.pass == name).unwrap().status.clone();
+        assert_eq!(get("classification"), "complete");
+        assert_eq!(get("highlights"), "truncated");
+        assert_eq!(get("summary"), "failed", "failed trumps truncated");
+        assert_eq!(get("grouping"), "complete");
+        assert_eq!(get("triage"), "complete");
+        assert_eq!(get("coverage"), "not_run");
+        assert_eq!(s.len(), 6, "one record per pass, always");
+    }
+
+    #[test]
+    fn pass_statuses_when_nothing_relevant() {
+        use super::pass_statuses;
+        // No relevant files: classification still ran (it decided that);
+        // everything downstream is not_run — even with stale flag content.
+        let s = pass_statuses(false, true, true, &["classification".to_string()], &[]);
+        let get = |name: &str| s.iter().find(|p| p.pass == name).unwrap().status.clone();
+        assert_eq!(get("classification"), "truncated");
+        for pass in ["highlights", "summary", "grouping", "triage", "coverage"] {
+            assert_eq!(get(pass), "not_run", "{pass}");
+        }
+    }
 
     #[test]
     fn highlights_ai_error_fails_the_fetch_not_empties_it() {
