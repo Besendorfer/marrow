@@ -76,7 +76,9 @@ more surfaces.
 - [x] URL-encode GitHub repository paths and query values correctly.
       (#208 / PR #209: per-segment path encoding + ref encoding on both
       contents endpoints; search endpoints already encoded.)
-- [ ] Merge old and new manifest-cache discovery instead of hiding old entries.
+- [x] Merge old and new manifest-cache discovery instead of hiding old
+      entries. (#214 / PR #215, merged 2026-08-30: one merged pass —
+      sidecar-backed + manifest-only entries, tested.)
 - [x] Validate AI classifications, files, severities, and line ranges.
       (#210 / PR #211, merged 2026-08-30: ingestion validators drop
       hallucinated paths, dedupe, and normalize enums/ranges; files already
@@ -88,7 +90,9 @@ more surfaces.
 - [x] Reconcile the published CLI/core dependency versions. (#208 / PR #209:
       marrow-core path-dep pin brought to lockstep with the workspace
       version; crates.io publish remains the manual release-time step.)
-- [ ] Fix or reassess Python barrel-file classification (#71).
+- [x] Fix or reassess Python barrel-file classification (#71). (#214 /
+      PR #215: prompt rule with a side-effect-imports carve-out the review
+      itself contributed; model-compliance measurement → Phase-3 corpus.)
 
 ## Phase 3: Quality Measurement
 
