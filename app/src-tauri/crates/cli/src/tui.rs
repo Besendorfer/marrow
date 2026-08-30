@@ -333,15 +333,19 @@ impl<'a> App<'a> {
         // reported separately so the risk breakdown isn't skewed by noise.
         let relevant: Vec<&&FileDiff> =
             self.files.iter().filter(|f| f.classification == "RELEVANT").collect();
-        let (mut hi, mut me, mut lo) = (0u32, 0u32, 0u32);
+        let (mut cr, mut hi, mut me, mut lo) = (0u32, 0u32, 0u32, 0u32);
         for f in &relevant {
             match f.risk_level.as_str() {
+                "critical" => cr += 1,
                 "high" => hi += 1,
                 "low" => lo += 1,
                 _ => me += 1,
             }
         }
-        let mut header = format!("{} files · {hi} high · {me} med · {lo} low", relevant.len());
+        // The crit segment only appears when present — most PRs have none,
+        // and the sidebar header is width-constrained.
+        let crit = if cr > 0 { format!("{cr} crit · ") } else { String::new() };
+        let mut header = format!("{} files · {crit}{hi} high · {me} med · {lo} low", relevant.len());
         let nr = self.irrelevant_count();
         if nr > 0 {
             header.push_str(&format!("  ·  {nr} not relevant (press t)"));
@@ -1328,6 +1332,7 @@ impl<'a> App<'a> {
                         Color::DarkGray
                     } else {
                         match file.risk_level.as_str() {
+                            "critical" => Color::Magenta,
                             "high" => Color::Red,
                             "low" => Color::Green,
                             _ => Color::Yellow,
@@ -2080,6 +2085,7 @@ fn highlight_spans(code: &str, syntax: &SyntaxReference) -> Vec<Span<'static>> {
 
 fn sev_color(sev: &str) -> Color {
     match sev {
+        "critical" => Color::Magenta,
         "high" | "warning" => Color::Red,
         "medium" => Color::Yellow,
         _ => Color::Cyan,
@@ -2094,11 +2100,14 @@ fn sev_rank(c: Color) -> u8 {
     }
 }
 
+/// Mirrors core's ordering: critical first, then high, medium, everything
+/// else. The TUI predated the "critical" tier and sorted it among mediums.
 fn risk_rank(risk: &str) -> u8 {
     match risk {
-        "high" => 0,
-        "low" => 2,
-        _ => 1,
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        _ => 3,
     }
 }
 
@@ -2187,6 +2196,22 @@ mod tests {
     use marrow_core::types::{ChangeGroup, CommentAuthor, ReviewComment};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn risk_rank_puts_critical_first() {
+        // The TUI predated the "critical" tier and sorted it among mediums.
+        let mut risks = vec!["low", "medium", "critical", "high", "unknown"];
+        risks.sort_by_key(|r| risk_rank(r));
+        assert_eq!(risks, vec!["critical", "high", "medium", "low", "unknown"]);
+        assert!(risk_rank("critical") < risk_rank("high"));
+    }
+
+    #[test]
+    fn critical_gets_its_own_colors() {
+        assert_eq!(sev_color("critical"), Color::Magenta);
+        // Regression guard: not the calm info color it used to fall to.
+        assert_ne!(sev_color("critical"), sev_color("info"));
+    }
 
     fn thread(resolved: bool, path: &str, line: u64, comment: &str) -> ReviewThread {
         ReviewThread {
