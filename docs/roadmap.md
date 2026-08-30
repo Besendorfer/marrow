@@ -81,7 +81,10 @@ more surfaces.
       (#210 / PR #211, merged 2026-08-30: ingestion validators drop
       hallucinated paths, dedupe, and normalize enums/ranges; files already
       could not vanish — manifest iterates GitHub's list.)
-- [ ] Fix critical-risk ranking in the CLI/TUI.
+- [x] Fix critical-risk ranking in the CLI/TUI. (#212 / PR #213, merged
+      2026-08-30: critical sorts first, counts in the header, renders
+      magenta, and dominates overlapping highlights — the review itself
+      caught the overlap-dominance regression in the fix.)
 - [x] Reconcile the published CLI/core dependency versions. (#208 / PR #209:
       marrow-core path-dep pin brought to lockstep with the workspace
       version; crates.io publish remains the manual release-time step.)
