@@ -23,6 +23,7 @@ NOT_RELEVANT files include:
 - Package manager files (package.json, pnpm-lock.yaml, yarn.lock, package-lock.json) UNLESS they add new meaningful dependencies
 - Build config / tooling config (tsconfig.json, eslint config, prettier config, vitest config, nx config, postcss config, tailwind config)
 - Type declaration files that only re-export or define UI prop types
+- Barrel/index files that only re-export: Python __init__.py files that are empty or contain only imports, re-exports (from .foo import Bar), or __all__ declarations; JS/TS index files that only re-export
 - Static assets (images, fonts, icons, SVGs)
 - Auto-generated files (generated types, OpenAPI specs that are generated)
 
@@ -36,6 +37,7 @@ IMPORTANT EDGE CASES:
 - Rendering/view code that contains non-trivial logic IS relevant — e.g. terminal/TUI rendering, view-models, editors, or components with parsing, state machines, cursor/scroll/layout math, or data transformation. Only the purely-markup/styling case above is NOT_RELEVANT; when a "UI" file carries substantial logic, classify it RELEVANT.
 - Shared utility libraries: classify based on whether they contain business logic or UI helpers
 - Page object files, test helpers, test fixtures, and test utilities are NOT_RELEVANT
+- An __init__.py (or index barrel) that defines actual classes, functions, or substantive logic beyond re-exports IS relevant — the barrel exclusion is only for pure re-export/empty files, and those are NOT_RELEVANT with "low" risk, never medium
 
 Respond with ONLY a valid JSON array. Each element must be an object with:
 - "path": the file path

@@ -100,45 +100,43 @@ pub struct CachedPrInfo {
 }
 
 pub fn list_cached_manifests() -> Vec<CachedPrInfo> {
-    let dir = cache_dir();
-    let entries = match fs::read_dir(&dir) {
+    list_cached_in(&cache_dir())
+}
+
+/// Directory-injectable core of `list_cached_manifests` (testable without
+/// touching the real config dir).
+fn list_cached_in(dir: &std::path::Path) -> Vec<CachedPrInfo> {
+    let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
     };
 
-    let mut results: Vec<CachedPrInfo> = entries
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            let name = path.file_name()?.to_str()?;
-            if !name.ends_with(".meta.json") {
-                return None;
-            }
-            let content = fs::read_to_string(&path).ok()?;
-            serde_json::from_str(&content).ok()
-        })
-        .collect();
-
-    // Fall back to full manifest parsing for entries without metadata files
-    if results.is_empty() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => return Vec::new(),
-        };
-        results = entries
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                let name = path.file_name()?.to_str()?;
-                if !name.ends_with(".json") || name.ends_with(".meta.json") {
-                    return None;
+    // ONE merged pass (issue #214): sidecar-backed entries are cheap and
+    // preferred; a manifest WITHOUT a sidecar (cached before the .meta.json
+    // era, or whose sidecar write failed) is parsed in full instead of being
+    // hidden. The old code fell back only when the sidecar scan found
+    // nothing at all — a single new-style cache hid every old entry.
+    let mut results: Vec<CachedPrInfo> = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if name.ends_with(".meta.json") {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(info) = serde_json::from_str::<CachedPrInfo>(&content) {
+                    results.push(info);
                 }
+            }
+        } else if name.ends_with(".json") {
+            // Manifest file: only parsed when its sidecar is absent.
+            if dir.join(format!("{}.meta.json", name.trim_end_matches(".json"))).exists() {
+                continue;
+            }
+            let info = (|| {
                 let content = fs::read_to_string(&path).ok()?;
                 let manifest: ReviewManifest = serde_json::from_str(&content).ok()?;
                 let parsed = parse_pr_ref(&manifest.pr_url).ok()?;
                 let mtime = entry.metadata().ok()?.modified().ok()?;
                 let cached_at: DateTime<Utc> = mtime.into();
-
                 Some(CachedPrInfo {
                     owner: parsed.owner,
                     repo: parsed.repo,
@@ -149,10 +147,73 @@ pub fn list_cached_manifests() -> Vec<CachedPrInfo> {
                     file_count: manifest.files.len(),
                     cached_at: cached_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 })
-            })
-            .collect();
+            })();
+            if let Some(info) = info {
+                results.push(info);
+            }
+        }
     }
 
     results.sort_by(|a, b| b.cached_at.cmp(&a.cached_at));
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ReviewManifest;
+
+    fn manifest(pr: u64, title: &str) -> ReviewManifest {
+        ReviewManifest {
+            pr_title: title.to_string(),
+            pr_url: format!("https://github.com/o/r/pull/{pr}"),
+            pr_number: pr,
+            base_ref: "main".into(),
+            head_ref: "b".into(),
+            base_sha: "a".into(),
+            head_sha: "h".into(),
+            author: String::new(),
+            draft: false,
+            summary: String::new(),
+            change_groups: Vec::new(),
+            triage: None,
+            requirements_coverage: None,
+            body: String::new(),
+            commits: Vec::new(),
+            passes: Vec::new(),
+            analysis_truncated: false,
+            truncated_passes: Vec::new(),
+            failed_passes: Vec::new(),
+            analysis_fingerprint: None,
+            files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn discovery_merges_sidecar_and_manifest_only_entries() {
+        let dir = std::env::temp_dir().join(format!("marrow-disc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // New-style: manifest + sidecar (sidecar is the source of truth).
+        fs::write(dir.join("o_r_1.json"), serde_json::to_string(&manifest(1, "new")).unwrap()).unwrap();
+        let meta = CachedPrInfo {
+            owner: "o".into(), repo: "r".into(), pr_number: 1, pr_title: "new".into(),
+            pr_url: "https://github.com/o/r/pull/1".into(), head_sha: "h".into(),
+            file_count: 0, cached_at: "2026-08-30T00:00:00Z".into(),
+        };
+        fs::write(dir.join("o_r_1.meta.json"), serde_json::to_string(&meta).unwrap()).unwrap();
+        // Old-style: manifest only, no sidecar — the old all-or-nothing
+        // fallback HID this entry whenever any sidecar existed.
+        fs::write(dir.join("o_r_2.json"), serde_json::to_string(&manifest(2, "old")).unwrap()).unwrap();
+
+        let listed = list_cached_in(&dir);
+        let mut prs: Vec<u64> = listed.iter().map(|i| i.pr_number).collect();
+        prs.sort();
+        assert_eq!(prs, vec![1, 2], "old and new entries must MERGE, not hide");
+        // No double-listing of the sidecar-backed PR.
+        assert_eq!(listed.iter().filter(|i| i.pr_number == 1).count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
