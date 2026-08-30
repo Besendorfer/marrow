@@ -77,7 +77,10 @@ more surfaces.
       (#208 / PR #209: per-segment path encoding + ref encoding on both
       contents endpoints; search endpoints already encoded.)
 - [ ] Merge old and new manifest-cache discovery instead of hiding old entries.
-- [ ] Validate AI classifications, files, severities, and line ranges.
+- [x] Validate AI classifications, files, severities, and line ranges.
+      (#210 / PR #211, merged 2026-08-30: ingestion validators drop
+      hallucinated paths, dedupe, and normalize enums/ranges; files already
+      could not vanish — manifest iterates GitHub's list.)
 - [ ] Fix critical-risk ranking in the CLI/TUI.
 - [x] Reconcile the published CLI/core dependency versions. (#208 / PR #209:
       marrow-core path-dep pin brought to lockstep with the workspace
