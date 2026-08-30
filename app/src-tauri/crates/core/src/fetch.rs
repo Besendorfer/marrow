@@ -261,6 +261,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let classification_json = extract_json_array(&classification_raw)?;
     let classifications: Vec<FileClassification> = serde_json::from_value(classification_json)
         .map_err(|e| format!("Failed to parse classification: {}", e))?;
+    let classifications = validate_classifications(classifications, &file_list);
     emit_progress(app, 3, "Classifying files with AI", FetchStatus::Done, None, None);
 
     let relevant: Vec<&FileClassification> = classifications
@@ -426,7 +427,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         // The highlights pass is load-bearing: a failure errors the whole
         // fetch (keeping any cached manifest) rather than rendering as a
         // clean review with zero findings (issue #198).
-        let highlight_results = parse_highlights_strict(highlights_raw)?;
+        let highlight_results = validate_highlights(parse_highlights_strict(highlights_raw)?, &file_list);
 
         // The remaining passes degrade gracefully, but a failure is recorded
         // in `failed_passes` so the Overview can say the analysis is
@@ -665,6 +666,62 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
 const TRIAGE_MIN_FILES: usize = 5;
 
 /// Rank a risk level for ordering (lower = riskier, comes first).
+/// Validate AI classifications against the PR's real file list (issue #210).
+/// Hallucinated paths are dropped — a RELEVANT hallucination would otherwise
+/// enter the relevant set and pollute prompts, content fetches, and progress
+/// counts. Duplicates keep the first entry. Enum-ish fields normalize:
+/// anything but RELEVANT becomes NOT_RELEVANT (making today's implicit
+/// behavior explicit) and an unknown risk_level becomes "low", matching
+/// `risk_rank`'s fallback so the chip renders instead of showing raw noise.
+fn validate_classifications(
+    raw: Vec<FileClassification>,
+    file_list: &[String],
+) -> Vec<FileClassification> {
+    let known: HashSet<&str> = file_list.iter().map(|s| s.as_str()).collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    raw.into_iter()
+        .filter(|c| known.contains(c.path.as_str()) && seen.insert(c.path.clone()))
+        .map(|mut c| {
+            if c.classification != "RELEVANT" {
+                c.classification = "NOT_RELEVANT".to_string();
+            }
+            let risk = c.risk_level.to_lowercase();
+            c.risk_level = match risk.as_str() {
+                "critical" | "high" | "medium" | "low" => risk,
+                _ => "low".to_string(),
+            };
+            c
+        })
+        .collect()
+}
+
+/// Validate AI highlights (issue #210): drop hallucinated paths early (they
+/// were previously dropped only implicitly at manifest build), swap inverted
+/// line ranges, clamp lines to ≥1, and normalize severity case-insensitively
+/// — an unknown severity becomes "info", because severity measures
+/// actionability and fabricating urgency from garbage would be dishonest.
+/// The note text is untouched. Beyond-EOF anchors remain the frontend
+/// reveal-guard's job.
+fn validate_highlights(raw: Vec<HighlightResult>, file_list: &[String]) -> Vec<HighlightResult> {
+    let known: HashSet<&str> = file_list.iter().map(|s| s.as_str()).collect();
+    raw.into_iter()
+        .filter(|h| known.contains(h.path.as_str()))
+        .map(|mut h| {
+            h.start_line = h.start_line.max(1);
+            h.end_line = h.end_line.max(1);
+            if h.start_line > h.end_line {
+                std::mem::swap(&mut h.start_line, &mut h.end_line);
+            }
+            let sev = h.severity.to_lowercase();
+            h.severity = match sev.as_str() {
+                "critical" | "warning" | "info" => sev,
+                _ => "info".to_string(),
+            };
+            h
+        })
+        .collect()
+}
+
 /// Derive the unified per-pass record (issue #204) from the signals the
 /// pipeline already tracks. `ran_analysis` is false when no files were
 /// relevant (the whole step-4 block is skipped). Failed trumps truncated —
@@ -1556,6 +1613,59 @@ mod tests {
     use super::classify_diff_type;
     use super::{parse_array_pass, parse_highlights_strict};
     use crate::types::ChangeGroup;
+
+    #[test]
+    fn classifications_drop_hallucinated_and_duplicate_paths() {
+        use super::validate_classifications;
+        use crate::types::FileClassification;
+        let cls = |path: &str, c: &str, risk: &str| FileClassification {
+            path: path.to_string(),
+            classification: c.to_string(),
+            category: "Business Logic".to_string(),
+            risk_level: risk.to_string(),
+            reason: "r".to_string(),
+        };
+        let files = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let out = validate_classifications(
+            vec![
+                cls("a.rs", "RELEVANT", "HIGH"),
+                cls("ghost.rs", "RELEVANT", "critical"), // hallucinated: dropped
+                cls("a.rs", "NOT_RELEVANT", "low"),      // duplicate: first wins
+                cls("b.rs", "MAYBE", "extreme"),         // unknown enums: normalized
+            ],
+            &files,
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].path.as_str(), out[0].classification.as_str(), out[0].risk_level.as_str()), ("a.rs", "RELEVANT", "high"));
+        assert_eq!((out[1].classification.as_str(), out[1].risk_level.as_str()), ("NOT_RELEVANT", "low"));
+    }
+
+    #[test]
+    fn highlights_normalize_ranges_and_severity() {
+        use super::validate_highlights;
+        use crate::types::HighlightResult;
+        let hl = |path: &str, s: u64, e: u64, sev: &str| HighlightResult {
+            path: path.to_string(),
+            start_line: s,
+            end_line: e,
+            severity: sev.to_string(),
+            comment: "c".to_string(),
+        };
+        let files = vec!["a.rs".to_string()];
+        let out = validate_highlights(
+            vec![
+                hl("a.rs", 9, 3, "WARNING"),   // inverted range, cased severity
+                hl("a.rs", 0, 0, "urgent!!"),  // zero lines, garbage severity
+                hl("ghost.rs", 1, 2, "info"),  // hallucinated path: dropped
+            ],
+            &files,
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].start_line, out[0].end_line, out[0].severity.as_str()), (3, 9, "warning"));
+        assert_eq!((out[1].start_line, out[1].end_line, out[1].severity.as_str()), (1, 1, "info"));
+        // The note text is never touched.
+        assert_eq!(out[1].comment, "c");
+    }
 
     #[test]
     fn pass_statuses_cover_all_four_states() {
