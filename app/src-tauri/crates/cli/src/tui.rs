@@ -2094,6 +2094,7 @@ fn sev_color(sev: &str) -> Color {
 
 fn sev_rank(c: Color) -> u8 {
     match c {
+        Color::Magenta => 4, // critical — must dominate overlapping highlights
         Color::Red => 3,
         Color::Yellow => 2,
         _ => 1,
@@ -2211,6 +2212,19 @@ mod tests {
         assert_eq!(sev_color("critical"), Color::Magenta);
         // Regression guard: not the calm info color it used to fall to.
         assert_ne!(sev_color("critical"), sev_color("info"));
+    }
+
+    #[test]
+    fn critical_dominates_overlapping_highlights() {
+        // The full chain: severity → color → overlap rank. A critical line
+        // must win against every other severity (Marrow's own review caught
+        // sev_rank not knowing Magenta — critical lost to medium/high).
+        for other in ["warning", "medium", "info", "high"] {
+            assert!(
+                sev_rank(sev_color("critical")) > sev_rank(sev_color(other)),
+                "critical must dominate {other}"
+            );
+        }
     }
 
     fn thread(resolved: bool, path: &str, line: u64, comment: &str) -> ReviewThread {
