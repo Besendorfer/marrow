@@ -38,6 +38,7 @@ IMPORTANT EDGE CASES:
 - Shared utility libraries: classify based on whether they contain business logic or UI helpers
 - Page object files, test helpers, test fixtures, and test utilities are NOT_RELEVANT
 - An __init__.py (or index barrel) that defines actual classes, functions, or substantive logic beyond re-exports IS relevant — the barrel exclusion is only for pure re-export/empty files, and those are NOT_RELEVANT with "low" risk, never medium
+- Import-for-side-effect modules are NOT barrels: an __init__.py whose imports exist to trigger registration (bare `import pkg.plugins` style imports whose names are never re-exported or listed in __all__, or imports commented as registering handlers/routes) carries real behavior — classify it RELEVANT with "low" risk
 
 Respond with ONLY a valid JSON array. Each element must be an object with:
 - "path": the file path
