@@ -275,6 +275,11 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     // changes are all classified NOT_RELEVANT still lists its files instead of
     // coming back empty.
     let per_file_diff_map = build_per_file_diff_map(&full_diff);
+    // The whole-PR diff has served both its consumers (classification prompt,
+    // per-file split) — free it before the multi-minute AI phase instead of
+    // holding a duplicate of every diff for the fetch's longest stretch
+    // (issue #216).
+    drop(full_diff);
     // Coverage judges requirements against test-file diffs, but test files are
     // always classified NOT_RELEVANT (see CLASSIFICATION_PROMPT) — so their
     // diffs must be pulled from the full per-file diff map now, before the
@@ -390,6 +395,21 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             String::new()
         };
 
+        // The prompts are built — the diff/content clones that fed them are
+        // dead weight for the multi-minute AI phase (issue #216). Keep only
+        // the test-file paths the coverage assembly still needs.
+        let known_test_paths: Vec<String> = test_diffs
+            .iter()
+            .chain(inline_test_diffs.iter())
+            .chain(existing_tests.iter())
+            .map(|(p, _)| p.clone())
+            .collect();
+        drop(per_file_diffs);
+        drop(test_diffs);
+        drop(inline_test_diffs);
+        drop(existing_tests);
+        drop(prior_notes);
+
         let mut tasks = vec![
             ("highlights", ai.invoke(&highlight_prompt)),
             ("summary", ai.invoke(&summary_prompt)),
@@ -491,12 +511,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             if parsed_cov.is_none() {
                 failed_passes.push("coverage".to_string());
             }
-            let known_tests: HashSet<&str> = test_diffs
-                .iter()
-                .chain(inline_test_diffs.iter())
-                .chain(existing_tests.iter())
-                .map(|(p, _)| p.as_str())
-                .collect();
+            let known_tests: HashSet<&str> =
+                known_test_paths.iter().map(|s| s.as_str()).collect();
             requirements_coverage = parsed_cov.and_then(|cov| finalize_coverage(cov, &known_tests));
             if !linked_issues.is_empty() {
                 if let Some(c) = requirements_coverage.as_mut() {
@@ -508,6 +524,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         // Step 5: Fetch file contents for all relevant files concurrently
         let files_total = relevant.len() as u32;
         emit_progress(app, 5, "Fetching file contents", FetchStatus::Running, None, Some((0, files_total)));
+        let status_by_path: HashMap<&str, &str> =
+            pr_files.iter().map(|f| (f.filename.as_str(), f.status.as_str())).collect();
         let content_futures: Vec<_> = relevant
             .iter()
             .map(|f| {
@@ -516,11 +534,21 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                 let repo = parsed.repo.clone();
                 let base = base_sha.clone();
                 let head = head_sha.clone();
+                // Skip requests that cannot succeed (issue #216): an added
+                // file's base fetch always 404s, a removed file's head fetch
+                // likewise — on new-code-heavy PRs that's up to half the
+                // content requests.
+                let (want_base, want_head) =
+                    content_fetch_plan(status_by_path.get(f.path.as_str()).copied().unwrap_or("modified"));
                 let gh = &github;
                 async move {
                     let (base_content, head_content) = tokio::join!(
-                        gh.get_file_content(&owner, &repo, &path, &base),
-                        gh.get_file_content(&owner, &repo, &path, &head),
+                        async {
+                            if want_base { gh.get_file_content(&owner, &repo, &path, &base).await } else { Ok(String::new()) }
+                        },
+                        async {
+                            if want_head { gh.get_file_content(&owner, &repo, &path, &head).await } else { Ok(String::new()) }
+                        },
                     );
                     (path, base_content, head_content)
                 }
@@ -666,6 +694,17 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
 const TRIAGE_MIN_FILES: usize = 5;
 
 /// Rank a risk level for ordering (lower = riskier, comes first).
+/// Which sides of a file's content are worth fetching, by GitHub status
+/// (issue #216): an added file has no base (the request always 404s) and a
+/// removed file has no head. Everything else fetches both.
+fn content_fetch_plan(status: &str) -> (bool, bool) {
+    match status {
+        "added" => (false, true),
+        "removed" => (true, false),
+        _ => (true, true),
+    }
+}
+
 /// Validate AI classifications against the PR's real file list (issue #210).
 /// Hallucinated paths are dropped — a RELEVANT hallucination would otherwise
 /// enter the relevant set and pollute prompts, content fetches, and progress
@@ -1613,6 +1652,17 @@ mod tests {
     use super::classify_diff_type;
     use super::{parse_array_pass, parse_highlights_strict};
     use crate::types::ChangeGroup;
+
+    #[test]
+    fn content_fetch_plan_skips_impossible_sides() {
+        use super::content_fetch_plan;
+        assert_eq!(content_fetch_plan("added"), (false, true), "added has no base");
+        assert_eq!(content_fetch_plan("removed"), (true, false), "removed has no head");
+        assert_eq!(content_fetch_plan("modified"), (true, true));
+        assert_eq!(content_fetch_plan("renamed"), (true, true));
+        // Unknown statuses stay conservative: fetch both.
+        assert_eq!(content_fetch_plan("changed"), (true, true));
+    }
 
     #[test]
     fn classifications_drop_hallucinated_and_duplicate_paths() {
