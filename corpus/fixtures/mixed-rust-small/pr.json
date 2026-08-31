@@ -1,0 +1,18 @@
+{
+  "title": "fix(core): bound retry attempts in the sync client",
+  "body": "Models this repo's own PR shape: one core Rust change with an inline test module, a README touch, and a lockfile bump. Labels: the core file is RELEVANT (inline tests do not make an implementation file a test file); docs and lockfile are NOT_RELEVANT.",
+  "files": [
+    {
+      "path": "src/sync_client.rs",
+      "diff": "@@ -10,7 +10,12 @@ impl SyncClient {\n     pub fn send(&self, req: Request) -> Result<Response, Error> {\n-        loop {\n-            match self.try_send(&req) {\n+        let mut attempts = 0;\n+        loop {\n+            attempts += 1;\n+            if attempts > MAX_ATTEMPTS {\n+                return Err(Error::RetriesExhausted);\n+            }\n+            match self.try_send(&req) {\n                 Ok(resp) => return Ok(resp),\n                 Err(e) if e.transient() => continue,\n                 Err(e) => return Err(e),\n@@ -40,3 +45,14 @@ impl SyncClient {\n }\n+\n+#[cfg(test)]\nmod tests {\n+    use super::*;\n+\n+    #[test]\n+    fn gives_up_after_max_attempts() {\n+        let c = SyncClient::always_transient();\n+        assert!(matches!(c.send(Request::default()), Err(Error::RetriesExhausted)));\n+    }\n+}\n"
+    },
+    {
+      "path": "README.md",
+      "diff": "@@ -20,2 +20,3 @@\n # sync-client\n+Retries are bounded (MAX_ATTEMPTS) as of this release.\n"
+    },
+    {
+      "path": "Cargo.lock",
+      "diff": "@@ -100,4 +100,4 @@\n [[package]]\n name = \"sync-client\"\n-version = \"0.3.1\"\n+version = \"0.3.2\"\n"
+    }
+  ]
+}

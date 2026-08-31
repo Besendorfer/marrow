@@ -2892,6 +2892,7 @@ dependencies = [
  "clap",
  "marrow-core",
  "ratatui",
+ "serde",
  "serde_json",
  "syntect",
  "tokio",

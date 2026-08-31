@@ -1,0 +1,4 @@
+{
+  "relevant": ["src/sync_client.rs"],
+  "not_relevant": ["README.md", "Cargo.lock"]
+}

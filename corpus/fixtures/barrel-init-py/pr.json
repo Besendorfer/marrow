@@ -1,0 +1,22 @@
+{
+  "title": "Add payment retry policy with plugin registration",
+  "body": "Models issue #71: a Python PR mixing a pure barrel __init__.py, an import-for-side-effect __init__.py (plugin registration), a real logic module, and its tests. Labels encode the barrel rule shipped in PR #215: pure re-export/empty barrels are NOT_RELEVANT; side-effect import modules and real logic are RELEVANT; test files are NOT_RELEVANT.",
+  "files": [
+    {
+      "path": "billing/__init__.py",
+      "diff": "@@ -0,0 +1,4 @@\n+from .retry import RetryPolicy\n+from .charges import ChargeProcessor\n+\n+__all__ = [\"RetryPolicy\", \"ChargeProcessor\"]\n"
+    },
+    {
+      "path": "billing/plugins/__init__.py",
+      "diff": "@@ -0,0 +1,3 @@\n+# Importing registers each provider with the payment gateway registry.\n+import billing.plugins.stripe_provider\n+import billing.plugins.braintree_provider\n"
+    },
+    {
+      "path": "billing/retry.py",
+      "diff": "@@ -0,0 +1,18 @@\n+import time\n+\n+\n+class RetryPolicy:\n+    \"\"\"Exponential backoff with a hard attempt cap for charge retries.\"\"\"\n+\n+    def __init__(self, max_attempts: int = 3, base_delay: float = 0.5):\n+        self.max_attempts = max_attempts\n+        self.base_delay = base_delay\n+\n+    def run(self, charge):\n+        for attempt in range(self.max_attempts):\n+            try:\n+                return charge()\n+            except TransientChargeError:\n+                time.sleep(self.base_delay * (2 ** attempt))\n+        raise ChargeFailed(\"retries exhausted\")\n+\n"
+    },
+    {
+      "path": "tests/test_retry.py",
+      "diff": "@@ -0,0 +1,12 @@\n+from billing.retry import RetryPolicy\n+\n+\n+def test_retries_then_raises():\n+    calls = []\n+\n+    def charge():\n+        calls.append(1)\n+        raise TransientChargeError()\n+\n+    policy = RetryPolicy(max_attempts=2, base_delay=0)\n+    ...\n"
+    }
+  ]
+}

@@ -712,7 +712,9 @@ fn content_fetch_plan(status: &str) -> (bool, bool) {
 /// anything but RELEVANT becomes NOT_RELEVANT (making today's implicit
 /// behavior explicit) and an unknown risk_level becomes "low", matching
 /// `risk_rank`'s fallback so the chip renders instead of showing raw noise.
-fn validate_classifications(
+/// Public for the corpus eval runner (issue #219): the eval judges
+/// POST-validation output — the same pipeline the app runs.
+pub fn validate_classifications(
     raw: Vec<FileClassification>,
     file_list: &[String],
 ) -> Vec<FileClassification> {
