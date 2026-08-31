@@ -24,6 +24,7 @@ use marrow_core::fetch::fetch_pr_impl;
 use marrow_core::github::GithubClient;
 use marrow_core::types::{FetchProgress, FetchStatus, FileDiff, Highlight, ReviewManifest, ReviewThread};
 
+mod eval;
 mod tui;
 
 /// When to colorize output. `auto` = colorize only when stdout is a terminal.
@@ -105,6 +106,14 @@ enum Command {
         comment_id: String,
         /// Reply body
         body: String,
+    },
+    /// Score the analysis against the quality corpus (dev; runs real AI calls)
+    Eval {
+        /// Path to the corpus directory (contains VERSION + fixtures/)
+        #[arg(long)]
+        corpus: std::path::PathBuf,
+        #[arg(long)]
+        json: bool,
     },
     /// Mark a review thread resolved
     Resolve {
@@ -201,6 +210,7 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
             confirm(&format!("Reply to a thread on {pr}?"), yes)?;
             reply(&pr, &comment_id, &body).await
         }
+        Command::Eval { corpus, json } => eval::eval(&corpus, json).await,
         Command::Resolve { thread_id } => {
             confirm(&format!("Resolve thread {thread_id}?"), yes)?;
             set_resolved(&thread_id, true).await

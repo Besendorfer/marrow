@@ -1,0 +1,40 @@
+# Marrow quality corpus
+
+Versioned PR fixtures for measuring analysis quality (roadmap Phase 3,
+issue #219). The corpus is the stable yardstick the working principles
+demand: prompt and model changes are measured against these fixtures, not
+shipped on faith.
+
+## Format
+
+- `VERSION` — bumped whenever any fixture's inputs or labels change, so eval
+  results always name the corpus they were scored against.
+- One directory per fixture under `fixtures/`:
+  - `pr.json` — frozen inputs: `{ "title", "body", "files": [{ "path", "diff" }] }`.
+    Diffs are unified-diff bodies (no `diff --git` header; the runner adds
+    them when assembling the whole-PR diff).
+  - `labels.json` — expected outcomes:
+    `{ "relevant": [paths…], "not_relevant": [paths…] }`. Every path in
+    `pr.json` must appear in exactly one list.
+
+## Labeling rules
+
+- Labels encode the CLASSIFICATION_PROMPT's *intent*, decided by a human at
+  fixture-creation time — they are the spec, not a model's past output.
+- Provenance: note in the fixture's `pr.json` `body` (or a comment fixture
+  README) what real case it models; synthetic content is fine, secrets and
+  private code are not.
+
+## Running
+
+```bash
+cargo run -p marrow-cli -- eval --corpus ../../corpus   # from app/src-tauri
+```
+
+Runs the real classification pass with your configured provider/model over
+every fixture and reports precision/recall for RELEVANT plus per-file
+mismatches. Results are provider- and model-dependent by design — that is
+the point: run before/after a prompt or model change and compare.
+
+Deterministic cases that need no AI (malformed provider responses) live as
+regular tests in `crates/core/tests/` instead of here.
