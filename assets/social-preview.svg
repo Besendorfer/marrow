@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Marrow — Review the code that actually matters</title>
+  <desc id="desc">Marrow's icon and an AI-guided pull request review shown in the desktop app.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0f14" />
+      <stop offset="0.62" stop-color="#111821" />
+      <stop offset="1" stop-color="#162235" />
+    </linearGradient>
+    <radialGradient id="glow" cx="0.88" cy="0.15" r="0.76">
+      <stop offset="0" stop-color="#58a6ff" stop-opacity="0.22" />
+      <stop offset="1" stop-color="#58a6ff" stop-opacity="0" />
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#000000" flood-opacity="0.55" />
+    </filter>
+    <clipPath id="screenshot-clip">
+      <rect x="594" y="90" width="742" height="474" rx="18" />
+    </clipPath>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#background)" />
+  <rect width="1280" height="640" fill="url(#glow)" />
+  <circle cx="1190" cy="590" r="230" fill="#58a6ff" opacity="0.04" />
+
+  <!-- Brand -->
+  <g transform="translate(68 62)">
+    <rect width="82" height="82" rx="20" fill="#0c1118" stroke="#2b3542" stroke-width="2" />
+    <image x="0" y="0" width="82" height="82" xlink:href="marrow-icon.png" />
+    <text x="106" y="57" fill="#f0f6fc" font-family="Arial, Helvetica, sans-serif" font-size="45" font-weight="700" letter-spacing="-1">Marrow</text>
+  </g>
+
+  <!-- Message -->
+  <text x="68" y="244" fill="#f0f6fc" font-family="Arial, Helvetica, sans-serif" font-size="52" font-weight="700" letter-spacing="-1.3">
+    <tspan x="68" dy="0">Review the code</tspan>
+    <tspan x="68" dy="64">that actually matters.</tspan>
+  </text>
+  <text x="71" y="363" fill="#9ba9b8" font-family="Arial, Helvetica, sans-serif" font-size="24">AI-powered pull request review</text>
+
+  <g transform="translate(70 422)" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="600">
+    <rect width="126" height="40" rx="20" fill="#182231" stroke="#344457" />
+    <text x="63" y="26" text-anchor="middle" fill="#c8d3df">Open source</text>
+    <rect x="140" width="170" height="40" rx="20" fill="#182231" stroke="#344457" />
+    <text x="225" y="26" text-anchor="middle" fill="#c8d3df">macOS + terminal</text>
+  </g>
+
+  <g transform="translate(70 535)">
+    <circle cx="8" cy="8" r="8" fill="#58a6ff" />
+    <text x="29" y="15" fill="#718197" font-family="Arial, Helvetica, sans-serif" font-size="18" letter-spacing="0.5">github.com/Besendorfer/marrow</text>
+  </g>
+
+  <!-- Product screenshot -->
+  <g filter="url(#shadow)">
+    <rect x="582" y="78" width="766" height="498" rx="24" fill="#0b0f14" stroke="#344457" stroke-width="2" />
+  </g>
+  <g clip-path="url(#screenshot-clip)">
+    <image x="594" y="90" width="742" height="474" preserveAspectRatio="xMidYMid slice" xlink:href="screenshot.png" />
+    <rect x="594" y="90" width="742" height="474" fill="none" stroke="#0b0f14" stroke-width="2" />
+  </g>
+
+  <rect x="0" y="0" width="8" height="640" fill="#58a6ff" />
+</svg>
