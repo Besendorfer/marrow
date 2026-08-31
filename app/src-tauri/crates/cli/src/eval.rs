@@ -57,29 +57,34 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         return Err("corpus has no fixtures".to_string());
     }
 
-    let settings = load_settings();
-    let ai = AiBackend::from_settings(&settings).await?;
-    eprintln!(
-        "corpus v{version} · {} fixture(s) · model {}",
-        fixture_dirs.len(),
-        if settings.model.is_empty() { "(claude CLI default)" } else { &settings.model }
-    );
-
-    let mut scores: Vec<FixtureScore> = Vec::new();
+    // Load and validate EVERY fixture before the first AI call — a bad
+    // fixture or a signal-less corpus should fail fast, not mid-spend.
+    let mut fixtures: Vec<(String, FixturePr, FixtureLabels)> = Vec::new();
     for dir in &fixture_dirs {
         let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let pr: FixturePr = read_json(&dir.join("pr.json"))?;
         let labels: FixtureLabels = read_json(&dir.join("labels.json"))?;
         validate_labels(&pr, &labels, &name)?;
+        fixtures.push((name, pr, labels));
+    }
+    // Measurement honesty: with zero RELEVANT labels there is nothing to
+    // measure — 1.00/1.00 on an empty corpus would be vacuous, not perfect.
+    if fixtures.iter().all(|(_, _, l)| l.relevant.is_empty()) {
+        return Err("corpus has no RELEVANT labels — nothing to measure".to_string());
+    }
 
+    let settings = load_settings();
+    let ai = AiBackend::from_settings(&settings).await?;
+    eprintln!(
+        "corpus v{version} · {} fixture(s) · model {}",
+        fixtures.len(),
+        if settings.model.is_empty() { "(claude CLI default)" } else { &settings.model }
+    );
+
+    let mut scores: Vec<FixtureScore> = Vec::new();
+    for (name, pr, labels) in fixtures {
         let file_list: Vec<String> = pr.files.iter().map(|f| f.path.clone()).collect();
-        // Assemble the whole-PR diff the way GitHub serves it — per-file
-        // bodies under `diff --git` headers.
-        let full_diff: String = pr
-            .files
-            .iter()
-            .map(|f| format!("diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n{}", f.diff, p = f.path))
-            .collect();
+        let full_diff = assemble_full_diff(&pr.files);
 
         let (prompt, _truncated) = build_classification_prompt(&pr.title, &file_list, &full_diff);
         eprintln!("· {name}: classifying {} files…", file_list.len());
@@ -146,6 +151,21 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Assemble the whole-PR diff the way GitHub serves it — per-file bodies
+/// under `diff --git` headers, with a guaranteed newline between segments so
+/// a fixture diff lacking a trailing newline can't abut the next header.
+fn assemble_full_diff(files: &[FixtureFile]) -> String {
+    let mut out = String::new();
+    for f in files {
+        out.push_str(&format!("diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n", p = f.path));
+        out.push_str(&f.diff);
+        if !f.diff.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
+}
+
 fn ratio(num: usize, den: usize) -> f64 {
     if den == 0 { 1.0 } else { num as f64 / den as f64 }
 }
@@ -199,7 +219,21 @@ mod tests {
 
     #[test]
     fn ratios_handle_empty_denominators() {
-        assert_eq!(ratio(0, 0), 1.0, "no cases = vacuously perfect, not NaN");
+        // The vacuous 0/0 case can't be reached for the aggregate (eval
+        // refuses a corpus with zero RELEVANT labels before any AI call) —
+        // 1.0 here only shields per-fixture math from NaN.
+        assert_eq!(ratio(0, 0), 1.0);
         assert_eq!(ratio(1, 2), 0.5);
+    }
+
+    #[test]
+    fn assembled_diff_never_abuts_headers() {
+        let files = vec![
+            FixtureFile { path: "a.rs".into(), diff: "@@ -1 +1 @@\n-x\n+y".into() }, // no trailing \n
+            FixtureFile { path: "b.rs".into(), diff: "@@ -1 +1 @@\n+z\n".into() },
+        ];
+        let full = assemble_full_diff(&files);
+        assert!(full.contains("+y\ndiff --git a/b.rs"), "separator restored:\n{full}");
+        assert!(!full.contains("+ydiff --git"), "headers must never abut");
     }
 }
