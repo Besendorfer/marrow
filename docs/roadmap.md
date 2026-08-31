@@ -61,7 +61,10 @@ more surfaces.
 - [x] Make diagnostic and provider-response truncation Unicode-safe.
 - [x] Bound concurrent GitHub file-content requests. (#206 / PR #207, merged
       2026-08-29: 5 files ×2 requests ≤10 in flight, peak-concurrency tested.)
-- [ ] Reduce unnecessary diff/content duplication for large PRs.
+- [x] Reduce unnecessary diff/content duplication for large PRs. (#216 /
+      PR #217, merged 2026-08-31: doomed added/removed content fetches
+      skipped; whole-PR diff and prompt-source clones freed before the AI
+      phase. PHASE 2 COMPLETE.)
 - [x] Fix Claude CLI streaming argument construction and concurrent stderr
       draining. (#208 / PR #209, merged 2026-08-29: empty-model guard +
       concurrent capped stderr drain + kill_on_drop parity.)
