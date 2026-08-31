@@ -99,11 +99,19 @@ more surfaces.
 
 ## Phase 3: Quality Measurement
 
-- [ ] Create a versioned corpus of representative PR fixtures.
-- [ ] Score relevant-file classification precision and recall.
+- [x] Create a versioned corpus of representative PR fixtures. (#219 /
+      PR #220, merged 2026-08-31: corpus/ v1 — format, labeling rules,
+      starter fixtures incl. the #71 barrel case.)
+- [x] Score relevant-file classification precision and recall. (#219 /
+      PR #220: `marrow eval --corpus` scores post-validation output; first
+      live run: precision 1.00 / recall 1.00 on corpus v1, barrel fixture
+      clean — the #71 measurement delivered.)
 - [ ] Score important findings, missed findings, and low-value findings.
 - [ ] Evaluate requirements coverage and hallucinated test evidence.
-- [ ] Include malformed provider responses, giant PRs, and adversarial cases.
+- [ ] Include malformed provider responses, giant PRs, and adversarial
+      cases. (Partial via #219/PR #220: five recorded malformed-response
+      shapes pinned as offline tests, incl. the truncated-mid-array response
+      captured live; giant-PR and adversarial fixtures remain.)
 - [ ] Compare prompts, models, and providers against the same corpus.
 - [ ] Report quality regressions in pull requests.
 - [ ] Add mocked HTTP tests for providers and GitHub.
