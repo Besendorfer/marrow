@@ -250,18 +250,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         // test detectors; hallucination is counted on the RAW parse, status
         // accuracy on the POST-finalize output — the pipeline the app runs.
         if !labels.expected_coverage.is_empty() && score.failed.is_none() {
-            let test_diffs: Vec<(String, String)> = pr
-                .files
-                .iter()
-                .filter(|f| is_test_path(&f.path))
-                .map(|f| (f.path.clone(), f.diff.clone()))
-                .collect();
-            let inline_test_diffs: Vec<(String, String)> = pr
-                .files
-                .iter()
-                .filter(|f| !is_test_path(&f.path) && has_inline_test_markers(&f.diff))
-                .map(|f| (f.path.clone(), f.diff.clone()))
-                .collect();
+            let (test_diffs, inline_test_diffs) = split_coverage_inputs(&pr.files);
             let (cov_prompt, _t) = build_requirements_coverage_prompt(
                 &pr.title,
                 &pr.body,
@@ -480,6 +469,23 @@ fn score_coverage(cov: Option<&RequirementsCoverage>, expected: &[ExpectedCovera
     }
     s.extra = matched_req.iter().filter(|m| !**m).count();
     s
+}
+
+/// Split fixture files the way the app feeds the coverage pass: test files
+/// by path convention, plus implementation diffs that ADD inline tests —
+/// using the core's own detectors so the eval can't drift from the pipeline.
+fn split_coverage_inputs(files: &[FixtureFile]) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let test_diffs = files
+        .iter()
+        .filter(|f| is_test_path(&f.path))
+        .map(|f| (f.path.clone(), f.diff.clone()))
+        .collect();
+    let inline_test_diffs = files
+        .iter()
+        .filter(|f| !is_test_path(&f.path) && has_inline_test_markers(&f.diff))
+        .map(|f| (f.path.clone(), f.diff.clone()))
+        .collect();
+    (test_diffs, inline_test_diffs)
 }
 
 /// Count citations in the RAW parsed coverage (pre-finalize) to paths the
@@ -829,6 +835,20 @@ mod tests {
 
     fn exp(contains: &str, status: &str) -> ExpectedCoverage {
         ExpectedCoverage { requirement_contains: contains.into(), status: status.into() }
+    }
+
+    #[test]
+    fn coverage_inputs_split_by_the_cores_own_detectors() {
+        let files = vec![
+            FixtureFile { path: "tests/upload.test.ts".into(), diff: "+test()".into() },
+            FixtureFile { path: "src/plain.rs".into(), diff: "+fn f() {}".into() },
+            FixtureFile { path: "src/inline.rs".into(), diff: "+#[cfg(test)]\n+mod tests {\n+    #[test]\n+    fn t() {}\n+}".into() },
+        ];
+        let (test_diffs, inline) = split_coverage_inputs(&files);
+        assert_eq!(test_diffs.len(), 1, "only the path-convention test file");
+        assert_eq!(test_diffs[0].0, "tests/upload.test.ts");
+        assert_eq!(inline.len(), 1, "only the impl diff that adds inline tests");
+        assert_eq!(inline[0].0, "src/inline.rs");
     }
 
     #[test]
