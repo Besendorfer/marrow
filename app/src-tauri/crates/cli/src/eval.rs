@@ -317,6 +317,14 @@ fn validate_labels(pr: &FixturePr, labels: &FixtureLabels, name: &str) -> Result
     if labeled != pr.files.len() {
         return Err(format!("{name}: {labeled} labels for {} files", pr.files.len()));
     }
+    for r in labels.expected_findings.iter().chain(labels.should_not_flag.iter()) {
+        if r.importance != "important" && r.importance != "minor" {
+            return Err(format!(
+                "{name}: unknown importance {:?} on {} (use \"important\" or \"minor\")",
+                r.importance, r.path
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -340,6 +348,14 @@ mod tests {
         assert!(validate_labels(&pr, &overlap, "f").is_err());
         let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![], expected_findings: vec![], should_not_flag: vec![] };
         assert!(validate_labels(&pr, &missing, "f").is_err());
+        // A typo'd importance must not silently bucket as "important".
+        let typo = FixtureLabels {
+            relevant: vec!["a.rs".into()],
+            not_relevant: vec!["b.rs".into()],
+            expected_findings: vec![region("a.rs", 1, 2, "importnat")],
+            should_not_flag: vec![],
+        };
+        assert!(validate_labels(&pr, &typo, "f").is_err());
     }
 
     #[test]
@@ -447,6 +463,19 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= 3, "corpus unexpectedly small: {seen} fixtures");
+
+        // The findings yardstick itself must stay in place: planted-bug-rs
+        // carries the planted important finding and a should_not_flag region.
+        let planted: FixtureLabels =
+            read_json(&corpus.join("fixtures/planted-bug-rs/labels.json")).unwrap();
+        assert!(
+            planted
+                .expected_findings
+                .iter()
+                .any(|r| r.path == "src/auth/refresh.rs" && r.importance == "important"),
+            "planted-bug-rs lost its planted important finding"
+        );
+        assert!(!planted.should_not_flag.is_empty(), "planted-bug-rs lost its should_not_flag region");
     }
 
     #[test]
