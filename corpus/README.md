@@ -15,15 +15,24 @@ shipped on faith.
     them when assembling the whole-PR diff).
   - `labels.json` — expected outcomes:
     `{ "relevant": [paths…], "not_relevant": [paths…] }`. Every path in
-    `pr.json` must appear in exactly one list.
+    `pr.json` must appear in exactly one list. Two optional lists (schema
+    v2) drive findings scoring:
+    - `expected_findings`: regions a good review MUST flag —
+      `{ path, start_line, end_line, importance: "important"|"minor", note }`.
+    - `should_not_flag`: regions a good review should NOT flag (e.g. the
+      PR's stated purpose); flagging one counts as a low-value finding.
+    A model highlight matches a region when paths are equal and line ranges
+    overlap. Highlights matching no label report neutrally as "extra".
 
 ## Labeling rules
 
 - Labels encode the CLASSIFICATION_PROMPT's *intent*, decided by a human at
   fixture-creation time — they are the spec, not a model's past output.
-- Provenance: note in the fixture's `pr.json` `body` (or a comment fixture
-  README) what real case it models; synthetic content is fine, secrets and
-  private code are not.
+- Provenance: note what real case a fixture models in a fixture-local
+  README. For fixtures carrying findings labels it must NOT go in
+  `pr.json`'s `body` — the body is fed to the model verbatim, so
+  describing the planted finding there hands the review its answer.
+  Synthetic content is fine; secrets and private code are not.
 
 ## Running
 

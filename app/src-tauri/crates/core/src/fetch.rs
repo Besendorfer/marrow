@@ -743,7 +743,9 @@ pub fn validate_classifications(
 /// actionability and fabricating urgency from garbage would be dishonest.
 /// The note text is untouched. Beyond-EOF anchors remain the frontend
 /// reveal-guard's job.
-fn validate_highlights(raw: Vec<HighlightResult>, file_list: &[String]) -> Vec<HighlightResult> {
+/// Public for the corpus eval runner (issue #221): findings scoring judges
+/// POST-validation output — the same pipeline the app runs.
+pub fn validate_highlights(raw: Vec<HighlightResult>, file_list: &[String]) -> Vec<HighlightResult> {
     let known: HashSet<&str> = file_list.iter().map(|s| s.as_str()).collect();
     raw.into_iter()
         .filter(|h| known.contains(h.path.as_str()))

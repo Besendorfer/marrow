@@ -1,0 +1,28 @@
+{
+  "relevant": ["src/auth/refresh.rs", "src/auth/mod.rs"],
+  "not_relevant": [],
+  "expected_findings": [
+    {
+      "path": "src/auth/refresh.rs",
+      "start_line": 20,
+      "end_line": 30,
+      "importance": "important",
+      "note": "The refactor drops the expires_at check: a cached token is now returned forever, expired or not. Auth bug a reviewer must catch."
+    },
+    {
+      "path": "src/auth/refresh.rs",
+      "start_line": 60,
+      "end_line": 65,
+      "importance": "minor",
+      "note": "do_token_thing is a vague name for invalidate-and-refresh — the planted minor naming nit."
+    }
+  ],
+  "should_not_flag": [
+    {
+      "path": "src/auth/mod.rs",
+      "start_line": 3,
+      "end_line": 6,
+      "note": "Removing refresh_legacy IS the PR's stated purpose — flagging it as a behavior change is noise per HIGHLIGHT_PROMPT."
+    }
+  ]
+}
