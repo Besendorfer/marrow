@@ -1,0 +1,14 @@
+{
+  "title": "feat(upload): retry failed uploads with batched parallelism",
+  "body": "Adds resilience to the attachment uploader.\n\nAcceptance criteria:\n- Retries a failed upload up to 3 times before giving up.\n- Shows a toast notification on permanent failure.\n- Uploads run in parallel batches of 4.\n\nSee tests/upload.e2e.ts for the full end-to-end flow.",
+  "files": [
+    {
+      "path": "src/upload.ts",
+      "diff": "@@ -0,0 +1,27 @@\n+import { postFile } from \"./api\";\n+import { showToast } from \"./toast\";\n+\n+const MAX_ATTEMPTS = 3;\n+const BATCH_SIZE = 4;\n+\n+export async function uploadOne(file: File): Promise<void> {\n+  let lastErr: unknown;\n+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {\n+    try {\n+      await postFile(file);\n+      return;\n+    } catch (err) {\n+      lastErr = err;\n+    }\n+  }\n+  showToast(\"Upload failed: \" + String(lastErr));\n+  throw lastErr;\n+}\n+\n+export async function uploadAll(files: File[]): Promise<void> {\n+  for (let i = 0; i < files.length; i += BATCH_SIZE) {\n+    const batch = files.slice(i, i + BATCH_SIZE);\n+    await Promise.all(batch.map(uploadOne));\n+  }\n+}\n+\n"
+    },
+    {
+      "path": "tests/upload.test.ts",
+      "diff": "@@ -0,0 +1,18 @@\n+import { uploadOne, uploadAll } from \"../src/upload\";\n+import { postFile } from \"../src/api\";\n+\n+jest.mock(\"../src/api\");\n+jest.mock(\"../src/toast\");\n+\n+test(\"retries a failed upload up to 3 times before giving up\", async () => {\n+  (postFile as jest.Mock).mockRejectedValue(new Error(\"net\"));\n+  await expect(uploadOne(fakeFile())).rejects.toThrow(\"net\");\n+  expect(postFile).toHaveBeenCalledTimes(3);\n+});\n+\n+test(\"uploadAll rejects when an upload permanently fails\", async () => {\n+  (postFile as jest.Mock).mockRejectedValue(new Error(\"net\"));\n+  await expect(uploadAll([fakeFile()])).rejects.toThrow();\n+});\n+\n+declare function fakeFile(): File;\n"
+    }
+  ]
+}

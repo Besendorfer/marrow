@@ -1,0 +1,9 @@
+{
+  "relevant": ["src/upload.ts"],
+  "not_relevant": ["tests/upload.test.ts"],
+  "expected_coverage": [
+    { "requirement_contains": "3 times", "status": "covered" },
+    { "requirement_contains": "toast", "status": "partial" },
+    { "requirement_contains": "batches of 4", "status": "uncovered" }
+  ]
+}

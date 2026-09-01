@@ -938,7 +938,11 @@ pub(crate) fn coverage_gate_with_issues(
 /// isn't among the test files actually shown to the model (hallucination
 /// guard), clamp `requirements` to 8. Returns `None` when no requirements
 /// remain — absence is the correct outcome, not an empty-but-present report.
-fn finalize_coverage(
+///
+/// Public for the corpus eval runner (issue #229), which judges
+/// POST-finalize output — the same pipeline the app runs — while separately
+/// counting hallucinated citations in the raw parse.
+pub fn finalize_coverage(
     mut cov: RequirementsCoverage,
     known_tests: &HashSet<&str>,
 ) -> Option<RequirementsCoverage> {
