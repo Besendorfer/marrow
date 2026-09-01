@@ -23,6 +23,12 @@ shipped on faith.
       PR's stated purpose); flagging one counts as a low-value finding.
     A model highlight matches a region when paths are equal and line ranges
     overlap. Highlights matching no label report neutrally as "extra".
+    One optional list (schema v3) drives requirements-coverage scoring:
+    - `expected_coverage`: `{ "requirement_contains": <case-insensitive
+      substring>, "status": "covered"|"partial"|"uncovered"|"untestable" }`.
+      Substring matching because requirement text is model-extracted. The
+      eval also counts hallucinated citations — test paths cited in the raw
+      output that were never shown to the model (expected 0).
 
 ## Labeling rules
 

@@ -4,11 +4,15 @@
 //! and after a prompt/model change and compare against the same corpus
 //! version.
 
-use marrow_core::ai::{extract_json_array, AiBackend};
+use marrow_core::ai::{extract_json_array, extract_json_object, AiBackend};
 use marrow_core::config::load_settings;
-use marrow_core::fetch::{validate_classifications, validate_highlights};
-use marrow_core::prompts::{build_classification_prompt, build_highlight_prompt};
-use marrow_core::types::{FileClassification, HighlightResult};
+use marrow_core::fetch::{finalize_coverage, validate_classifications, validate_highlights};
+use marrow_core::prompts::{
+    build_classification_prompt, build_highlight_prompt, build_requirements_coverage_prompt,
+    has_inline_test_markers, is_test_path,
+};
+use marrow_core::types::{FileClassification, HighlightResult, RequirementsCoverage};
+use std::collections::HashSet;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,6 +41,17 @@ struct FixtureLabels {
     /// Regions a good review should NOT flag (e.g. the PR's stated purpose).
     #[serde(default)]
     should_not_flag: Vec<LabeledRegion>,
+    /// Expected requirements-coverage outcomes (labels schema v3, issue
+    /// #229). Substring matching because requirement text is model-extracted.
+    #[serde(default)]
+    expected_coverage: Vec<ExpectedCoverage>,
+}
+
+#[derive(Deserialize)]
+struct ExpectedCoverage {
+    /// Case-insensitive substring that identifies the requirement.
+    requirement_contains: String,
+    status: String,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +77,7 @@ struct FixtureScore {
     false_neg: usize,
     mismatches: Vec<String>,
     findings: Option<FindingsScore>,
+    coverage: Option<CoverageScore>,
     /// Set when an AI pass failed after retries (issue #226). A failed
     /// classification contributes nothing to the aggregate (its tallies stay
     /// zero); a failed findings pass leaves `findings` at None while the
@@ -89,6 +105,30 @@ where
     for attempt in 1..=PASS_ATTEMPTS {
         match call().await.and_then(|raw| extract_json_array(&raw)) {
             Ok(v) => match serde_json::from_value::<Vec<T>>(v) {
+                Ok(parsed) => return Ok(parsed),
+                Err(e) => last = format!("unparseable {what}: {e}"),
+            },
+            Err(e) => last = e,
+        }
+        if attempt < PASS_ATTEMPTS {
+            eprintln!("· {name}: {what} attempt {attempt} failed, retrying…");
+        }
+    }
+    Err(format!("{what} failed after {PASS_ATTEMPTS} attempts: {last}"))
+}
+
+/// Object-shaped sibling of [`retry_json_pass`] for passes that return a
+/// JSON object (the coverage pass), same bounded-retry contract.
+async fn retry_json_object_pass<T, F, Fut>(what: &str, name: &str, mut call: F) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut last = String::new();
+    for attempt in 1..=PASS_ATTEMPTS {
+        match call().await.and_then(|raw| extract_json_object(&raw)) {
+            Ok(v) => match serde_json::from_value::<T>(v) {
                 Ok(parsed) => return Ok(parsed),
                 Err(e) => last = format!("unparseable {what}: {e}"),
             },
@@ -146,7 +186,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         let file_list: Vec<String> = pr.files.iter().map(|f| f.path.clone()).collect();
         let full_diff = assemble_full_diff(&pr.files);
 
-        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None, failed: None, failed_pass: None };
+        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None, coverage: None, failed: None, failed_pass: None };
 
         let (prompt, _truncated) = build_classification_prompt(&pr.title, &file_list, &full_diff);
         eprintln!("· {}: classifying {} files…", score.name, file_list.len());
@@ -204,6 +244,45 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
                 }
             }
         }
+
+        // Requirements-coverage scoring (issue #229): only for fixtures that
+        // carry coverage expectations. Files are split by the core's own
+        // test detectors; hallucination is counted on the RAW parse, status
+        // accuracy on the POST-finalize output — the pipeline the app runs.
+        if !labels.expected_coverage.is_empty() && score.failed.is_none() {
+            let (test_diffs, inline_test_diffs) = split_coverage_inputs(&pr.files);
+            let (cov_prompt, _t) = build_requirements_coverage_prompt(
+                &pr.title,
+                &pr.body,
+                &test_diffs,
+                &inline_test_diffs,
+                &[],
+                &file_list,
+                None,
+                &[],
+            );
+            eprintln!("· {}: judging requirements coverage…", score.name);
+            match retry_json_object_pass::<RequirementsCoverage, _, _>("coverage", &score.name, || ai.invoke(&cov_prompt)).await {
+                Ok(raw_cov) => {
+                    let known: HashSet<&str> = test_diffs
+                        .iter()
+                        .chain(inline_test_diffs.iter())
+                        .map(|(p, _)| p.as_str())
+                        .collect();
+                    let (hallucinated, mut hdetail) = count_hallucinated_citations(&raw_cov, &known);
+                    let finalized = finalize_coverage(raw_cov, &known);
+                    let mut cs = score_coverage(finalized.as_ref(), &labels.expected_coverage);
+                    cs.hallucinated = hallucinated;
+                    cs.detail.append(&mut hdetail);
+                    score.coverage = Some(cs);
+                }
+                Err(e) => {
+                    eprintln!("· {}: {e}", score.name);
+                    score.failed = Some(e);
+                    score.failed_pass = Some("coverage");
+                }
+            }
+        }
         scores.push(score);
     }
 
@@ -252,6 +331,11 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
                 "minor_found": f.minor_found, "minor_missed": f.minor_missed,
                 "low_value": f.low_value, "extra": f.extra, "detail": f.detail,
             })),
+            "coverage": s.coverage.as_ref().map(|c| serde_json::json!({
+                "status_match": c.status_match, "status_mismatch": c.status_mismatch,
+                "not_extracted": c.not_extracted, "extra": c.extra,
+                "hallucinated": c.hallucinated, "detail": c.detail,
+            })),
         })).collect::<Vec<_>>(),
         "precision": precision,
         "recall": recall,
@@ -298,6 +382,21 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
                 let _ = writeln!(out, "    {d}");
             }
         }
+        if let Some(c) = &s.coverage {
+            let _ = writeln!(
+                out,
+                "{:<24} coverage: status {}/{} · not-extracted {} · extra {} · hallucinated {}",
+                "",
+                c.status_match,
+                c.status_match + c.status_mismatch + c.not_extracted,
+                c.not_extracted,
+                c.extra,
+                c.hallucinated
+            );
+            for d in &c.detail {
+                let _ = writeln!(out, "    {d}");
+            }
+        }
     }
     out.push('\n');
     let failed = scores.iter().filter(|s| s.failed.is_some()).count();
@@ -322,6 +421,88 @@ struct FindingsScore {
     low_value: usize,
     extra: usize,
     detail: Vec<String>,
+}
+
+/// Requirements-coverage scorecard for one fixture (issue #229).
+#[derive(Default)]
+struct CoverageScore {
+    /// Expected requirements matched with the expected status.
+    status_match: usize,
+    /// Matched a requirement, wrong status.
+    status_mismatch: usize,
+    /// No extracted requirement contained the expected substring.
+    not_extracted: usize,
+    /// Extracted requirements matching no expectation (neutral).
+    extra: usize,
+    /// Test paths cited in the RAW parse that were never shown to the model.
+    hallucinated: usize,
+    detail: Vec<String>,
+}
+
+/// Score post-finalize coverage output against expectations. `None` coverage
+/// (finalize dropped everything) scores every expectation as not-extracted.
+fn score_coverage(cov: Option<&RequirementsCoverage>, expected: &[ExpectedCoverage]) -> CoverageScore {
+    let mut s = CoverageScore::default();
+    let reqs: &[marrow_core::types::RequirementEntry] =
+        cov.map(|c| c.requirements.as_slice()).unwrap_or(&[]);
+    let mut matched_req = vec![false; reqs.len()];
+    for exp in expected {
+        let needle = exp.requirement_contains.to_lowercase();
+        match reqs.iter().position(|r| r.text.to_lowercase().contains(&needle)) {
+            Some(i) => {
+                matched_req[i] = true;
+                if reqs[i].status == exp.status {
+                    s.status_match += 1;
+                } else {
+                    s.status_mismatch += 1;
+                    s.detail.push(format!(
+                        "\"{}\": expected {}, got {}",
+                        exp.requirement_contains, exp.status, reqs[i].status
+                    ));
+                }
+            }
+            None => {
+                s.not_extracted += 1;
+                s.detail.push(format!("\"{}\": no requirement extracted", exp.requirement_contains));
+            }
+        }
+    }
+    s.extra = matched_req.iter().filter(|m| !**m).count();
+    s
+}
+
+/// Split fixture files the way the app feeds the coverage pass: test files
+/// by path convention, plus implementation diffs that ADD inline tests —
+/// using the core's own detectors so the eval can't drift from the pipeline.
+fn split_coverage_inputs(files: &[FixtureFile]) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let test_diffs = files
+        .iter()
+        .filter(|f| is_test_path(&f.path))
+        .map(|f| (f.path.clone(), f.diff.clone()))
+        .collect();
+    let inline_test_diffs = files
+        .iter()
+        .filter(|f| !is_test_path(&f.path) && has_inline_test_markers(&f.diff))
+        .map(|f| (f.path.clone(), f.diff.clone()))
+        .collect();
+    (test_diffs, inline_test_diffs)
+}
+
+/// Count citations in the RAW parsed coverage (pre-finalize) to paths the
+/// model was never shown — the hallucinated-evidence measurement.
+fn count_hallucinated_citations(cov: &RequirementsCoverage, known: &HashSet<&str>) -> (usize, Vec<String>) {
+    let mut detail = Vec::new();
+    for t in cov
+        .requirements
+        .iter()
+        .flat_map(|r| r.tests.iter())
+        .chain(cov.orphan_tests.iter())
+    {
+        if !known.contains(t.path.as_str()) {
+            detail.push(format!("hallucinated citation: {}", t.path));
+        }
+    }
+    (detail.len(), detail)
 }
 
 /// A model highlight matches a labeled region when paths are equal and line
@@ -437,6 +618,17 @@ fn validate_labels(pr: &FixturePr, labels: &FixtureLabels, name: &str) -> Result
             ));
         }
     }
+    for e in &labels.expected_coverage {
+        if e.requirement_contains.trim().is_empty() {
+            return Err(format!("{name}: expected_coverage entry with empty requirement_contains"));
+        }
+        if !matches!(e.status.as_str(), "covered" | "partial" | "uncovered" | "untestable") {
+            return Err(format!(
+                "{name}: unknown coverage status {:?} for \"{}\"",
+                e.status, e.requirement_contains
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -454,11 +646,11 @@ mod tests {
                 FixtureFile { path: "b.rs".into(), diff: String::new() },
             ],
         };
-        let ok = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![] };
+        let ok = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![] };
         assert!(validate_labels(&pr, &ok, "f").is_ok());
-        let overlap = FixtureLabels { relevant: vec!["a.rs".into(), "b.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![] };
+        let overlap = FixtureLabels { relevant: vec!["a.rs".into(), "b.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![] };
         assert!(validate_labels(&pr, &overlap, "f").is_err());
-        let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![], expected_findings: vec![], should_not_flag: vec![] };
+        let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![] };
         assert!(validate_labels(&pr, &missing, "f").is_err());
         // A typo'd importance must not silently bucket as "important".
         let typo = FixtureLabels {
@@ -466,6 +658,7 @@ mod tests {
             not_relevant: vec!["b.rs".into()],
             expected_findings: vec![region("a.rs", 1, 2, "importnat")],
             should_not_flag: vec![],
+            expected_coverage: vec![],
         };
         assert!(validate_labels(&pr, &typo, "f").is_err());
         // A findings region on a non-relevant path could never be scored.
@@ -474,6 +667,7 @@ mod tests {
             not_relevant: vec!["b.rs".into()],
             expected_findings: vec![region("b.rs", 1, 2, "important")],
             should_not_flag: vec![],
+            expected_coverage: vec![],
         };
         assert!(validate_labels(&pr, &unwinnable, "f").is_err());
     }
@@ -502,6 +696,7 @@ mod tests {
             not_relevant: vec![],
             expected_findings: vec![region("a.rs", 20, 30, "important"), region("a.rs", 50, 55, "minor")],
             should_not_flag: vec![region("b.rs", 3, 6, "important")],
+            expected_coverage: vec![],
         };
         let highlights = vec![
             highlight("a.rs", 25, 27),  // overlaps the important region → found
@@ -601,6 +796,24 @@ mod tests {
             "planted-bug-rs lost its minor naming-nit region"
         );
         assert!(!planted.should_not_flag.is_empty(), "planted-bug-rs lost its should_not_flag region");
+
+        // The coverage yardstick must stay in place too: coverage-upload-ts
+        // labels all three statuses and its hallucination bait must remain
+        // baited — mentioned in the body, absent from the diff.
+        let covdir = corpus.join("fixtures/coverage-upload-ts");
+        let cov_labels: FixtureLabels = read_json(&covdir.join("labels.json")).unwrap();
+        for status in ["covered", "partial", "uncovered"] {
+            assert!(
+                cov_labels.expected_coverage.iter().any(|e| e.status == status),
+                "coverage-upload-ts lost its {status} expectation"
+            );
+        }
+        let cov_pr: FixturePr = read_json(&covdir.join("pr.json")).unwrap();
+        assert!(cov_pr.body.contains("tests/upload.e2e.ts"), "hallucination bait gone from the body");
+        assert!(
+            !cov_pr.files.iter().any(|f| f.path == "tests/upload.e2e.ts"),
+            "the bait path must NOT exist in the diff or it stops being bait"
+        );
     }
 
     #[test]
@@ -629,14 +842,115 @@ mod tests {
         assert!(e.contains("provider exploded"), "{e}");
     }
 
+    fn req(text: &str, status: &str, tests: &[&str]) -> marrow_core::types::RequirementEntry {
+        marrow_core::types::RequirementEntry {
+            text: text.into(),
+            status: status.into(),
+            tests: tests.iter().map(|p| marrow_core::types::TestRef { path: (*p).into(), note: None }).collect(),
+            note: None,
+        }
+    }
+
+    fn exp(contains: &str, status: &str) -> ExpectedCoverage {
+        ExpectedCoverage { requirement_contains: contains.into(), status: status.into() }
+    }
+
+    #[test]
+    fn coverage_inputs_split_by_the_cores_own_detectors() {
+        let files = vec![
+            FixtureFile { path: "tests/upload.test.ts".into(), diff: "+test()".into() },
+            FixtureFile { path: "src/plain.rs".into(), diff: "+fn f() {}".into() },
+            FixtureFile { path: "src/inline.rs".into(), diff: "+#[cfg(test)]\n+mod tests {\n+    #[test]\n+    fn t() {}\n+}".into() },
+        ];
+        let (test_diffs, inline) = split_coverage_inputs(&files);
+        assert_eq!(test_diffs.len(), 1, "only the path-convention test file");
+        assert_eq!(test_diffs[0].0, "tests/upload.test.ts");
+        assert_eq!(inline.len(), 1, "only the impl diff that adds inline tests");
+        assert_eq!(inline[0].0, "src/inline.rs");
+    }
+
+    #[test]
+    fn coverage_scoring_buckets_match_mismatch_missing_extra() {
+        let cov = RequirementsCoverage {
+            requirements: vec![
+                req("Retries a failed upload up to 3 times", "covered", &["tests/upload.test.ts"]),
+                req("Shows a toast on permanent failure", "uncovered", &[]),
+                req("Bonus requirement nobody labeled", "covered", &[]),
+            ],
+            orphan_tests: vec![],
+            source_issues: vec![],
+        };
+        let expected = vec![
+            exp("UP TO 3 TIMES", "covered"),      // match — needle case must not matter
+            exp("toast", "partial"),               // mismatch: got uncovered
+            exp("parallel batches", "uncovered"),  // never extracted
+        ];
+        let s = score_coverage(Some(&cov), &expected);
+        assert_eq!((s.status_match, s.status_mismatch, s.not_extracted, s.extra), (1, 1, 1, 1));
+        assert!(s.detail.iter().any(|d| d.contains("expected partial, got uncovered")), "{:?}", s.detail);
+        assert!(s.detail.iter().any(|d| d.contains("no requirement extracted")), "{:?}", s.detail);
+
+        // Finalize dropped everything → every expectation is not-extracted.
+        let s = score_coverage(None, &expected);
+        assert_eq!((s.status_match, s.not_extracted), (0, 3));
+    }
+
+    #[test]
+    fn hallucinated_citations_counted_on_raw_parse() {
+        let cov = RequirementsCoverage {
+            requirements: vec![req("r1", "covered", &["tests/real.test.ts", "tests/upload.e2e.ts"])],
+            orphan_tests: vec![marrow_core::types::TestRef { path: "tests/ghost.test.ts".into(), note: None }],
+            source_issues: vec![],
+        };
+        let known: HashSet<&str> = ["tests/real.test.ts"].into_iter().collect();
+        let (n, detail) = count_hallucinated_citations(&cov, &known);
+        assert_eq!(n, 2);
+        assert!(detail.iter().any(|d| d.contains("upload.e2e.ts")));
+        assert!(detail.iter().any(|d| d.contains("ghost.test.ts")));
+    }
+
+    #[test]
+    fn label_validation_rejects_bad_coverage_expectations() {
+        let pr = FixturePr {
+            title: "t".into(),
+            body: "b".into(),
+            files: vec![FixtureFile { path: "a.rs".into(), diff: String::new() }],
+        };
+        let bad_status = FixtureLabels {
+            relevant: vec!["a.rs".into()],
+            not_relevant: vec![],
+            expected_findings: vec![],
+            should_not_flag: vec![],
+            expected_coverage: vec![exp("retries", "mostly-covered")],
+        };
+        assert!(validate_labels(&pr, &bad_status, "f").is_err());
+        let empty_needle = FixtureLabels {
+            relevant: vec!["a.rs".into()],
+            not_relevant: vec![],
+            expected_findings: vec![],
+            should_not_flag: vec![],
+            expected_coverage: vec![exp("  ", "covered")],
+        };
+        assert!(validate_labels(&pr, &empty_needle, "f").is_err());
+        let valid = FixtureLabels {
+            relevant: vec!["a.rs".into()],
+            not_relevant: vec![],
+            expected_findings: vec![],
+            should_not_flag: vec![],
+            expected_coverage: vec![exp("retries", "covered"), exp("toast", "untestable")],
+        };
+        assert!(validate_labels(&pr, &valid, "f").is_ok());
+    }
+
     #[test]
     fn report_names_failed_passes_without_overstating() {
-        let clean = FixtureScore { name: "ok-fixture".into(), true_pos: 2, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let clean = FixtureScore { name: "ok-fixture".into(), true_pos: 2, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, coverage: None, failed: None, failed_pass: None };
         let findings_failed = FixtureScore {
             name: "flaky-findings".into(),
             true_pos: 1, false_pos: 0, false_neg: 0,
             mismatches: vec![],
             findings: None,
+            coverage: None,
             failed: Some("findings failed after 3 attempts: truncated".into()),
             failed_pass: Some("findings"),
         };
@@ -645,6 +959,7 @@ mod tests {
             true_pos: 0, false_pos: 0, false_neg: 0,
             mismatches: vec![],
             findings: None,
+            coverage: None,
             failed: Some("classification failed after 3 attempts: boom".into()),
             failed_pass: Some("classification"),
         };
@@ -654,25 +969,38 @@ mod tests {
         assert!(!report.contains("flaky-findings           tp=1 fp=0 fn=0  FAILED\n"), "findings failure must not read as a whole-fixture FAILED:\n{report}");
         assert!(report.contains("FAILED (classification)"), "{report}");
         assert!(report.contains("⚠ 2 of 3 fixture(s) had a failed pass"), "{report}");
+        // A coverage-pass failure gets the same pass-specific treatment.
+        let coverage_failed = FixtureScore {
+            name: "flaky-coverage".into(),
+            true_pos: 1, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            coverage: None,
+            failed: Some("coverage failed after 3 attempts: truncated".into()),
+            failed_pass: Some("coverage"),
+        };
+        let r2 = render_text_report(&[coverage_failed], "4", 1.0, 1.0);
+        assert!(r2.contains("clean · coverage FAILED"), "{r2}");
         assert!(report.contains("numbers below cover completed passes only"), "{report}");
         // No failures → no warning line.
-        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, coverage: None, failed: None, failed_pass: None };
         assert!(!render_text_report(&[ok], "3", 1.0, 1.0).contains('⚠'));
     }
 
     #[test]
     fn failed_passes_make_the_run_exit_nonzero_after_reporting() {
-        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, coverage: None, failed: None, failed_pass: None };
         assert!(completion_status(&[ok]).is_ok());
         let failed = FixtureScore {
             name: "flaky".into(),
             true_pos: 0, false_pos: 0, false_neg: 0,
             mismatches: vec![],
             findings: None,
+            coverage: None,
             failed: Some("findings failed after 3 attempts: truncated".into()),
             failed_pass: Some("findings"),
         };
-        let ok2 = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let ok2 = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, coverage: None, failed: None, failed_pass: None };
         let e = completion_status(&[failed, ok2]).unwrap_err();
         assert!(e.contains("1 of 2 fixture(s)"), "{e}");
     }
@@ -684,10 +1012,11 @@ mod tests {
             true_pos: 1, false_pos: 0, false_neg: 0,
             mismatches: vec![],
             findings: None,
+            coverage: None,
             failed: Some("findings failed after 3 attempts: truncated".into()),
             failed_pass: Some("findings"),
         };
-        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, coverage: None, failed: None, failed_pass: None };
         let out = render_json_report(&[findings_failed, ok], "3", "m", 1.0, 1.0);
         let fx = out["fixtures"].as_array().unwrap();
         assert_eq!(fx[0]["failed"], "findings failed after 3 attempts: truncated");
