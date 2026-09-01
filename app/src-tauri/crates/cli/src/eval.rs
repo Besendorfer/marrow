@@ -143,12 +143,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         // files' diffs — ground truth, so classification quality can't
         // contaminate findings quality.
         if !labels.expected_findings.is_empty() || !labels.should_not_flag.is_empty() {
-            let relevant_diffs: Vec<(String, String)> = pr
-                .files
-                .iter()
-                .filter(|f| labels.relevant.contains(&f.path))
-                .map(|f| (f.path.clone(), f.diff.clone()))
-                .collect();
+            let relevant_diffs = label_relevant_diffs(&pr.files, &labels.relevant);
             let (hl_prompt, _t) = build_highlight_prompt(&pr.title, &pr.body, &relevant_diffs, &[]);
             eprintln!("· {}: reviewing for findings…", score.name);
             let raw = ai.invoke(&hl_prompt).await?;
@@ -294,6 +289,17 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     serde_json::from_str(&content).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The findings pass is fed LABEL-relevant diffs — ground truth, never the
+/// classification pass's output — so classification quality can't
+/// contaminate findings quality.
+fn label_relevant_diffs(files: &[FixtureFile], relevant: &[String]) -> Vec<(String, String)> {
+    files
+        .iter()
+        .filter(|f| relevant.contains(&f.path))
+        .map(|f| (f.path.clone(), f.diff.clone()))
+        .collect()
+}
+
 /// Every fixture path must be labeled exactly once — a mislabeled corpus
 /// measures nothing.
 fn validate_labels(pr: &FixturePr, labels: &FixtureLabels, name: &str) -> Result<(), String> {
@@ -380,6 +386,67 @@ mod tests {
         assert!(overlaps(5, 10, &l, "a.rs"));
         assert!(!overlaps(21, 30, &l, "a.rs"));
         assert!(!overlaps(10, 20, &l, "other.rs"), "same lines, wrong file");
+    }
+
+    #[test]
+    fn label_relevant_diffs_feeds_only_ground_truth_files() {
+        let files = vec![
+            FixtureFile { path: "src/a.rs".into(), diff: "A".into() },
+            FixtureFile { path: "gen/b.rs".into(), diff: "B".into() },
+            FixtureFile { path: "src/c.rs".into(), diff: "C".into() },
+        ];
+        let relevant = vec!["src/a.rs".to_string(), "src/c.rs".to_string()];
+        let diffs = label_relevant_diffs(&files, &relevant);
+        assert_eq!(
+            diffs,
+            vec![("src/a.rs".into(), "A".into()), ("src/c.rs".into(), "C".into())],
+            "only label-RELEVANT files, in fixture order"
+        );
+    }
+
+    #[test]
+    fn labels_v2_optional_lists_parse_and_default() {
+        // v1-shaped labels.json (no findings lists) must keep parsing.
+        let v1: FixtureLabels =
+            serde_json::from_str(r#"{ "relevant": ["a.rs"], "not_relevant": [] }"#).unwrap();
+        assert!(v1.expected_findings.is_empty() && v1.should_not_flag.is_empty());
+
+        let v2: FixtureLabels = serde_json::from_str(
+            r#"{
+                "relevant": ["a.rs"], "not_relevant": [],
+                "expected_findings": [
+                    { "path": "a.rs", "start_line": 20, "end_line": 30, "note": "n" }
+                ],
+                "should_not_flag": [
+                    { "path": "a.rs", "start_line": 1, "end_line": 2, "importance": "minor", "note": "n" }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(v2.expected_findings[0].importance, "important", "importance defaults");
+        assert_eq!(v2.should_not_flag[0].importance, "minor");
+    }
+
+    /// The shipped corpus must parse and validate under the current schema,
+    /// and its VERSION must be 2 now that labels carry findings lists.
+    #[test]
+    fn shipped_corpus_parses_and_validates_at_version_2() {
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../corpus");
+        let version = fs::read_to_string(corpus.join("VERSION")).unwrap();
+        assert_eq!(version.trim(), "2");
+        let mut seen = 0;
+        for entry in fs::read_dir(corpus.join("fixtures")).unwrap() {
+            let dir = entry.unwrap().path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name = dir.file_name().unwrap().to_string_lossy().to_string();
+            let pr: FixturePr = read_json(&dir.join("pr.json")).unwrap();
+            let labels: FixtureLabels = read_json(&dir.join("labels.json")).unwrap();
+            validate_labels(&pr, &labels, &name).unwrap();
+            seen += 1;
+        }
+        assert!(seen >= 3, "corpus unexpectedly small: {seen} fixtures");
     }
 
     #[test]
