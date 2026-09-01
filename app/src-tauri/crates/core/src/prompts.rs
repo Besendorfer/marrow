@@ -39,6 +39,7 @@ IMPORTANT EDGE CASES:
 - Page object files, test helpers, test fixtures, and test utilities are NOT_RELEVANT
 - An __init__.py (or index barrel) that defines actual classes, functions, or substantive logic beyond re-exports IS relevant — the barrel exclusion is only for pure re-export/empty files, and those are NOT_RELEVANT with "low" risk, never medium
 - Import-for-side-effect modules are NOT barrels: an __init__.py whose imports exist to trigger registration (bare `import pkg.plugins` style imports whose names are never re-exported or listed in __all__, or imports commented as registering handlers/routes) carries real behavior — classify it RELEVANT with "low" risk
+- REMOVING an export from a barrel/module file is NOT barrel noise: deleting a module declaration or re-export (removing a `pub mod X;` line from a Rust mod.rs, dropping a name from __all__, deleting a re-export) shrinks the public API — importers break, and no other file in the diff carries that change. Classify the file RELEVANT with "low" risk. The barrel exclusion applies to diffs that only ADD or reorder re-exports (e.g. exporting code introduced in this same PR — the substance is reviewed in the exporting file, so the barrel edit is mechanical)
 
 Respond with ONLY a valid JSON array. Each element must be an object with:
 - "path": the file path
