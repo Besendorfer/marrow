@@ -1,0 +1,14 @@
+{
+  "relevant": ["src/api/pages.ts"],
+  "not_relevant": ["CHANGELOG.md"],
+  "expected_findings": [
+    {
+      "path": "src/api/pages.ts",
+      "start_line": 3,
+      "end_line": 11,
+      "importance": "important",
+      "note": "pageCount() standardizes on Math.floor where the inline code used Math.ceil: any total that isn't an exact multiple of pageSize loses its last partial page. Region spans the helper and the first call site so a flag at either counts."
+    }
+  ],
+  "should_not_flag": []
+}

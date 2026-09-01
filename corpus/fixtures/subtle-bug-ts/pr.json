@@ -1,0 +1,14 @@
+{
+  "title": "refactor(api): extract shared page math into a helper",
+  "body": "The list and export endpoints each computed their page count inline; this moves the arithmetic into a shared pageCount() helper and switches both call sites over.",
+  "files": [
+    {
+      "path": "src/api/pages.ts",
+      "diff": "@@ -1,18 +1,23 @@\n import { fetchRows } from \"./db\";\n \n+/** Shared page math for list + export. */\n+function pageCount(total: number, pageSize: number): number {\n+  return Math.floor(total / pageSize);\n+}\n+\n export async function listUsers(page: number, pageSize: number) {\n   const rows = await fetchRows(\"SELECT * FROM users OFFSET \" + page * pageSize + \" LIMIT \" + pageSize);\n   const total = await fetchRows(\"SELECT COUNT(*) FROM users\");\n-  const pages = Math.ceil(total / pageSize);\n+  const pages = pageCount(total, pageSize);\n   return { rows, page, pages };\n }\n \n export async function exportUsers(pageSize: number) {\n   const out = [];\n   const total = await fetchRows(\"SELECT COUNT(*) FROM users\");\n-  const pages = Math.ceil(total / pageSize);\n+  const pages = pageCount(total, pageSize);\n   for (let p = 0; p < pages; p++) {\n     out.push(await fetchRows(\"SELECT * FROM users OFFSET \" + p * pageSize + \" LIMIT \" + pageSize));\n   }\n   return out;\n }\n"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "diff": "@@ -1,3 +1,4 @@\n # Changelog\n \n+- Internal: extract shared page math into pageCount().\n - 1.4.2: fix export encoding on Windows.\n"
+    }
+  ]
+}

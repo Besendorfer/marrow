@@ -460,13 +460,14 @@ mod tests {
         assert_eq!(v2.should_not_flag[0].importance, "minor");
     }
 
-    /// The shipped corpus must parse and validate under the current schema,
-    /// and its VERSION must be 2 now that labels carry findings lists.
+    /// The shipped corpus must parse and validate under the current schema.
+    /// VERSION must be ≥ 2 (the findings-labels schema) and numeric, but is
+    /// not pinned — it bumps with every fixture change by design.
     #[test]
-    fn shipped_corpus_parses_and_validates_at_version_2() {
+    fn shipped_corpus_parses_and_validates() {
         let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../corpus");
         let version = fs::read_to_string(corpus.join("VERSION")).unwrap();
-        assert_eq!(version.trim(), "2");
+        assert!(version.trim().parse::<u32>().unwrap() >= 2);
         let mut seen = 0;
         for entry in fs::read_dir(corpus.join("fixtures")).unwrap() {
             let dir = entry.unwrap().path();
@@ -479,7 +480,7 @@ mod tests {
             validate_labels(&pr, &labels, &name).unwrap();
             seen += 1;
         }
-        assert!(seen >= 3, "corpus unexpectedly small: {seen} fixtures");
+        assert!(seen >= 6, "corpus unexpectedly small: {seen} fixtures");
 
         // The findings yardstick itself must stay in place: planted-bug-rs
         // carries the planted important finding and a should_not_flag region.
