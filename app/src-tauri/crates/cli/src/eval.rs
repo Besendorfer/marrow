@@ -219,7 +219,19 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
     } else {
         print!("{}", render_text_report(&scores, &version, precision, recall));
     }
-    Ok(())
+    completion_status(&scores)
+}
+
+/// Exit-status contract: the run always completes and emits its full report,
+/// but any fixture with a failed pass makes the process exit nonzero so CI
+/// can detect it without parsing output (grep-style: results AND status).
+fn completion_status(scores: &[FixtureScore]) -> Result<(), String> {
+    let failed = scores.iter().filter(|s| s.failed.is_some()).count();
+    if failed > 0 {
+        Err(format!("{failed} of {} fixture(s) had a failed pass — see report above", scores.len()))
+    } else {
+        Ok(())
+    }
 }
 
 /// Render the JSON report. Pure for the same reason as
@@ -646,6 +658,23 @@ mod tests {
         // No failures → no warning line.
         let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
         assert!(!render_text_report(&[ok], "3", 1.0, 1.0).contains('⚠'));
+    }
+
+    #[test]
+    fn failed_passes_make_the_run_exit_nonzero_after_reporting() {
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        assert!(completion_status(&[ok]).is_ok());
+        let failed = FixtureScore {
+            name: "flaky".into(),
+            true_pos: 0, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            failed: Some("findings failed after 3 attempts: truncated".into()),
+            failed_pass: Some("findings"),
+        };
+        let ok2 = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let e = completion_status(&[failed, ok2]).unwrap_err();
+        assert!(e.contains("1 of 2 fixture(s)"), "{e}");
     }
 
     #[test]
