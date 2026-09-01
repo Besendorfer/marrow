@@ -107,7 +107,11 @@ more surfaces.
       live run: precision 1.00 / recall 1.00 on corpus v1, barrel fixture
       clean — the #71 measurement delivered.)
 - [x] Score important findings, missed findings, and low-value findings. (#222: labels schema v2 with `expected_findings`/`should_not_flag`, planted-bug-rs fixture; first honest run important 1/1 · minor 1/1 · low-value 0)
-- [ ] Evaluate requirements coverage and hallucinated test evidence.
+- [x] Evaluate requirements coverage and hallucinated test evidence. (#229 /
+      PR #230: labels schema v3 `expected_coverage`, statuses judged
+      post-`finalize_coverage`, hallucinated citations counted on the raw
+      parse; baseline status 2/3 · hallucinated 0 — the e2e-file bait was
+      not taken.)
 - [ ] Include malformed provider responses, giant PRs, and adversarial
       cases. (Partial via #219/PR #220: five recorded malformed-response
       shapes pinned as offline tests, incl. the truncated-mid-array response
