@@ -15,7 +15,14 @@ shipped on faith.
     them when assembling the whole-PR diff).
   - `labels.json` — expected outcomes:
     `{ "relevant": [paths…], "not_relevant": [paths…] }`. Every path in
-    `pr.json` must appear in exactly one list.
+    `pr.json` must appear in exactly one list. Two optional lists (schema
+    v2) drive findings scoring:
+    - `expected_findings`: regions a good review MUST flag —
+      `{ path, start_line, end_line, importance: "important"|"minor", note }`.
+    - `should_not_flag`: regions a good review should NOT flag (e.g. the
+      PR's stated purpose); flagging one counts as a low-value finding.
+    A model highlight matches a region when paths are equal and line ranges
+    overlap. Highlights matching no label report neutrally as "extra".
 
 ## Labeling rules
 

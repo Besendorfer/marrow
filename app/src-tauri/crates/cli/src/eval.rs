@@ -6,9 +6,9 @@
 
 use marrow_core::ai::{extract_json_array, AiBackend};
 use marrow_core::config::load_settings;
-use marrow_core::fetch::validate_classifications;
-use marrow_core::prompts::build_classification_prompt;
-use marrow_core::types::FileClassification;
+use marrow_core::fetch::{validate_classifications, validate_highlights};
+use marrow_core::prompts::{build_classification_prompt, build_highlight_prompt};
+use marrow_core::types::{FileClassification, HighlightResult};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,28 @@ struct FixtureFile {
 struct FixtureLabels {
     relevant: Vec<String>,
     not_relevant: Vec<String>,
+    /// Regions a good review MUST flag (labels schema v2, issue #221).
+    #[serde(default)]
+    expected_findings: Vec<LabeledRegion>,
+    /// Regions a good review should NOT flag (e.g. the PR's stated purpose).
+    #[serde(default)]
+    should_not_flag: Vec<LabeledRegion>,
+}
+
+#[derive(Deserialize)]
+struct LabeledRegion {
+    path: String,
+    start_line: u64,
+    end_line: u64,
+    #[serde(default = "default_importance")]
+    importance: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    note: String,
+}
+
+fn default_importance() -> String {
+    "important".to_string()
 }
 
 struct FixtureScore {
@@ -39,6 +61,7 @@ struct FixtureScore {
     false_pos: usize,
     false_neg: usize,
     mismatches: Vec<String>,
+    findings: Option<FindingsScore>,
 }
 
 pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
@@ -99,7 +122,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
             .filter(|c| c.classification == "RELEVANT")
             .map(|c| c.path.as_str())
             .collect();
-        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new() };
+        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None };
         for p in &labels.relevant {
             if predicted_relevant.contains(p.as_str()) {
                 score.true_pos += 1;
@@ -113,6 +136,26 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
                 score.false_pos += 1;
                 score.mismatches.push(format!("{p}: labeled NOT_RELEVANT, judged relevant"));
             }
+        }
+
+        // Findings scoring (issue #221): only for fixtures that carry
+        // findings labels. The highlights pass gets the LABEL-relevant
+        // files' diffs — ground truth, so classification quality can't
+        // contaminate findings quality.
+        if !labels.expected_findings.is_empty() || !labels.should_not_flag.is_empty() {
+            let relevant_diffs: Vec<(String, String)> = pr
+                .files
+                .iter()
+                .filter(|f| labels.relevant.contains(&f.path))
+                .map(|f| (f.path.clone(), f.diff.clone()))
+                .collect();
+            let (hl_prompt, _t) = build_highlight_prompt(&pr.title, &pr.body, &relevant_diffs, &[]);
+            eprintln!("· {}: reviewing for findings…", score.name);
+            let raw = ai.invoke(&hl_prompt).await?;
+            let parsed: Vec<HighlightResult> = serde_json::from_value(extract_json_array(&raw)?)
+                .map_err(|e| format!("{}: unparseable highlights: {e}", score.name))?;
+            let validated = validate_highlights(parsed, &file_list);
+            score.findings = Some(score_findings(&validated, &labels));
         }
         scores.push(score);
     }
@@ -131,6 +174,11 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
                 "name": s.name,
                 "true_pos": s.true_pos, "false_pos": s.false_pos, "false_neg": s.false_neg,
                 "mismatches": s.mismatches,
+                "findings": s.findings.as_ref().map(|f| serde_json::json!({
+                    "important_found": f.important_found, "important_missed": f.important_missed,
+                    "minor_found": f.minor_found, "minor_missed": f.minor_missed,
+                    "low_value": f.low_value, "extra": f.extra, "detail": f.detail,
+                })),
             })).collect::<Vec<_>>(),
             "precision": precision,
             "recall": recall,
@@ -144,11 +192,82 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
             for m in &s.mismatches {
                 println!("    {m}");
             }
+            if let Some(f) = &s.findings {
+                println!(
+                    "{:<24} findings: important {}/{} · minor {}/{} · low-value {} · extra {}",
+                    "",
+                    f.important_found,
+                    f.important_found + f.important_missed,
+                    f.minor_found,
+                    f.minor_found + f.minor_missed,
+                    f.low_value,
+                    f.extra
+                );
+                for d in &f.detail {
+                    println!("    {d}");
+                }
+            }
         }
         println!();
         println!("RELEVANT precision {:.2} · recall {:.2} (corpus v{version})", precision, recall);
     }
     Ok(())
+}
+
+/// Findings scorecard for one fixture (issue #221).
+#[derive(Default)]
+struct FindingsScore {
+    important_found: usize,
+    important_missed: usize,
+    minor_found: usize,
+    minor_missed: usize,
+    low_value: usize,
+    extra: usize,
+    detail: Vec<String>,
+}
+
+/// A model highlight matches a labeled region when paths are equal and line
+/// ranges overlap.
+fn overlaps(h_start: u64, h_end: u64, l: &LabeledRegion, path: &str) -> bool {
+    path == l.path && h_start <= l.end_line && h_end >= l.start_line
+}
+
+/// Score validated highlights against a fixture's findings labels: each
+/// expected region is found or missed (by importance); highlights matching a
+/// should_not_flag region are low-value; highlights matching no label are
+/// counted neutrally as extra — an unlabeled highlight is not automatically
+/// noise.
+fn score_findings(
+    highlights: &[marrow_core::types::HighlightResult],
+    labels: &FixtureLabels,
+) -> FindingsScore {
+    let mut score = FindingsScore::default();
+    for l in &labels.expected_findings {
+        let found = highlights.iter().any(|h| overlaps(h.start_line, h.end_line, l, &h.path));
+        match (l.importance.as_str(), found) {
+            ("minor", true) => score.minor_found += 1,
+            ("minor", false) => {
+                score.minor_missed += 1;
+                score.detail.push(format!("MISSED minor: {} L{}-{}", l.path, l.start_line, l.end_line));
+            }
+            (_, true) => score.important_found += 1,
+            (_, false) => {
+                score.important_missed += 1;
+                score.detail.push(format!("MISSED important: {} L{}-{}", l.path, l.start_line, l.end_line));
+            }
+        }
+    }
+    for h in highlights {
+        let expected = labels.expected_findings.iter().any(|l| overlaps(h.start_line, h.end_line, l, &h.path));
+        let noise = labels.should_not_flag.iter().any(|l| overlaps(h.start_line, h.end_line, l, &h.path));
+        if noise && !expected {
+            score.low_value += 1;
+            score.detail.push(format!("LOW-VALUE: {} L{}-{} flags a should-not-flag region", h.path, h.start_line, h.end_line));
+        } else if !expected {
+            score.extra += 1;
+        }
+    }
+    score
 }
 
 /// Assemble the whole-PR diff the way GitHub serves it — per-file bodies
@@ -209,11 +328,11 @@ mod tests {
                 FixtureFile { path: "b.rs".into(), diff: String::new() },
             ],
         };
-        let ok = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec!["b.rs".into()] };
+        let ok = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![] };
         assert!(validate_labels(&pr, &ok, "f").is_ok());
-        let overlap = FixtureLabels { relevant: vec!["a.rs".into(), "b.rs".into()], not_relevant: vec!["b.rs".into()] };
+        let overlap = FixtureLabels { relevant: vec!["a.rs".into(), "b.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![] };
         assert!(validate_labels(&pr, &overlap, "f").is_err());
-        let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![] };
+        let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![], expected_findings: vec![], should_not_flag: vec![] };
         assert!(validate_labels(&pr, &missing, "f").is_err());
     }
 
@@ -224,6 +343,43 @@ mod tests {
         // 1.0 here only shields per-fixture math from NaN.
         assert_eq!(ratio(0, 0), 1.0);
         assert_eq!(ratio(1, 2), 0.5);
+    }
+
+    fn region(path: &str, s: u64, e: u64, importance: &str) -> LabeledRegion {
+        LabeledRegion { path: path.into(), start_line: s, end_line: e, importance: importance.into(), note: String::new() }
+    }
+
+    fn highlight(path: &str, s: u64, e: u64) -> HighlightResult {
+        HighlightResult { path: path.into(), start_line: s, end_line: e, severity: "warning".into(), comment: "c".into() }
+    }
+
+    #[test]
+    fn findings_scoring_buckets_found_missed_lowvalue_extra() {
+        let labels = FixtureLabels {
+            relevant: vec![],
+            not_relevant: vec![],
+            expected_findings: vec![region("a.rs", 20, 30, "important"), region("a.rs", 50, 55, "minor")],
+            should_not_flag: vec![region("b.rs", 3, 6, "important")],
+        };
+        let highlights = vec![
+            highlight("a.rs", 25, 27),  // overlaps the important region → found
+            highlight("b.rs", 4, 4),    // flags the stated purpose → low-value
+            highlight("c.rs", 1, 2),    // matches nothing → extra (neutral)
+        ];
+        let s = score_findings(&highlights, &labels);
+        assert_eq!((s.important_found, s.important_missed), (1, 0));
+        assert_eq!((s.minor_found, s.minor_missed), (0, 1), "the minor region went unflagged");
+        assert_eq!(s.low_value, 1);
+        assert_eq!(s.extra, 1);
+    }
+
+    #[test]
+    fn overlap_requires_same_path_and_range_intersection() {
+        let l = region("a.rs", 10, 20, "important");
+        assert!(overlaps(20, 25, &l, "a.rs"), "touching at the boundary counts");
+        assert!(overlaps(5, 10, &l, "a.rs"));
+        assert!(!overlaps(21, 30, &l, "a.rs"));
+        assert!(!overlaps(10, 20, &l, "other.rs"), "same lines, wrong file");
     }
 
     #[test]
