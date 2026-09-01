@@ -214,29 +214,36 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
     let recall = ratio(tp, tp + fneg);
 
     if json {
-        let out = serde_json::json!({
-            "corpus_version": version,
-            "model": settings.model,
-            "fixtures": scores.iter().map(|s| serde_json::json!({
-                "name": s.name,
-                "true_pos": s.true_pos, "false_pos": s.false_pos, "false_neg": s.false_neg,
-                "mismatches": s.mismatches,
-                "failed": s.failed,
-                "failed_pass": s.failed_pass,
-                "findings": s.findings.as_ref().map(|f| serde_json::json!({
-                    "important_found": f.important_found, "important_missed": f.important_missed,
-                    "minor_found": f.minor_found, "minor_missed": f.minor_missed,
-                    "low_value": f.low_value, "extra": f.extra, "detail": f.detail,
-                })),
-            })).collect::<Vec<_>>(),
-            "precision": precision,
-            "recall": recall,
-        });
+        let out = render_json_report(&scores, &version, &settings.model, precision, recall);
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         print!("{}", render_text_report(&scores, &version, precision, recall));
     }
     Ok(())
+}
+
+/// Render the JSON report. Pure for the same reason as
+/// [`render_text_report`]: the failed/failed_pass outcome fields are part of
+/// the reporting contract (issue #226) and must stay testable offline.
+fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, precision: f64, recall: f64) -> serde_json::Value {
+    serde_json::json!({
+        "corpus_version": version,
+        "model": model,
+        "fixtures": scores.iter().map(|s| serde_json::json!({
+            "name": s.name,
+            "true_pos": s.true_pos, "false_pos": s.false_pos, "false_neg": s.false_neg,
+            "mismatches": s.mismatches,
+            "failed": s.failed,
+            "failed_pass": s.failed_pass,
+            "findings": s.findings.as_ref().map(|f| serde_json::json!({
+                "important_found": f.important_found, "important_missed": f.important_missed,
+                "minor_found": f.minor_found, "minor_missed": f.minor_missed,
+                "low_value": f.low_value, "extra": f.extra, "detail": f.detail,
+            })),
+        })).collect::<Vec<_>>(),
+        "precision": precision,
+        "recall": recall,
+    })
 }
 
 /// Render the human-readable report. Pure so the reporting contract —
@@ -639,6 +646,26 @@ mod tests {
         // No failures → no warning line.
         let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
         assert!(!render_text_report(&[ok], "3", 1.0, 1.0).contains('⚠'));
+    }
+
+    #[test]
+    fn json_report_carries_failed_outcome() {
+        let findings_failed = FixtureScore {
+            name: "flaky".into(),
+            true_pos: 1, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            failed: Some("findings failed after 3 attempts: truncated".into()),
+            failed_pass: Some("findings"),
+        };
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let out = render_json_report(&[findings_failed, ok], "3", "m", 1.0, 1.0);
+        let fx = out["fixtures"].as_array().unwrap();
+        assert_eq!(fx[0]["failed"], "findings failed after 3 attempts: truncated");
+        assert_eq!(fx[0]["failed_pass"], "findings");
+        assert!(fx[0]["findings"].is_null());
+        assert!(fx[1]["failed"].is_null(), "clean fixtures report null, not absent-by-accident");
+        assert_eq!(out["corpus_version"], "3");
     }
 
     /// A broken corpus must fail fast — before load_settings/AiBackend, so
