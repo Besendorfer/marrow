@@ -64,8 +64,12 @@ struct FixtureScore {
     findings: Option<FindingsScore>,
     /// Set when an AI pass failed after retries (issue #226). A failed
     /// classification contributes nothing to the aggregate (its tallies stay
-    /// zero); a failed findings pass leaves `findings` at None.
+    /// zero); a failed findings pass leaves `findings` at None while the
+    /// fixture's classification tallies remain valid and counted.
     failed: Option<String>,
+    /// Which pass failed ("classification" | "findings") — drives the
+    /// verdict label so a findings-only failure doesn't overstate itself.
+    failed_pass: Option<&'static str>,
 }
 
 /// Transient provider failures (e.g. the claude CLI's truncated-mid-array
@@ -142,7 +146,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         let file_list: Vec<String> = pr.files.iter().map(|f| f.path.clone()).collect();
         let full_diff = assemble_full_diff(&pr.files);
 
-        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None, failed: None };
+        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None, failed: None, failed_pass: None };
 
         let (prompt, _truncated) = build_classification_prompt(&pr.title, &file_list, &full_diff);
         eprintln!("· {}: classifying {} files…", score.name, file_list.len());
@@ -152,6 +156,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
                 Err(e) => {
                     eprintln!("· {}: {e}", score.name);
                     score.failed = Some(e);
+                    score.failed_pass = Some("classification");
                     scores.push(score);
                     continue;
                 }
@@ -195,6 +200,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
                 Err(e) => {
                     eprintln!("· {}: {e}", score.name);
                     score.failed = Some(e);
+                    score.failed_pass = Some("findings");
                 }
             }
         }
@@ -216,6 +222,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
                 "true_pos": s.true_pos, "false_pos": s.false_pos, "false_neg": s.false_neg,
                 "mismatches": s.mismatches,
                 "failed": s.failed,
+                "failed_pass": s.failed_pass,
                 "findings": s.findings.as_ref().map(|f| serde_json::json!({
                     "important_found": f.important_found, "important_missed": f.important_missed,
                     "minor_found": f.minor_found, "minor_missed": f.minor_missed,
@@ -227,49 +234,63 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
-        println!();
-        for s in &scores {
-            let verdict = if s.failed.is_some() {
-                "FAILED"
-            } else if s.mismatches.is_empty() {
-                "clean"
-            } else {
-                "MISMATCHES"
-            };
-            println!("{:<24} tp={} fp={} fn={}  {}", s.name, s.true_pos, s.false_pos, s.false_neg, verdict);
-            if let Some(e) = &s.failed {
-                println!("    {e}");
-            }
-            for m in &s.mismatches {
-                println!("    {m}");
-            }
-            if let Some(f) = &s.findings {
-                println!(
-                    "{:<24} findings: important {}/{} · minor {}/{} · low-value {} · extra {}",
-                    "",
-                    f.important_found,
-                    f.important_found + f.important_missed,
-                    f.minor_found,
-                    f.minor_found + f.minor_missed,
-                    f.low_value,
-                    f.extra
-                );
-                for d in &f.detail {
-                    println!("    {d}");
-                }
-            }
-        }
-        println!();
-        let failed = scores.iter().filter(|s| s.failed.is_some()).count();
-        if failed > 0 {
-            println!(
-                "⚠ {failed} of {} fixture(s) had a failed pass after {PASS_ATTEMPTS} attempts — numbers below cover completed passes only",
-                scores.len()
-            );
-        }
-        println!("RELEVANT precision {:.2} · recall {:.2} (corpus v{version})", precision, recall);
+        print!("{}", render_text_report(&scores, &version, precision, recall));
     }
     Ok(())
+}
+
+/// Render the human-readable report. Pure so the reporting contract —
+/// per-fixture verdicts (a findings-only failure must not overstate itself),
+/// FAILED detail lines, and the incomplete-coverage warning — is testable
+/// without an AI backend (issue #226).
+fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, recall: f64) -> String {
+    use std::fmt::Write;
+    let mut out = String::from("\n");
+    for s in scores {
+        let verdict = match s.failed_pass {
+            Some("classification") => "FAILED (classification)".to_string(),
+            Some(pass) => {
+                let class_verdict = if s.mismatches.is_empty() { "clean" } else { "MISMATCHES" };
+                format!("{class_verdict} · {pass} FAILED")
+            }
+            None if s.mismatches.is_empty() => "clean".to_string(),
+            None => "MISMATCHES".to_string(),
+        };
+        let _ = writeln!(out, "{:<24} tp={} fp={} fn={}  {}", s.name, s.true_pos, s.false_pos, s.false_neg, verdict);
+        if let Some(e) = &s.failed {
+            let _ = writeln!(out, "    {e}");
+        }
+        for m in &s.mismatches {
+            let _ = writeln!(out, "    {m}");
+        }
+        if let Some(f) = &s.findings {
+            let _ = writeln!(
+                out,
+                "{:<24} findings: important {}/{} · minor {}/{} · low-value {} · extra {}",
+                "",
+                f.important_found,
+                f.important_found + f.important_missed,
+                f.minor_found,
+                f.minor_found + f.minor_missed,
+                f.low_value,
+                f.extra
+            );
+            for d in &f.detail {
+                let _ = writeln!(out, "    {d}");
+            }
+        }
+    }
+    out.push('\n');
+    let failed = scores.iter().filter(|s| s.failed.is_some()).count();
+    if failed > 0 {
+        let _ = writeln!(
+            out,
+            "⚠ {failed} of {} fixture(s) had a failed pass after {PASS_ATTEMPTS} attempts — numbers below cover completed passes only",
+            scores.len()
+        );
+    }
+    let _ = writeln!(out, "RELEVANT precision {precision:.2} · recall {recall:.2} (corpus v{version})");
+    out
 }
 
 /// Findings scorecard for one fixture (issue #221).
@@ -587,6 +608,55 @@ mod tests {
         let e = out.unwrap_err();
         assert!(e.contains("classification failed after 3 attempts"), "{e}");
         assert!(e.contains("provider exploded"), "{e}");
+    }
+
+    #[test]
+    fn report_names_failed_passes_without_overstating() {
+        let clean = FixtureScore { name: "ok-fixture".into(), true_pos: 2, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let findings_failed = FixtureScore {
+            name: "flaky-findings".into(),
+            true_pos: 1, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            failed: Some("findings failed after 3 attempts: truncated".into()),
+            failed_pass: Some("findings"),
+        };
+        let class_failed = FixtureScore {
+            name: "dead-fixture".into(),
+            true_pos: 0, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            failed: Some("classification failed after 3 attempts: boom".into()),
+            failed_pass: Some("classification"),
+        };
+        let report = render_text_report(&[clean, findings_failed, class_failed], "3", 1.0, 1.0);
+        // A findings-only failure keeps the (valid) classification verdict.
+        assert!(report.contains("clean · findings FAILED"), "{report}");
+        assert!(!report.contains("flaky-findings           tp=1 fp=0 fn=0  FAILED\n"), "findings failure must not read as a whole-fixture FAILED:\n{report}");
+        assert!(report.contains("FAILED (classification)"), "{report}");
+        assert!(report.contains("⚠ 2 of 3 fixture(s) had a failed pass"), "{report}");
+        assert!(report.contains("numbers below cover completed passes only"), "{report}");
+        // No failures → no warning line.
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        assert!(!render_text_report(&[ok], "3", 1.0, 1.0).contains('⚠'));
+    }
+
+    /// A broken corpus must fail fast — before load_settings/AiBackend, so
+    /// this test needs no AI configuration at all (issue #226 criterion 3).
+    #[test]
+    fn eval_fails_fast_on_invalid_labels_before_any_ai() {
+        let dir = std::env::temp_dir().join(format!("marrow-eval-failfast-{}", std::process::id()));
+        let fixture = dir.join("fixtures/broken");
+        fs::create_dir_all(&fixture).unwrap();
+        fs::write(dir.join("VERSION"), "3\n").unwrap();
+        fs::write(fixture.join("pr.json"), r#"{ "title": "t", "body": "b", "files": [{ "path": "a.rs", "diff": "" }] }"#).unwrap();
+        // a.rs labeled in BOTH lists → validate_labels must reject.
+        fs::write(fixture.join("labels.json"), r#"{ "relevant": ["a.rs"], "not_relevant": ["a.rs"] }"#).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let err = rt.block_on(eval(&dir, false)).unwrap_err();
+        assert!(err.contains("broken"), "error should name the fixture: {err}");
+        assert!(err.contains("exactly one"), "{err}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
