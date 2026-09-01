@@ -62,6 +62,39 @@ struct FixtureScore {
     false_neg: usize,
     mismatches: Vec<String>,
     findings: Option<FindingsScore>,
+    /// Set when an AI pass failed after retries (issue #226). A failed
+    /// classification contributes nothing to the aggregate (its tallies stay
+    /// zero); a failed findings pass leaves `findings` at None.
+    failed: Option<String>,
+}
+
+/// Transient provider failures (e.g. the claude CLI's truncated-mid-array
+/// responses, ~50% of runs on the adversarial-injection fixture) shouldn't
+/// kill a whole eval run. Bounded retries, then the fixture is reported
+/// failed and the run continues (issue #226). Config/label validation still
+/// fails fast — that's a broken corpus, not a flaky provider.
+const PASS_ATTEMPTS: usize = 3;
+
+async fn retry_json_pass<T, F, Fut>(what: &str, name: &str, mut call: F) -> Result<Vec<T>, String>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut last = String::new();
+    for attempt in 1..=PASS_ATTEMPTS {
+        match call().await.and_then(|raw| extract_json_array(&raw)) {
+            Ok(v) => match serde_json::from_value::<Vec<T>>(v) {
+                Ok(parsed) => return Ok(parsed),
+                Err(e) => last = format!("unparseable {what}: {e}"),
+            },
+            Err(e) => last = e,
+        }
+        if attempt < PASS_ATTEMPTS {
+            eprintln!("· {name}: {what} attempt {attempt} failed, retrying…");
+        }
+    }
+    Err(format!("{what} failed after {PASS_ATTEMPTS} attempts: {last}"))
 }
 
 pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
@@ -109,11 +142,20 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         let file_list: Vec<String> = pr.files.iter().map(|f| f.path.clone()).collect();
         let full_diff = assemble_full_diff(&pr.files);
 
+        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None, failed: None };
+
         let (prompt, _truncated) = build_classification_prompt(&pr.title, &file_list, &full_diff);
-        eprintln!("· {name}: classifying {} files…", file_list.len());
-        let raw = ai.invoke(&prompt).await?;
-        let parsed: Vec<FileClassification> = serde_json::from_value(extract_json_array(&raw)?)
-            .map_err(|e| format!("{name}: unparseable classification: {e}"))?;
+        eprintln!("· {}: classifying {} files…", score.name, file_list.len());
+        let parsed: Vec<FileClassification> =
+            match retry_json_pass("classification", &score.name, || ai.invoke(&prompt)).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("· {}: {e}", score.name);
+                    score.failed = Some(e);
+                    scores.push(score);
+                    continue;
+                }
+            };
         // Judge POST-validation output — the same pipeline the app runs.
         let validated = validate_classifications(parsed, &file_list);
 
@@ -122,7 +164,6 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
             .filter(|c| c.classification == "RELEVANT")
             .map(|c| c.path.as_str())
             .collect();
-        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None };
         for p in &labels.relevant {
             if predicted_relevant.contains(p.as_str()) {
                 score.true_pos += 1;
@@ -146,11 +187,16 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
             let relevant_diffs = label_relevant_diffs(&pr.files, &labels.relevant);
             let (hl_prompt, _t) = build_highlight_prompt(&pr.title, &pr.body, &relevant_diffs, &[]);
             eprintln!("· {}: reviewing for findings…", score.name);
-            let raw = ai.invoke(&hl_prompt).await?;
-            let parsed: Vec<HighlightResult> = serde_json::from_value(extract_json_array(&raw)?)
-                .map_err(|e| format!("{}: unparseable highlights: {e}", score.name))?;
-            let validated = validate_highlights(parsed, &file_list);
-            score.findings = Some(score_findings(&validated, &labels));
+            match retry_json_pass::<HighlightResult, _, _>("findings", &score.name, || ai.invoke(&hl_prompt)).await {
+                Ok(parsed) => {
+                    let validated = validate_highlights(parsed, &file_list);
+                    score.findings = Some(score_findings(&validated, &labels));
+                }
+                Err(e) => {
+                    eprintln!("· {}: {e}", score.name);
+                    score.failed = Some(e);
+                }
+            }
         }
         scores.push(score);
     }
@@ -169,6 +215,7 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
                 "name": s.name,
                 "true_pos": s.true_pos, "false_pos": s.false_pos, "false_neg": s.false_neg,
                 "mismatches": s.mismatches,
+                "failed": s.failed,
                 "findings": s.findings.as_ref().map(|f| serde_json::json!({
                     "important_found": f.important_found, "important_missed": f.important_missed,
                     "minor_found": f.minor_found, "minor_missed": f.minor_missed,
@@ -182,8 +229,17 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
     } else {
         println!();
         for s in &scores {
-            let verdict = if s.mismatches.is_empty() { "clean" } else { "MISMATCHES" };
+            let verdict = if s.failed.is_some() {
+                "FAILED"
+            } else if s.mismatches.is_empty() {
+                "clean"
+            } else {
+                "MISMATCHES"
+            };
             println!("{:<24} tp={} fp={} fn={}  {}", s.name, s.true_pos, s.false_pos, s.false_neg, verdict);
+            if let Some(e) = &s.failed {
+                println!("    {e}");
+            }
             for m in &s.mismatches {
                 println!("    {m}");
             }
@@ -204,6 +260,13 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
             }
         }
         println!();
+        let failed = scores.iter().filter(|s| s.failed.is_some()).count();
+        if failed > 0 {
+            println!(
+                "⚠ {failed} of {} fixture(s) had a failed pass after {PASS_ATTEMPTS} attempts — numbers below cover completed passes only",
+                scores.len()
+            );
+        }
         println!("RELEVANT precision {:.2} · recall {:.2} (corpus v{version})", precision, recall);
     }
     Ok(())
@@ -498,6 +561,32 @@ mod tests {
             "planted-bug-rs lost its minor naming-nit region"
         );
         assert!(!planted.should_not_flag.is_empty(), "planted-bug-rs lost its should_not_flag region");
+    }
+
+    #[test]
+    fn retry_pass_recovers_from_transient_failures() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        // Fails twice (truncated garbage), succeeds on the final attempt.
+        let mut calls = 0;
+        let out: Result<Vec<serde_json::Value>, String> = rt.block_on(retry_json_pass("findings", "f", || {
+            calls += 1;
+            let resp = if calls < PASS_ATTEMPTS { "[{\"trunca".to_string() } else { "[]".to_string() };
+            async move { Ok(resp) }
+        }));
+        assert_eq!(calls, PASS_ATTEMPTS);
+        assert!(out.unwrap().is_empty());
+
+        // Exhausted retries: the error names the pass and attempt count and
+        // carries the last underlying failure.
+        let mut calls = 0;
+        let out: Result<Vec<serde_json::Value>, String> = rt.block_on(retry_json_pass("classification", "f", || {
+            calls += 1;
+            async { Err("provider exploded".to_string()) }
+        }));
+        assert_eq!(calls, PASS_ATTEMPTS);
+        let e = out.unwrap_err();
+        assert!(e.contains("classification failed after 3 attempts"), "{e}");
+        assert!(e.contains("provider exploded"), "{e}");
     }
 
     #[test]
