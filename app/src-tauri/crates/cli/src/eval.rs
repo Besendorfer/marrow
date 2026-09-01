@@ -62,6 +62,43 @@ struct FixtureScore {
     false_neg: usize,
     mismatches: Vec<String>,
     findings: Option<FindingsScore>,
+    /// Set when an AI pass failed after retries (issue #226). A failed
+    /// classification contributes nothing to the aggregate (its tallies stay
+    /// zero); a failed findings pass leaves `findings` at None while the
+    /// fixture's classification tallies remain valid and counted.
+    failed: Option<String>,
+    /// Which pass failed ("classification" | "findings") — drives the
+    /// verdict label so a findings-only failure doesn't overstate itself.
+    failed_pass: Option<&'static str>,
+}
+
+/// Transient provider failures (e.g. the claude CLI's truncated-mid-array
+/// responses, ~50% of runs on the adversarial-injection fixture) shouldn't
+/// kill a whole eval run. Bounded retries, then the fixture is reported
+/// failed and the run continues (issue #226). Config/label validation still
+/// fails fast — that's a broken corpus, not a flaky provider.
+const PASS_ATTEMPTS: usize = 3;
+
+async fn retry_json_pass<T, F, Fut>(what: &str, name: &str, mut call: F) -> Result<Vec<T>, String>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut last = String::new();
+    for attempt in 1..=PASS_ATTEMPTS {
+        match call().await.and_then(|raw| extract_json_array(&raw)) {
+            Ok(v) => match serde_json::from_value::<Vec<T>>(v) {
+                Ok(parsed) => return Ok(parsed),
+                Err(e) => last = format!("unparseable {what}: {e}"),
+            },
+            Err(e) => last = e,
+        }
+        if attempt < PASS_ATTEMPTS {
+            eprintln!("· {name}: {what} attempt {attempt} failed, retrying…");
+        }
+    }
+    Err(format!("{what} failed after {PASS_ATTEMPTS} attempts: {last}"))
 }
 
 pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
@@ -109,11 +146,21 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         let file_list: Vec<String> = pr.files.iter().map(|f| f.path.clone()).collect();
         let full_diff = assemble_full_diff(&pr.files);
 
+        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None, failed: None, failed_pass: None };
+
         let (prompt, _truncated) = build_classification_prompt(&pr.title, &file_list, &full_diff);
-        eprintln!("· {name}: classifying {} files…", file_list.len());
-        let raw = ai.invoke(&prompt).await?;
-        let parsed: Vec<FileClassification> = serde_json::from_value(extract_json_array(&raw)?)
-            .map_err(|e| format!("{name}: unparseable classification: {e}"))?;
+        eprintln!("· {}: classifying {} files…", score.name, file_list.len());
+        let parsed: Vec<FileClassification> =
+            match retry_json_pass("classification", &score.name, || ai.invoke(&prompt)).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("· {}: {e}", score.name);
+                    score.failed = Some(e);
+                    score.failed_pass = Some("classification");
+                    scores.push(score);
+                    continue;
+                }
+            };
         // Judge POST-validation output — the same pipeline the app runs.
         let validated = validate_classifications(parsed, &file_list);
 
@@ -122,7 +169,6 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
             .filter(|c| c.classification == "RELEVANT")
             .map(|c| c.path.as_str())
             .collect();
-        let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None };
         for p in &labels.relevant {
             if predicted_relevant.contains(p.as_str()) {
                 score.true_pos += 1;
@@ -146,11 +192,17 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
             let relevant_diffs = label_relevant_diffs(&pr.files, &labels.relevant);
             let (hl_prompt, _t) = build_highlight_prompt(&pr.title, &pr.body, &relevant_diffs, &[]);
             eprintln!("· {}: reviewing for findings…", score.name);
-            let raw = ai.invoke(&hl_prompt).await?;
-            let parsed: Vec<HighlightResult> = serde_json::from_value(extract_json_array(&raw)?)
-                .map_err(|e| format!("{}: unparseable highlights: {e}", score.name))?;
-            let validated = validate_highlights(parsed, &file_list);
-            score.findings = Some(score_findings(&validated, &labels));
+            match retry_json_pass::<HighlightResult, _, _>("findings", &score.name, || ai.invoke(&hl_prompt)).await {
+                Ok(parsed) => {
+                    let validated = validate_highlights(parsed, &file_list);
+                    score.findings = Some(score_findings(&validated, &labels));
+                }
+                Err(e) => {
+                    eprintln!("· {}: {e}", score.name);
+                    score.failed = Some(e);
+                    score.failed_pass = Some("findings");
+                }
+            }
         }
         scores.push(score);
     }
@@ -162,51 +214,102 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
     let recall = ratio(tp, tp + fneg);
 
     if json {
-        let out = serde_json::json!({
-            "corpus_version": version,
-            "model": settings.model,
-            "fixtures": scores.iter().map(|s| serde_json::json!({
-                "name": s.name,
-                "true_pos": s.true_pos, "false_pos": s.false_pos, "false_neg": s.false_neg,
-                "mismatches": s.mismatches,
-                "findings": s.findings.as_ref().map(|f| serde_json::json!({
-                    "important_found": f.important_found, "important_missed": f.important_missed,
-                    "minor_found": f.minor_found, "minor_missed": f.minor_missed,
-                    "low_value": f.low_value, "extra": f.extra, "detail": f.detail,
-                })),
-            })).collect::<Vec<_>>(),
-            "precision": precision,
-            "recall": recall,
-        });
+        let out = render_json_report(&scores, &version, &settings.model, precision, recall);
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
-        println!();
-        for s in &scores {
-            let verdict = if s.mismatches.is_empty() { "clean" } else { "MISMATCHES" };
-            println!("{:<24} tp={} fp={} fn={}  {}", s.name, s.true_pos, s.false_pos, s.false_neg, verdict);
-            for m in &s.mismatches {
-                println!("    {m}");
+        print!("{}", render_text_report(&scores, &version, precision, recall));
+    }
+    completion_status(&scores)
+}
+
+/// Exit-status contract: the run always completes and emits its full report,
+/// but any fixture with a failed pass makes the process exit nonzero so CI
+/// can detect it without parsing output (grep-style: results AND status).
+fn completion_status(scores: &[FixtureScore]) -> Result<(), String> {
+    let failed = scores.iter().filter(|s| s.failed.is_some()).count();
+    if failed > 0 {
+        Err(format!("{failed} of {} fixture(s) had a failed pass — see report above", scores.len()))
+    } else {
+        Ok(())
+    }
+}
+
+/// Render the JSON report. Pure for the same reason as
+/// [`render_text_report`]: the failed/failed_pass outcome fields are part of
+/// the reporting contract (issue #226) and must stay testable offline.
+fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, precision: f64, recall: f64) -> serde_json::Value {
+    serde_json::json!({
+        "corpus_version": version,
+        "model": model,
+        "fixtures": scores.iter().map(|s| serde_json::json!({
+            "name": s.name,
+            "true_pos": s.true_pos, "false_pos": s.false_pos, "false_neg": s.false_neg,
+            "mismatches": s.mismatches,
+            "failed": s.failed,
+            "failed_pass": s.failed_pass,
+            "findings": s.findings.as_ref().map(|f| serde_json::json!({
+                "important_found": f.important_found, "important_missed": f.important_missed,
+                "minor_found": f.minor_found, "minor_missed": f.minor_missed,
+                "low_value": f.low_value, "extra": f.extra, "detail": f.detail,
+            })),
+        })).collect::<Vec<_>>(),
+        "precision": precision,
+        "recall": recall,
+    })
+}
+
+/// Render the human-readable report. Pure so the reporting contract —
+/// per-fixture verdicts (a findings-only failure must not overstate itself),
+/// FAILED detail lines, and the incomplete-coverage warning — is testable
+/// without an AI backend (issue #226).
+fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, recall: f64) -> String {
+    use std::fmt::Write;
+    let mut out = String::from("\n");
+    for s in scores {
+        let verdict = match s.failed_pass {
+            Some("classification") => "FAILED (classification)".to_string(),
+            Some(pass) => {
+                let class_verdict = if s.mismatches.is_empty() { "clean" } else { "MISMATCHES" };
+                format!("{class_verdict} · {pass} FAILED")
             }
-            if let Some(f) = &s.findings {
-                println!(
-                    "{:<24} findings: important {}/{} · minor {}/{} · low-value {} · extra {}",
-                    "",
-                    f.important_found,
-                    f.important_found + f.important_missed,
-                    f.minor_found,
-                    f.minor_found + f.minor_missed,
-                    f.low_value,
-                    f.extra
-                );
-                for d in &f.detail {
-                    println!("    {d}");
-                }
+            None if s.mismatches.is_empty() => "clean".to_string(),
+            None => "MISMATCHES".to_string(),
+        };
+        let _ = writeln!(out, "{:<24} tp={} fp={} fn={}  {}", s.name, s.true_pos, s.false_pos, s.false_neg, verdict);
+        if let Some(e) = &s.failed {
+            let _ = writeln!(out, "    {e}");
+        }
+        for m in &s.mismatches {
+            let _ = writeln!(out, "    {m}");
+        }
+        if let Some(f) = &s.findings {
+            let _ = writeln!(
+                out,
+                "{:<24} findings: important {}/{} · minor {}/{} · low-value {} · extra {}",
+                "",
+                f.important_found,
+                f.important_found + f.important_missed,
+                f.minor_found,
+                f.minor_found + f.minor_missed,
+                f.low_value,
+                f.extra
+            );
+            for d in &f.detail {
+                let _ = writeln!(out, "    {d}");
             }
         }
-        println!();
-        println!("RELEVANT precision {:.2} · recall {:.2} (corpus v{version})", precision, recall);
     }
-    Ok(())
+    out.push('\n');
+    let failed = scores.iter().filter(|s| s.failed.is_some()).count();
+    if failed > 0 {
+        let _ = writeln!(
+            out,
+            "⚠ {failed} of {} fixture(s) had a failed pass after {PASS_ATTEMPTS} attempts — numbers below cover completed passes only",
+            scores.len()
+        );
+    }
+    let _ = writeln!(out, "RELEVANT precision {precision:.2} · recall {recall:.2} (corpus v{version})");
+    out
 }
 
 /// Findings scorecard for one fixture (issue #221).
@@ -498,6 +601,118 @@ mod tests {
             "planted-bug-rs lost its minor naming-nit region"
         );
         assert!(!planted.should_not_flag.is_empty(), "planted-bug-rs lost its should_not_flag region");
+    }
+
+    #[test]
+    fn retry_pass_recovers_from_transient_failures() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        // Fails twice (truncated garbage), succeeds on the final attempt.
+        let mut calls = 0;
+        let out: Result<Vec<serde_json::Value>, String> = rt.block_on(retry_json_pass("findings", "f", || {
+            calls += 1;
+            let resp = if calls < PASS_ATTEMPTS { "[{\"trunca".to_string() } else { "[]".to_string() };
+            async move { Ok(resp) }
+        }));
+        assert_eq!(calls, PASS_ATTEMPTS);
+        assert!(out.unwrap().is_empty());
+
+        // Exhausted retries: the error names the pass and attempt count and
+        // carries the last underlying failure.
+        let mut calls = 0;
+        let out: Result<Vec<serde_json::Value>, String> = rt.block_on(retry_json_pass("classification", "f", || {
+            calls += 1;
+            async { Err("provider exploded".to_string()) }
+        }));
+        assert_eq!(calls, PASS_ATTEMPTS);
+        let e = out.unwrap_err();
+        assert!(e.contains("classification failed after 3 attempts"), "{e}");
+        assert!(e.contains("provider exploded"), "{e}");
+    }
+
+    #[test]
+    fn report_names_failed_passes_without_overstating() {
+        let clean = FixtureScore { name: "ok-fixture".into(), true_pos: 2, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let findings_failed = FixtureScore {
+            name: "flaky-findings".into(),
+            true_pos: 1, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            failed: Some("findings failed after 3 attempts: truncated".into()),
+            failed_pass: Some("findings"),
+        };
+        let class_failed = FixtureScore {
+            name: "dead-fixture".into(),
+            true_pos: 0, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            failed: Some("classification failed after 3 attempts: boom".into()),
+            failed_pass: Some("classification"),
+        };
+        let report = render_text_report(&[clean, findings_failed, class_failed], "3", 1.0, 1.0);
+        // A findings-only failure keeps the (valid) classification verdict.
+        assert!(report.contains("clean · findings FAILED"), "{report}");
+        assert!(!report.contains("flaky-findings           tp=1 fp=0 fn=0  FAILED\n"), "findings failure must not read as a whole-fixture FAILED:\n{report}");
+        assert!(report.contains("FAILED (classification)"), "{report}");
+        assert!(report.contains("⚠ 2 of 3 fixture(s) had a failed pass"), "{report}");
+        assert!(report.contains("numbers below cover completed passes only"), "{report}");
+        // No failures → no warning line.
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        assert!(!render_text_report(&[ok], "3", 1.0, 1.0).contains('⚠'));
+    }
+
+    #[test]
+    fn failed_passes_make_the_run_exit_nonzero_after_reporting() {
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        assert!(completion_status(&[ok]).is_ok());
+        let failed = FixtureScore {
+            name: "flaky".into(),
+            true_pos: 0, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            failed: Some("findings failed after 3 attempts: truncated".into()),
+            failed_pass: Some("findings"),
+        };
+        let ok2 = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let e = completion_status(&[failed, ok2]).unwrap_err();
+        assert!(e.contains("1 of 2 fixture(s)"), "{e}");
+    }
+
+    #[test]
+    fn json_report_carries_failed_outcome() {
+        let findings_failed = FixtureScore {
+            name: "flaky".into(),
+            true_pos: 1, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            failed: Some("findings failed after 3 attempts: truncated".into()),
+            failed_pass: Some("findings"),
+        };
+        let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, failed: None, failed_pass: None };
+        let out = render_json_report(&[findings_failed, ok], "3", "m", 1.0, 1.0);
+        let fx = out["fixtures"].as_array().unwrap();
+        assert_eq!(fx[0]["failed"], "findings failed after 3 attempts: truncated");
+        assert_eq!(fx[0]["failed_pass"], "findings");
+        assert!(fx[0]["findings"].is_null());
+        assert!(fx[1]["failed"].is_null(), "clean fixtures report null, not absent-by-accident");
+        assert_eq!(out["corpus_version"], "3");
+    }
+
+    /// A broken corpus must fail fast — before load_settings/AiBackend, so
+    /// this test needs no AI configuration at all (issue #226 criterion 3).
+    #[test]
+    fn eval_fails_fast_on_invalid_labels_before_any_ai() {
+        let dir = std::env::temp_dir().join(format!("marrow-eval-failfast-{}", std::process::id()));
+        let fixture = dir.join("fixtures/broken");
+        fs::create_dir_all(&fixture).unwrap();
+        fs::write(dir.join("VERSION"), "3\n").unwrap();
+        fs::write(fixture.join("pr.json"), r#"{ "title": "t", "body": "b", "files": [{ "path": "a.rs", "diff": "" }] }"#).unwrap();
+        // a.rs labeled in BOTH lists → validate_labels must reject.
+        fs::write(fixture.join("labels.json"), r#"{ "relevant": ["a.rs"], "not_relevant": ["a.rs"] }"#).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let err = rt.block_on(eval(&dir, false)).unwrap_err();
+        assert!(err.contains("broken"), "error should name the fixture: {err}");
+        assert!(err.contains("exactly one"), "{err}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
