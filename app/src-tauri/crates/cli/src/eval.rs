@@ -796,6 +796,24 @@ mod tests {
             "planted-bug-rs lost its minor naming-nit region"
         );
         assert!(!planted.should_not_flag.is_empty(), "planted-bug-rs lost its should_not_flag region");
+
+        // The coverage yardstick must stay in place too: coverage-upload-ts
+        // labels all three statuses and its hallucination bait must remain
+        // baited — mentioned in the body, absent from the diff.
+        let covdir = corpus.join("fixtures/coverage-upload-ts");
+        let cov_labels: FixtureLabels = read_json(&covdir.join("labels.json")).unwrap();
+        for status in ["covered", "partial", "uncovered"] {
+            assert!(
+                cov_labels.expected_coverage.iter().any(|e| e.status == status),
+                "coverage-upload-ts lost its {status} expectation"
+            );
+        }
+        let cov_pr: FixturePr = read_json(&covdir.join("pr.json")).unwrap();
+        assert!(cov_pr.body.contains("tests/upload.e2e.ts"), "hallucination bait gone from the body");
+        assert!(
+            !cov_pr.files.iter().any(|f| f.path == "tests/upload.e2e.ts"),
+            "the bait path must NOT exist in the diff or it stops being bait"
+        );
     }
 
     #[test]
@@ -863,7 +881,7 @@ mod tests {
             source_issues: vec![],
         };
         let expected = vec![
-            exp("up to 3 times", "covered"),      // match
+            exp("UP TO 3 TIMES", "covered"),      // match — needle case must not matter
             exp("toast", "partial"),               // mismatch: got uncovered
             exp("parallel batches", "uncovered"),  // never extracted
         ];
@@ -914,6 +932,14 @@ mod tests {
             expected_coverage: vec![exp("  ", "covered")],
         };
         assert!(validate_labels(&pr, &empty_needle, "f").is_err());
+        let valid = FixtureLabels {
+            relevant: vec!["a.rs".into()],
+            not_relevant: vec![],
+            expected_findings: vec![],
+            should_not_flag: vec![],
+            expected_coverage: vec![exp("retries", "covered"), exp("toast", "untestable")],
+        };
+        assert!(validate_labels(&pr, &valid, "f").is_ok());
     }
 
     #[test]
@@ -943,6 +969,18 @@ mod tests {
         assert!(!report.contains("flaky-findings           tp=1 fp=0 fn=0  FAILED\n"), "findings failure must not read as a whole-fixture FAILED:\n{report}");
         assert!(report.contains("FAILED (classification)"), "{report}");
         assert!(report.contains("⚠ 2 of 3 fixture(s) had a failed pass"), "{report}");
+        // A coverage-pass failure gets the same pass-specific treatment.
+        let coverage_failed = FixtureScore {
+            name: "flaky-coverage".into(),
+            true_pos: 1, false_pos: 0, false_neg: 0,
+            mismatches: vec![],
+            findings: None,
+            coverage: None,
+            failed: Some("coverage failed after 3 attempts: truncated".into()),
+            failed_pass: Some("coverage"),
+        };
+        let r2 = render_text_report(&[coverage_failed], "4", 1.0, 1.0);
+        assert!(r2.contains("clean · coverage FAILED"), "{r2}");
         assert!(report.contains("numbers below cover completed passes only"), "{report}");
         // No failures → no warning line.
         let ok = FixtureScore { name: "ok".into(), true_pos: 1, false_pos: 0, false_neg: 0, mismatches: vec![], findings: None, coverage: None, failed: None, failed_pass: None };
