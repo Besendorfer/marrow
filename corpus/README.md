@@ -28,9 +28,11 @@ shipped on faith.
 
 - Labels encode the CLASSIFICATION_PROMPT's *intent*, decided by a human at
   fixture-creation time — they are the spec, not a model's past output.
-- Provenance: note in the fixture's `pr.json` `body` (or a comment fixture
-  README) what real case it models; synthetic content is fine, secrets and
-  private code are not.
+- Provenance: note what real case a fixture models in a fixture-local
+  README. For fixtures carrying findings labels it must NOT go in
+  `pr.json`'s `body` — the body is fed to the model verbatim, so
+  describing the planted finding there hands the review its answer.
+  Synthetic content is fine; secrets and private code are not.
 
 ## Running
 

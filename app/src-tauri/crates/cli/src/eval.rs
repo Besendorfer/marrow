@@ -324,6 +324,15 @@ fn validate_labels(pr: &FixturePr, labels: &FixtureLabels, name: &str) -> Result
                 r.importance, r.path
             ));
         }
+        // The highlights pass only ever sees label-RELEVANT diffs, so a
+        // findings region on any other path is silently unwinnable (always
+        // MISSED) or inert (never flaggable) — it measures nothing.
+        if !labels.relevant.contains(&r.path) {
+            return Err(format!(
+                "{name}: findings region on {} which is not label-relevant — it could never be scored",
+                r.path
+            ));
+        }
     }
     Ok(())
 }
@@ -356,6 +365,14 @@ mod tests {
             should_not_flag: vec![],
         };
         assert!(validate_labels(&pr, &typo, "f").is_err());
+        // A findings region on a non-relevant path could never be scored.
+        let unwinnable = FixtureLabels {
+            relevant: vec!["a.rs".into()],
+            not_relevant: vec!["b.rs".into()],
+            expected_findings: vec![region("b.rs", 1, 2, "important")],
+            should_not_flag: vec![],
+        };
+        assert!(validate_labels(&pr, &unwinnable, "f").is_err());
     }
 
     #[test]
@@ -474,6 +491,10 @@ mod tests {
                 .iter()
                 .any(|r| r.path == "src/auth/refresh.rs" && r.importance == "important"),
             "planted-bug-rs lost its planted important finding"
+        );
+        assert!(
+            planted.expected_findings.iter().any(|r| r.importance == "minor"),
+            "planted-bug-rs lost its minor naming-nit region"
         );
         assert!(!planted.should_not_flag.is_empty(), "planted-bug-rs lost its should_not_flag region");
     }
