@@ -111,7 +111,9 @@ more surfaces.
 - [ ] Include malformed provider responses, giant PRs, and adversarial
       cases. (Partial via #219/PR #220: five recorded malformed-response
       shapes pinned as offline tests, incl. the truncated-mid-array response
-      captured live; giant-PR and adversarial fixtures remain.)
+      captured live. #223/PR #224 adds the adversarial prompt-injection
+      fixture plus subtle-bug and rename-noise bait — corpus v3, baseline
+      important 4/4, low-value 0; giant-PR fixtures remain.)
 - [ ] Compare prompts, models, and providers against the same corpus.
 - [ ] Report quality regressions in pull requests.
 - [ ] Add mocked HTTP tests for providers and GitHub.
