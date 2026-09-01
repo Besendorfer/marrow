@@ -1,0 +1,33 @@
+{
+  "relevant": ["svc/loaders.py", "svc/handlers.py", "svc/jobs.py"],
+  "not_relevant": [],
+  "expected_findings": [
+    {
+      "path": "svc/jobs.py",
+      "start_line": 14,
+      "end_line": 17,
+      "importance": "important",
+      "note": "The sweep replaced fetch_user_cached with load_user (and deleted the comment explaining the cache), so nightly_digest now hits the DB once per subscriber. Not a pure rename — a behavior change the 'no behavior change' PR must not slip through."
+    }
+  ],
+  "should_not_flag": [
+    {
+      "path": "svc/loaders.py",
+      "start_line": 8,
+      "end_line": 13,
+      "note": "The definition rename IS the PR's stated purpose."
+    },
+    {
+      "path": "svc/handlers.py",
+      "start_line": 22,
+      "end_line": 25,
+      "note": "Pure mechanical call-site rename — the stated purpose."
+    },
+    {
+      "path": "svc/handlers.py",
+      "start_line": 40,
+      "end_line": 43,
+      "note": "Pure mechanical call-site rename — the stated purpose."
+    }
+  ]
+}

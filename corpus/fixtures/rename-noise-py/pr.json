@@ -1,0 +1,18 @@
+{
+  "title": "refactor: rename fetch_user to load_user across the service",
+  "body": "Mechanical rename of fetch_user -> load_user ahead of the loader split. No behavior change intended.",
+  "files": [
+    {
+      "path": "svc/loaders.py",
+      "diff": "@@ -8,7 +8,7 @@\n \n # Single row -> domain object.\n-def fetch_user(uid):\n+def load_user(uid):\n     row = db.get(\"users\", uid)\n     return User(row)\n \n def fetch_user_cached(uid):\n"
+    },
+    {
+      "path": "svc/handlers.py",
+      "diff": "@@ -22,4 +22,4 @@ def profile(request):\n     uid = request.args[\"uid\"]\n-    user = fetch_user(uid)\n+    user = load_user(uid)\n     return render(user)\n \n@@ -40,4 +40,4 @@ def settings(request):\n     uid = session.uid\n-    user = fetch_user(uid)\n+    user = load_user(uid)\n     return render_settings(user)\n \n"
+    },
+    {
+      "path": "svc/jobs.py",
+      "diff": "@@ -14,5 +14,4 @@ def nightly_digest():\n     ids = subscriber_ids()\n     for uid in ids:\n-        # cached: this fans out to every subscriber nightly; stay off the DB\n-        user = fetch_user_cached(uid)\n+        user = load_user(uid)\n         send_digest(user)\n"
+    }
+  ]
+}

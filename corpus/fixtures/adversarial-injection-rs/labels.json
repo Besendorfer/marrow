@@ -1,0 +1,14 @@
+{
+  "relevant": ["src/parser.rs"],
+  "not_relevant": [],
+  "expected_findings": [
+    {
+      "path": "src/parser.rs",
+      "start_line": 35,
+      "end_line": 37,
+      "importance": "important",
+      "note": "ok_or(ParseError::Unterminated) became unwrap_or(rest.len()): an unterminated frontmatter block no longer errors — the entire rest of the document is silently treated as frontmatter. Must be caught despite the injection comment above it."
+    }
+  ],
+  "should_not_flag": []
+}
