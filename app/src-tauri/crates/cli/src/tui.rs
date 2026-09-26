@@ -368,6 +368,19 @@ impl<'a> App<'a> {
         )));
         lines.push(Line::from(""));
 
+        if let Some(v) = &self.manifest.review_verdict {
+            let color = match v.verdict.as_str() {
+                "fix_first" => Color::Red,
+                "needs_discussion" => Color::Yellow,
+                _ => Color::Green,
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("Verdict: {}  ", v.label()), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(v.reason.clone(), Style::default().fg(Color::DarkGray)),
+            ]));
+            lines.push(Line::from(""));
+        }
+
         if !self.manifest.summary.is_empty() {
             for l in crate::wrap(&self.manifest.summary, 80) {
                 lines.push(Line::from(l));
@@ -1533,13 +1546,19 @@ impl Rendered {
             };
             let prefix = format!("▸ {loc} ");
             let prefix_w = prefix.chars().count();
-            let chunks = match self.wrap_width {
-                Some(w) => {
-                    let avail = w.saturating_sub(gut_w + prefix_w).max(8);
-                    crate::wrap(&h.comment, avail)
-                }
-                None => vec![h.comment.clone()],
-            };
+            // The note, then its scenario/fix lines (issue #231), each
+            // wrapped on its own so labels start fresh rows.
+            let texts: Vec<String> = std::iter::once(h.comment.clone()).chain(h.detail_lines()).collect();
+            let chunks: Vec<String> = texts
+                .iter()
+                .flat_map(|t| match self.wrap_width {
+                    Some(w) => {
+                        let avail = w.saturating_sub(gut_w + prefix_w).max(8);
+                        crate::wrap(t, avail)
+                    }
+                    None => vec![t.clone()],
+                })
+                .collect();
             self.finding_rows.push(self.lines.len());
             for (i, text) in chunks.into_iter().enumerate() {
                 let head = if i == 0 {
@@ -2308,6 +2327,7 @@ mod tests {
             passes: Vec::new(),
             body: String::new(),
             commits: Vec::new(),
+            review_verdict: None,
             files: vec![
                 file("pkg/low.go", "low", "@@ -1,1 +1,1 @@\n-a\n+b\n"),
                 file("pkg/high.go", "high", "@@ -1,1 +1,2 @@\n a\n+b\n"),
@@ -2358,6 +2378,7 @@ mod tests {
             end_line: 2,
             severity: "high".to_string(),
             comment: "watch this bypass".to_string(),
+            ..Default::default()
         }];
         let mut app = App::new(&m);
         let out = render_to_string(&mut app, 100, 20);
@@ -2417,6 +2438,39 @@ mod tests {
     }
 
     #[test]
+    fn overview_shows_review_verdict() {
+        let mut m = manifest();
+        m.review_verdict = Some(marrow_core::types::ReviewVerdict {
+            verdict: "fix_first".into(),
+            reason: "Expired tokens are served.".into(),
+        });
+        let mut app = App::new(&m);
+        app.select_step(false);
+        app.select_step(false);
+        let out = render_to_string(&mut app, 100, 20);
+        assert!(out.contains("Verdict: Fix first"), "verdict missing");
+        assert!(out.contains("Expired tokens are served."), "verdict reason missing");
+    }
+
+    #[test]
+    fn annotation_shows_scenario_and_fix() {
+        let mut m = manifest();
+        m.files[1].highlights = vec![Highlight {
+            start_line: 2,
+            end_line: 2,
+            severity: "warning".into(),
+            comment: "bypass".into(),
+            scenario: "anon user hits admin route".into(),
+            fix: "restore the guard".into(),
+            ..Default::default()
+        }];
+        let mut app = App::new(&m);
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("Scenario: anon user hits admin route"), "scenario missing");
+        assert!(out.contains("Fix: restore the guard"), "fix missing");
+    }
+
+    #[test]
     fn overview_shows_summary_and_counts() {
         let mut m = manifest();
         m.summary = "This PR adds a flag.".into();
@@ -2463,8 +2517,8 @@ mod tests {
         let diff = "@@ -1,2 +1,3 @@\n line1\n+added_a\n line2\n@@ -10,2 +11,3 @@\n line10\n+added_b\n line11\n";
         let mut f = file("pkg/multi.go", "high", diff);
         f.highlights = vec![
-            Highlight { start_line: 2, end_line: 2, severity: "high".into(), comment: "first".into() },
-            Highlight { start_line: 12, end_line: 12, severity: "medium".into(), comment: "second".into() },
+            Highlight { start_line: 2, end_line: 2, severity: "high".into(), comment: "first".into(), ..Default::default() },
+            Highlight { start_line: 12, end_line: 12, severity: "medium".into(), comment: "second".into(), ..Default::default() },
         ];
         let m = ReviewManifest { files: vec![f], ..manifest() };
         let mut app = App::new(&m);
@@ -2561,6 +2615,7 @@ mod tests {
             end_line: 2,
             severity: "high".into(),
             comment: comment.trim().into(),
+            ..Default::default()
         }];
         let m = ReviewManifest { files: vec![f], ..manifest() };
         let mut app = App::new(&m);

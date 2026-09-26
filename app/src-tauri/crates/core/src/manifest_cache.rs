@@ -185,6 +185,7 @@ mod tests {
             truncated_passes: Vec::new(),
             failed_passes: Vec::new(),
             analysis_fingerprint: None,
+            review_verdict: None,
             files: Vec::new(),
         }
     }

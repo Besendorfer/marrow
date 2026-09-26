@@ -2,7 +2,7 @@ import { Fragment, createContext, forwardRef, memo, useContext, useEffect, useIm
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import type { FileDiff, DiffViewMode, Highlight, ReactionGroup, ReviewThread, ReviewComment, SearchMatch, NoteResolution, CheckAnnotation } from "../types";
-import { timeAgo, highlightKey } from "../utils";
+import { timeAgo, highlightKey, highlightCommentBody } from "../utils";
 import { RichText } from "./RichText";
 
 const extToLang: Record<string, string> = {
@@ -877,6 +877,14 @@ const severityLabel: Record<string, string> = {
 // threading a prop through every hunk-rendering layer.
 const HighlightDismissContext = createContext<{ resolve: (h: Highlight, resolution: NoteResolution | null) => void } | null>(null);
 
+/** Quiet category tag on a note (issue #231); observations get none. */
+const categoryLabel: Partial<Record<string, string>> = {
+  bug: "Bug",
+  behavior: "Behavior change",
+  test_gap: "Missing test",
+  simplification: "Simplify",
+};
+
 function HighlightMarker({ highlight, isNew, onPostAsComment }: { highlight: Highlight; isNew?: boolean; onPostAsComment?: (h: Highlight) => void }) {
   const ctx = useContext(HighlightDismissContext);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -906,6 +914,9 @@ function HighlightMarker({ highlight, isNew, onPostAsComment }: { highlight: Hig
         {severityLabel[highlight.severity] || "Info"}
       </span>
       <span className="highlight-lines">{formatLineRange(highlight.start_line, highlight.end_line)}</span>
+      {highlight.category && categoryLabel[highlight.category] && (
+        <span className="highlight-category">{categoryLabel[highlight.category]}</span>
+      )}
       <span className="highlight-comment">{highlight.comment}</span>
       {onPostAsComment && (
         <button
@@ -975,6 +986,16 @@ function HighlightMarker({ highlight, isNew, onPostAsComment }: { highlight: Hig
         >
           ×
         </button>
+      )}
+      {(highlight.scenario || highlight.fix) && (
+        <div className="highlight-detail">
+          {highlight.scenario && (
+            <div><span className="highlight-detail-label">Scenario</span>{highlight.scenario}</div>
+          )}
+          {highlight.fix && (
+            <div><span className="highlight-detail-label">Fix</span>{highlight.fix}</div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1769,9 +1790,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 
   function handlePostHighlightAsComment(h: Highlight) {
     if (!onCreateComment) return;
-    // Just the note text: no severity tag, the posted comment should read as
-    // the reviewer's own words.
-    openComposer(h.start_line, h.end_line, "RIGHT", h.comment);
+    openComposer(h.start_line, h.end_line, "RIGHT", highlightCommentBody(h));
   }
 
   useEffect(() => {

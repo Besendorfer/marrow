@@ -21,12 +21,22 @@ pub struct FetchProgress {
     pub files_total: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Highlight {
     pub start_line: u64,
     pub end_line: u64,
     pub severity: String,
     pub comment: String,
+    /// Finding kind (issue #231): bug | behavior | test_gap | simplification |
+    /// observation. Empty on manifests cached before the field existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
+    /// Concrete failure scenario — how the defect bites. May be empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scenario: String,
+    /// The fix in a line or two. May be empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fix: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -230,7 +240,47 @@ pub struct ReviewManifest {
     /// signals above summarize. Empty on caches predating it.
     #[serde(default)]
     pub passes: Vec<PassStatus>,
+    /// The review's one-line verdict (issue #231). `None` when the highlights
+    /// pass returned no usable verdict, or on caches predating it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_verdict: Option<ReviewVerdict>,
     pub files: Vec<FileDiff>,
+}
+
+impl Highlight {
+    /// "Scenario: …" / "Fix: …" lines for text frontends (issue #231);
+    /// empty fields contribute nothing.
+    pub fn detail_lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.scenario.trim().is_empty() {
+            out.push(format!("Scenario: {}", self.scenario.trim()));
+        }
+        if !self.fix.trim().is_empty() {
+            out.push(format!("Fix: {}", self.fix.trim()));
+        }
+        out
+    }
+}
+
+impl ReviewVerdict {
+    /// Human label for the verdict.
+    pub fn label(&self) -> &str {
+        match self.verdict.as_str() {
+            "fix_first" => "Fix first",
+            "ship" => "Ship",
+            "needs_discussion" => "Needs discussion",
+            other => other,
+        }
+    }
+}
+
+/// PR-level verdict from the highlights pass (issue #231).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ReviewVerdict {
+    /// "fix_first" | "ship" | "needs_discussion"
+    pub verdict: String,
+    #[serde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -326,7 +376,7 @@ pub struct FileClassification {
     pub reason: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct HighlightResult {
     pub path: String,
     pub start_line: u64,
@@ -335,6 +385,12 @@ pub struct HighlightResult {
     pub severity: String,
     #[serde(default)]
     pub comment: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub scenario: String,
+    #[serde(default)]
+    pub fix: String,
 }
 
 fn default_info() -> String {

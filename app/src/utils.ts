@@ -1,4 +1,4 @@
-import type { CheckRunInfo, PrChecksStatus } from "./types";
+import type { CheckRunInfo, Highlight, PrChecksStatus } from "./types";
 
 export function getFileName(path: string): string {
   return path.split("/").pop() || path;
@@ -91,4 +91,14 @@ export function timeAgo(dateStr: string, short = false): string {
   if (days < 30) return `${days}d${suffix}`;
   const months = Math.floor(days / 30);
   return `${months}mo${suffix}`;
+}
+
+/** Draft body for posting an AI note as a review comment (issue #231): the
+ * note, then its scenario and fix — no severity tag, so it reads as the
+ * reviewer's own words. */
+export function highlightCommentBody(h: Highlight): string {
+  const parts = [h.comment];
+  if (h.scenario) parts.push(h.scenario);
+  if (h.fix) parts.push(`Suggested fix: ${h.fix}`);
+  return parts.join("\n\n");
 }
