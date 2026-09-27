@@ -142,6 +142,10 @@ pub struct AgentRun {
     pub final_segment: String,
     /// Tool calls the model attempted (valid or not).
     pub tool_calls: usize,
+    /// The conversation as the model last saw it — every tool call and
+    /// result, but NOT `final_segment` — so a caller can continue it (the
+    /// review's repair turn).
+    pub turns: Vec<ChatTurn>,
 }
 
 /// The tool-use loop shared by chat and the review pass (issue #232):
@@ -266,7 +270,7 @@ pub async fn run_agent(
     if transcript.trim().is_empty() {
         Err("AI returned an empty response".to_string())
     } else {
-        Ok(AgentRun { transcript, final_segment, tool_calls: calls_used })
+        Ok(AgentRun { transcript, final_segment, tool_calls: calls_used, turns })
     }
 }
 

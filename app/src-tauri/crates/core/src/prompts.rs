@@ -137,6 +137,11 @@ Usage rules:
 /// review prompt rides in the system slot.
 pub const REVIEW_KICKOFF: &str = "Review this pull request now. Investigate with tools only where the diff can't settle a question, then give your final answer as the JSON object.";
 
+/// Sent once, continuing the same conversation, when the agentic review's
+/// final message isn't a usable review (issue #232) — keeps everything the
+/// tools found instead of discarding it for a single-shot fallback.
+pub const REVIEW_REPAIR: &str = "Your last message was not a usable final answer. Using everything you've already read, reply now with ONLY the JSON object described in the instructions — no tool block, no prose.";
+
 pub const SUMMARY_PROMPT: &str = r#"You are a code review assistant. Given a PR title and a list of relevant files with their classifications and AI-generated reasons, write a compact executive summary for a code reviewer.
 
 Reviewers skim this in ten seconds. The file list, change groups, and line-level notes shown alongside it carry the detail — do not repeat them.

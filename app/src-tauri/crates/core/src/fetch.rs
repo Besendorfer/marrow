@@ -16,7 +16,7 @@ use crate::types::{
 use crate::ai::{ChatRole, ChatTurn, StreamUpdate};
 use crate::chat_agent::run_agent;
 use crate::local_repo;
-use crate::prompts::{REVIEW_KICKOFF, REVIEW_MAX_TOOL_CALLS};
+use crate::prompts::{REVIEW_KICKOFF, REVIEW_MAX_TOOL_CALLS, REVIEW_REPAIR};
 use crate::repo_tools::{ContextRead, RepoToolTarget, ToolBackend, ToolExecutor, ToolScope};
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::future::Future;
@@ -783,16 +783,22 @@ pub struct ReviewPassOutcome {
     /// True when the tool loop failed or returned no usable answer and the
     /// single-shot prompt ran instead — a real review, but without context.
     pub degraded: bool,
+    /// Why it degraded (None when it didn't) — diagnostics for the eval.
+    pub degrade_reason: Option<String>,
+    /// True when the loop's final message was unusable but one repair turn
+    /// in the same conversation produced a usable review (not degraded).
+    pub repaired: bool,
     /// What the agent read (empty when degraded — the fallback used none).
     pub reads: Vec<ContextRead>,
     /// Tool calls the agent attempted.
     pub tool_calls: usize,
 }
 
-/// Run the review: the agentic prompt through the shared tool loop, falling
-/// back to the single-shot prompt if the loop errors or its final message
-/// isn't a usable review. Public for the corpus eval, so the eval measures
-/// exactly the pipeline the app runs.
+/// Run the review: the agentic prompt through the shared tool loop. If the
+/// loop's final message isn't a usable review, ask once more IN THE SAME
+/// conversation (keeping what the tools found); only if the loop errors or
+/// the repair also fails does the single-shot prompt run instead. Public for
+/// the corpus eval, so the eval measures exactly the pipeline the app runs.
 pub async fn run_review_pass(
     ai: &AiBackend,
     executor: &ToolExecutor<'_>,
@@ -801,19 +807,47 @@ pub async fn run_review_pass(
 ) -> ReviewPassOutcome {
     let turns = vec![ChatTurn { role: ChatRole::User, content: REVIEW_KICKOFF.to_string() }];
     let mut ignore = |_: StreamUpdate| {};
-    match run_agent(ai, executor, agentic_prompt, turns, REVIEW_MAX_TOOL_CALLS, &mut ignore).await {
-        Ok(run) if parse_review_response(&run.final_segment).is_ok() => ReviewPassOutcome {
-            raw: Ok(run.final_segment),
-            degraded: false,
-            reads: executor.reads(),
-            tool_calls: run.tool_calls,
-        },
-        other => ReviewPassOutcome {
-            raw: ai.invoke(single_shot_prompt).await,
-            degraded: true,
-            reads: Vec::new(),
-            tool_calls: other.map(|r| r.tool_calls).unwrap_or(0),
-        },
+    let (reason, tool_calls) = match run_agent(ai, executor, agentic_prompt, turns, REVIEW_MAX_TOOL_CALLS, &mut ignore).await {
+        Ok(run) if parse_review_response(&run.final_segment).is_ok() => {
+            return ReviewPassOutcome {
+                raw: Ok(run.final_segment),
+                degraded: false,
+                degrade_reason: None,
+                repaired: false,
+                reads: executor.reads(),
+                tool_calls: run.tool_calls,
+            };
+        }
+        Ok(run) => {
+            let mut turns = run.turns;
+            if !run.final_segment.trim().is_empty() {
+                turns.push(ChatTurn { role: ChatRole::Assistant, content: run.final_segment.trim().to_string() });
+            }
+            turns.push(ChatTurn { role: ChatRole::User, content: REVIEW_REPAIR.to_string() });
+            match ai.invoke_chat_stream(agentic_prompt, &turns, &mut ignore).await {
+                Ok(text) if parse_review_response(&text).is_ok() => {
+                    return ReviewPassOutcome {
+                        raw: Ok(text),
+                        degraded: false,
+                        degrade_reason: None,
+                        repaired: true,
+                        reads: executor.reads(),
+                        tool_calls: run.tool_calls,
+                    };
+                }
+                Ok(_) => ("final answer unusable, repair turn unusable too".to_string(), run.tool_calls),
+                Err(e) => (format!("final answer unusable, repair turn failed: {e}"), run.tool_calls),
+            }
+        }
+        Err(e) => (format!("tool loop failed: {e}"), 0),
+    };
+    ReviewPassOutcome {
+        raw: ai.invoke(single_shot_prompt).await,
+        degraded: true,
+        degrade_reason: Some(reason),
+        repaired: false,
+        reads: Vec::new(),
+        tool_calls,
     }
 }
 
@@ -1967,6 +2001,108 @@ mod tests {
         assert!(out.degraded, "a failed loop is recorded as degraded, not hidden");
         assert!(out.reads.is_empty());
         assert!(out.raw.is_err(), "the fallback's own failure still surfaces to the strict parser");
+    }
+
+    /// A scripted OpenAI-compatible endpoint on localhost: each connection
+    /// gets the next reply — as SSE when the request asked to stream, else as
+    /// a chat-completion JSON. Returns the base URL and the request bodies.
+    fn mock_ai(replies: Vec<&'static str>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let body = loop {
+                    let n = sock.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break String::new();
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(h) = text.find("\r\n\r\n") {
+                        let len = text[..h]
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .unwrap_or(0);
+                        if buf.len() >= h + 4 + len {
+                            break text[h + 4..].to_string();
+                        }
+                    }
+                };
+                let streaming = body.contains("\"stream\":true");
+                seen.lock().unwrap().push(body);
+                let resp = if streaming {
+                    let delta = serde_json::json!({ "choices": [{ "delta": { "content": reply } }] });
+                    let payload = format!("data: {delta}\n\ndata: [DONE]\n\n");
+                    format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{payload}")
+                } else {
+                    let json = serde_json::json!({ "choices": [{ "message": { "content": reply } }] }).to_string();
+                    format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}", json.len())
+                };
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        (url, bodies)
+    }
+
+    fn snapshot_executor(snap: &crate::repo_tools::SnapshotRepo) -> crate::repo_tools::ToolExecutor<'_> {
+        use crate::repo_tools::{RepoToolTarget, ToolBackend, ToolExecutor, ToolScope};
+        ToolExecutor::new(
+            ToolBackend::Snapshot(snap),
+            RepoToolTarget { owner: "o".into(), repo: "r".into(), head_sha: "h".into(), base_sha: "b".into() },
+            ToolScope::REVIEW,
+        )
+    }
+
+    #[tokio::test]
+    async fn unusable_final_answer_is_repaired_in_the_same_conversation() {
+        use super::run_review_pass;
+        let mut snap = crate::repo_tools::SnapshotRepo { pr_repo: "r".into(), ..Default::default() };
+        snap.files.entry("r".into()).or_default().entry("head".into()).or_default().insert("a.rs".into(), "fn a() {}".into());
+        let (url, bodies) = mock_ai(vec![
+            "Checking the caller.\n```marrow-tool\n{\"tool\":\"read_file\",\"path\":\"a.rs\"}\n```\n",
+            "I think this looks fine overall.",
+            r#"{"verdict":"ship","verdict_reason":"clean","findings":[]}"#,
+        ]);
+        let ai = crate::ai::AiBackend::OpenAiCompatible { base_url: url, api_key: "k".into(), model: "m".into() };
+        let ex = snapshot_executor(&snap);
+        let out = run_review_pass(&ai, &ex, "agentic", "single").await;
+        assert!(!out.degraded, "{:?}", out.degrade_reason);
+        assert!(out.repaired);
+        assert_eq!(out.tool_calls, 1);
+        assert_eq!(out.reads.len(), 1, "the tool read survives the repair");
+        assert!(out.raw.unwrap().contains("\"ship\""));
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 3, "no single-shot call was made");
+        // The repair continued the conversation: it carries the tool result
+        // and the unusable answer, then the repair request.
+        assert!(bodies[2].contains("marrow-tool result") && bodies[2].contains("looks fine overall"));
+        assert!(bodies[2].contains("not a usable final answer"));
+    }
+
+    #[tokio::test]
+    async fn failed_repair_degrades_to_single_shot_with_a_reason() {
+        use super::run_review_pass;
+        let snap = crate::repo_tools::SnapshotRepo::default();
+        let (url, bodies) = mock_ai(vec![
+            "no json here",
+            "still no json",
+            r#"[{"path":"a.rs","start_line":1,"end_line":1,"severity":"info","comment":"c"}]"#,
+        ]);
+        let ai = crate::ai::AiBackend::OpenAiCompatible { base_url: url, api_key: "k".into(), model: "m".into() };
+        let ex = snapshot_executor(&snap);
+        let out = run_review_pass(&ai, &ex, "agentic", "single").await;
+        assert!(out.degraded && !out.repaired);
+        assert!(out.degrade_reason.unwrap().contains("repair turn unusable"));
+        assert!(out.raw.unwrap().contains("a.rs"));
+        let bodies = bodies.lock().unwrap();
+        assert!(!bodies[2].contains("\"stream\":true"), "the fallback is the single-shot prompt");
+        assert!(bodies[2].contains("single"));
     }
 
     #[test]

@@ -247,19 +247,20 @@ impl<'a> ToolExecutor<'a> {
         }
     }
 
-    /// `org:<owner>` or `user:<owner>`, looked up once per executor.
-    async fn owner_qualifier(&self, gh: &GithubClient) -> String {
+    /// `org:<owner>` or `user:<owner>`, looked up once per executor. A
+    /// failed lookup is an error, not a guess: the wrong qualifier returns
+    /// zero hits, which the model would read as "no consumers exist". The
+    /// failure isn't cached, so a later call retries.
+    async fn owner_qualifier(&self, gh: &GithubClient) -> Result<String, String> {
         if let Some(q) = self.owner_qualifier.lock().unwrap().clone() {
-            return q;
+            return Ok(q);
         }
-        let kind = gh.get_owner_type(&self.target.owner).await.unwrap_or_else(|_| "User".to_string());
-        let q = if kind == "Organization" {
-            format!("org:{}", self.target.owner)
-        } else {
-            format!("user:{}", self.target.owner)
-        };
+        let kind = gh.get_owner_type(&self.target.owner).await.map_err(|e| {
+            format!("couldn't determine whether {} is an organization or a user ({e}) — retry, or search one repo by reading it directly", self.target.owner)
+        })?;
+        let q = owner_qualifier_for(&kind, &self.target.owner);
         *self.owner_qualifier.lock().unwrap() = Some(q.clone());
-        q
+        Ok(q)
     }
 
     /// Run one call. Never returns `Err` — failures become text the model
@@ -352,7 +353,7 @@ impl<'a> ToolExecutor<'a> {
                 }
                 _ => {
                     let gh = self.github().unwrap();
-                    let q = self.owner_qualifier(gh).await;
+                    let q = self.owner_qualifier(gh).await?;
                     let (hits, total) = gh.search_code_qualified(&query, &q).await?;
                     Ok(format_hits(&query, &format!("{}'s repos", self.target.owner), &hits, total, true))
                 }
@@ -426,6 +427,15 @@ impl<'a> ToolExecutor<'a> {
             out.push_str(&format!("... ({} more entries)\n", total - LIST_DIR_MAX_ENTRIES));
         }
         Ok(out)
+    }
+}
+
+/// The code-search qualifier for an owner of GitHub type `kind`.
+fn owner_qualifier_for(kind: &str, owner: &str) -> String {
+    if kind == "Organization" {
+        format!("org:{owner}")
+    } else {
+        format!("user:{owner}")
     }
 }
 
@@ -534,6 +544,12 @@ mod tests {
         // Chat never leaves the PR repo.
         assert!(resolve_repo(&t, ToolScope::CHAT, Some("web")).is_err());
         assert_eq!(resolve_repo(&t, ToolScope::CHAT, Some("api")).unwrap(), None);
+    }
+
+    #[test]
+    fn owner_qualifier_matches_the_owner_type() {
+        assert_eq!(owner_qualifier_for("Organization", "acme"), "org:acme");
+        assert_eq!(owner_qualifier_for("User", "tj"), "user:tj");
     }
 
     #[test]

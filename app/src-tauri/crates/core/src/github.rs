@@ -1154,7 +1154,10 @@ impl GithubClient {
         let url = format!("https://api.github.com/users/{}", urlencoding::encode(owner));
         let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
         let v: serde_json::Value = resp.json().await.map_err(|e| format!("Failed to parse owner: {e}"))?;
-        Ok(v.get("type").and_then(|t| t.as_str()).unwrap_or("User").to_string())
+        v.get("type")
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "GitHub returned no owner type".to_string())
     }
 
     pub async fn get_authenticated_user(&self) -> Result<String, String> {

@@ -171,6 +171,16 @@ where
     Err(format!("{what} failed after {PASS_ATTEMPTS} attempts: {last}"))
 }
 
+/// One agentic review attempt's stats (issue #232).
+#[derive(Default)]
+struct AgentStats {
+    tool_calls: usize,
+    degraded: bool,
+    degrade_reason: Option<String>,
+    repaired: bool,
+    reads: Vec<String>,
+}
+
 /// Owner every fixture's PR repo (and its sibling repos) lives under.
 const FIXTURE_OWNER: &str = "corpus";
 
@@ -336,7 +346,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
             );
             eprintln!("· {}: reviewing for findings…", score.name);
             // The last attempt's agent stats (tool calls, degraded, reads).
-            let stats: std::sync::Mutex<(usize, bool, Vec<String>)> = std::sync::Mutex::new((0, false, Vec::new()));
+            let stats: std::sync::Mutex<AgentStats> = std::sync::Mutex::new(AgentStats::default());
             let result = if single_shot {
                 retry_review_pass(&score.name, || ai.invoke(&hl_prompt)).await
             } else {
@@ -353,7 +363,13 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
                     );
                     let out = run_review_pass(&ai, &ex, &agentic_prompt, &hl_prompt).await;
                     let reads = out.reads.iter().map(|r| format!("{} {} {} {}", r.tool, r.repo, r.rev, r.path)).collect();
-                    *stats.lock().unwrap() = (out.tool_calls, out.degraded, reads);
+                    *stats.lock().unwrap() = AgentStats {
+                        tool_calls: out.tool_calls,
+                        degraded: out.degraded,
+                        degrade_reason: out.degrade_reason.clone(),
+                        repaired: out.repaired,
+                        reads,
+                    };
                     out.raw
                 })
                 .await
@@ -363,10 +379,12 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
                     let validated = validate_highlights(parsed, &file_list);
                     let mut fs = score_findings(&validated, &labels);
                     score_verdict(&mut fs, verdict.as_ref(), labels.expected_verdict.as_deref());
-                    let (calls, degraded, reads) = stats.into_inner().unwrap();
-                    fs.tool_calls = calls;
-                    fs.degraded = degraded;
-                    fs.reads = reads;
+                    let st = stats.into_inner().unwrap();
+                    fs.tool_calls = st.tool_calls;
+                    fs.degraded = st.degraded;
+                    fs.degrade_reason = st.degrade_reason;
+                    fs.repaired = st.repaired;
+                    fs.reads = st.reads;
                     score.findings = Some(fs);
                 }
                 Err(e) => {
@@ -466,7 +484,8 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
                 "low_value": f.low_value, "extra": f.extra,
                 "substantive": f.substantive, "complete": f.complete,
                 "verdict": f.verdict, "verdict_match": f.verdict_match, "shapes": f.shapes,
-                "tool_calls": f.tool_calls, "degraded": f.degraded, "reads": f.reads,
+                "tool_calls": f.tool_calls, "degraded": f.degraded, "degrade_reason": f.degrade_reason,
+                "repaired": f.repaired, "reads": f.reads,
                 "detail": f.detail,
             })),
             "coverage": s.coverage.as_ref().map(|c| serde_json::json!({
@@ -529,8 +548,11 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
                 f.complete,
                 f.substantive,
                 f.tool_calls,
-                if f.degraded { " · DEGRADED (single-shot fallback)" } else { "" }
+                if f.degraded { " · DEGRADED (single-shot fallback)" } else if f.repaired { " · repaired" } else { "" }
             );
+            if let Some(r) = &f.degrade_reason {
+                let _ = writeln!(out, "    degraded: {r}");
+            }
             for d in &f.detail {
                 let _ = writeln!(out, "    {d}");
             }
@@ -604,6 +626,8 @@ struct FindingsScore {
     /// back to single-shot, and what it read ("tool repo rev path").
     tool_calls: usize,
     degraded: bool,
+    degrade_reason: Option<String>,
+    repaired: bool,
     reads: Vec<String>,
     detail: Vec<String>,
 }
