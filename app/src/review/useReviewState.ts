@@ -64,7 +64,6 @@ export function useReviewState() {
   // Per-tab set of action-block keys already auto-executed during the current
   // streaming turn, so a block that already ran isn't re-run on the next delta.
   const chatExecutedActionsRef = useRef<Record<string, Set<string>>>({});
-  const [checksDismissed, setChecksDismissed] = useState<Record<string, boolean>>({});
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
   const updateStatusRef = useRef(updateStatus.state);
   updateStatusRef.current = updateStatus.state;
@@ -250,8 +249,6 @@ export function useReviewState() {
   const quitTimerRef = useRef<number | null>(null);
   const checksMapRef = useRef(checksMap);
   checksMapRef.current = checksMap;
-  const checksDismissedRef = useRef(checksDismissed);
-  checksDismissedRef.current = checksDismissed;
 
   return {
     nextTabId,
@@ -311,8 +308,6 @@ export function useReviewState() {
     chatActionStatuses,
     setChatActionStatuses,
     chatExecutedActionsRef,
-    checksDismissed,
-    setChecksDismissed,
     updateStatus,
     setUpdateStatus,
     updateStatusRef,
@@ -361,7 +356,6 @@ export function useReviewState() {
     quitArmedRef,
     quitTimerRef,
     checksMapRef,
-    checksDismissedRef,
   };
 }
 

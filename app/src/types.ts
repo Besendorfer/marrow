@@ -378,6 +378,23 @@ export type ChatToolCall =
 
 export type NoteResolutionState = "fixed" | "intentional" | "noise";
 
+export type ReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+
+/** The Finish panel's unsent input (issue #238 phase 5). `verb` is absent
+ * until the reviewer picks one; `drafted` marks the AI draft as done. */
+export interface FinishDraft {
+  body?: string;
+  verb?: ReviewEvent;
+  drafted?: boolean;
+}
+
+/** A submitted review, for the Finish panel's done state. */
+export interface FinishDone {
+  event: ReviewEvent;
+  /** Batched comments that went out with it (counted before submitting). */
+  posted: number;
+}
+
 /** A "Looks fine" mark on a review finding (issue #238). Mirrors
  * `CheckedEntry` in checked_findings.rs. Holds only while `lines_hash` still
  * matches the finding's current code — see buildFindings (review/findings.ts). */
@@ -461,6 +478,10 @@ export interface Tab {
   inboxSelectionPath?: string | null;
   /** The Finish panel (issue #238 phase 5) is open on this tab. */
   finishOpen?: boolean;
+  /** Unsent Finish panel input, kept across tab switches. */
+  finishDraft?: FinishDraft | null;
+  /** Set once this tab's review was submitted from the Finish panel. */
+  finishDone?: FinishDone | null;
   /** "Looks fine" marks on findings (issue #238), keyed by finding key. */
   checkedFindings: Map<string, CheckedFindingEntry>;
   /** User-provided requirements text (issue #179 phase 2), saved locally and

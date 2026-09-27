@@ -119,6 +119,7 @@ export function useReviewController(): ReviewCtx {
     loadResolvedSpecs,
     loadCheckedFindings,
     openFinish,
+    closeFinish,
     loadLocalRequirements,
     loadChatHistory,
     handleChatSend,
@@ -188,7 +189,7 @@ export function useReviewController(): ReviewCtx {
       onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
-      onCloseOverlays: () => { setHelpOpen(false); setPaletteOpen(false); },
+      onCloseOverlays: () => { setHelpOpen(false); setPaletteOpen(false); if (activeTab?.finishOpen) closeFinish(); },
       // Not during first-run setup — the palette would open invisibly under
       // the welcome card and pop up when setup closes.
       onTogglePalette: () => { if (!welcomeOpen) setPaletteOpen((v) => !v); },

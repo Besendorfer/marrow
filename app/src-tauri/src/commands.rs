@@ -1,5 +1,4 @@
 use marrow_core::ai::{AiBackend, ChatRole, ChatTurn};
-use marrow_core::bedrock::{region_from_arn, BedrockClient};
 use marrow_core::chat::{build_chat_system, ChatContext};
 use marrow_core::chat_history::{self, StoredChat};
 use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};

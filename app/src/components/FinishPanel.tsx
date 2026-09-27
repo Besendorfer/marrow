@@ -4,9 +4,9 @@
 // done state that offers the next PR in your queue.
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import type { PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread, Tab } from "../types";
+import type { FinishDone, FinishDraft, PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread, Tab } from "../types";
 import { buildFindings, type Finding } from "../review/findings";
-import { ciStatus, filesReviewed, pendingComments, submitBlocker, type ReviewEvent } from "../review/finish";
+import { ciStatus, defaultVerb, filesReviewed, mergeDraft, pendingComments, submitBlocker, type ReviewEvent } from "../review/finish";
 
 const VERBS: { event: ReviewEvent; label: string; hint: string }[] = [
   { event: "APPROVE", label: "Approve", hint: "Ready to merge" },
@@ -27,6 +27,8 @@ export interface FinishPanelProps {
   checks: PrChecksStatus | null;
   viewerLogin: string | null;
   onClose: () => void;
+  onDraftChange: (patch: Partial<FinishDraft>) => void;
+  onDone: (done: FinishDone) => void;
   onDraftBody: () => Promise<string>;
   onSubmit: (event: ReviewEvent, body: string) => Promise<void>;
   onJumpToFinding: (f: Finding) => void;
@@ -67,32 +69,46 @@ export function FinishPanel(props: FinishPanelProps) {
   const files = filesReviewed(manifest, tab.viewedFiles);
   const ci = ciStatus(checks);
 
-  const [verb, setVerb] = useState<ReviewEvent>(isMerged ? "COMMENT" : openFix.length > 0 ? "REQUEST_CHANGES" : "APPROVE");
-  const [body, setBody] = useState("");
-  const [drafting, setDrafting] = useState(true);
+  // Body, chosen verdict, and done state live on the tab (Tab.finishDraft /
+  // finishDone), so switching tabs and back loses nothing.
+  const draft = tab.finishDraft ?? {};
+  const body = draft.body ?? "";
+  const verb = draft.verb ?? defaultVerb(isMerged, openFix.length);
+  const done = tab.finishDone ?? null;
+  const [drafting, setDrafting] = useState(!draft.drafted);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<ReviewEvent | null>(null);
   const [next, setNext] = useState<ReviewRequestItem | null | undefined>(undefined);
+  const bodyRef = useRef(body);
+  bodyRef.current = body;
 
-  // Draft a body from fresh threads when the panel opens; never overwrite
-  // anything the reviewer has already typed.
+  // Draft a body from fresh threads the first time the panel opens for this
+  // review — never again on a remount, and never over text you've typed.
   useEffect(() => {
+    panelRef.current?.focus();
+    if (draft.drafted) return;
     let live = true;
     props
       .onDraftBody()
       .then((text) => {
-        if (live) setBody((cur) => (cur.trim() ? cur : text));
+        if (live) props.onDraftChange({ body: mergeDraft(bodyRef.current, text), drafted: true });
       })
-      .catch(() => {})
+      .catch(() => {
+        if (live) props.onDraftChange({ drafted: true });
+      })
       .finally(() => {
         if (live) setDrafting(false);
       });
-    panelRef.current?.focus();
     return () => {
       live = false;
     };
   }, [tab.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // After a submit the form unmounts; keep focus in the panel so Esc closes it.
+  useEffect(() => {
+    if (done) panelRef.current?.focus();
+    if (done && next === undefined) props.onNextInQueue().then(setNext, () => setNext(null));
+  }, [done != null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const blocker = submitBlocker(verb, body, pending.length, isMerged);
 
@@ -100,10 +116,12 @@ export function FinishPanel(props: FinishPanelProps) {
     if (blocker || submitting) return;
     setSubmitting(true);
     setError(null);
+    // Counted now: submitting publishes them, and the refetch that follows
+    // would read zero.
+    const posted = pending.length;
     try {
       await props.onSubmit(verb, body.trim());
-      setDone(verb);
-      props.onNextInQueue().then(setNext, () => setNext(null));
+      props.onDone({ event: verb, posted });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -141,7 +159,7 @@ export function FinishPanel(props: FinishPanelProps) {
         <div className="finish-head">
           <div>
             <div className="finish-eyebrow">Finish review · #{manifest.pr_number}</div>
-            <h2 className="finish-title">{done ? DONE_LABEL[done] : openFix.length > 0 ? `${openFix.length} still to fix` : "Ready to wrap up"}</h2>
+            <h2 className="finish-title">{done ? DONE_LABEL[done.event] : openFix.length > 0 ? `${openFix.length} still to fix` : "Ready to wrap up"}</h2>
           </div>
           <button className="inbox-btn inbox-btn--ghost" onClick={props.onClose} aria-label="Close">
             Close <kbd>esc</kbd>
@@ -151,8 +169,8 @@ export function FinishPanel(props: FinishPanelProps) {
         {done ? (
           <div className="finish-done">
             <p>
-              {DONE_LABEL[done]} on {manifest.pr_title}.
-              {pending.length > 0 && ` ${pending.length} batched comment${pending.length === 1 ? "" : "s"} went out with it.`}
+              {DONE_LABEL[done.event]} on {manifest.pr_title}.
+              {done.posted > 0 && ` ${done.posted} batched comment${done.posted === 1 ? "" : "s"} went out with it.`}
             </p>
             {next === undefined ? (
               <p className="finish-muted">Looking for your next review…</p>
@@ -230,7 +248,7 @@ export function FinishPanel(props: FinishPanelProps) {
                       aria-checked={verb === v.event}
                       disabled={disabled}
                       className={`finish-verb${verb === v.event ? " selected" : ""}`}
-                      onClick={() => setVerb(v.event)}
+                      onClick={() => props.onDraftChange({ verb: v.event })}
                       title={disabled ? "This PR is merged" : undefined}
                     >
                       <b>{v.label}</b>
@@ -244,7 +262,7 @@ export function FinishPanel(props: FinishPanelProps) {
                 aria-label="Review body"
                 value={body}
                 placeholder={drafting ? "Drafting a summary from the open threads…" : "Leave a comment with your review"}
-                onChange={(e) => setBody(e.target.value)}
+                onChange={(e) => props.onDraftChange({ body: e.target.value })}
                 rows={5}
               />
               {error && <div className="finish-error" role="alert">Couldn't submit: {error}</div>}

@@ -141,6 +141,8 @@ function App() {
     inboxComment,
     openFinish,
     closeFinish,
+    setFinishDraft,
+    setFinishDone,
     draftReviewBody,
     nextInQueue,
   } = useReviewController();
@@ -410,6 +412,8 @@ function App() {
             checks={activeChecks ?? null}
             viewerLogin={viewerLogin}
             onClose={closeFinish}
+            onDraftChange={setFinishDraft}
+            onDone={setFinishDone}
             onDraftBody={draftReviewBody}
             onSubmit={handleSubmitReview}
             onJumpToFinding={(f) => {

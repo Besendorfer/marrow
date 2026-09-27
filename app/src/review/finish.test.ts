@@ -1,7 +1,8 @@
 // Finish panel rules (issue #238 phase 5). Run with `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { ciStatus, filesReviewed, pendingComments, submitBlocker } from "./finish";
-import type { FileDiff, PrChecksStatus, ReviewManifest, ReviewThread } from "../types";
+import { ciStatus, defaultVerb, filesReviewed, isNextCandidate, mergeDraft, pendingComments, submitBlocker } from "./finish";
+import { canonicalPrKey, ciChip } from "../utils";
+import type { FileDiff, PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread } from "../types";
 
 const thread = (id: string, comments: { body: string; pending?: boolean }[]) =>
   ({ id, path: "a.ts", line: 3, is_resolved: false, comments }) as unknown as ReviewThread;
@@ -63,5 +64,45 @@ describe("filesReviewed", () => {
       ] as FileDiff[],
     } as ReviewManifest;
     expect(filesReviewed(m, new Set(["a", "c"]))).toEqual({ reviewed: 1, total: 2 });
+  });
+});
+
+describe("mergeDraft", () => {
+  test("an AI draft never replaces typed text", () => {
+    expect(mergeDraft("", "AI text")).toBe("AI text");
+    expect(mergeDraft("   ", "AI text")).toBe("AI text");
+    expect(mergeDraft("my words", "AI text")).toBe("my words");
+  });
+});
+
+describe("defaultVerb", () => {
+  test("comment on merged PRs, request changes while defects are open, else approve", () => {
+    expect(defaultVerb(true, 3)).toBe("COMMENT");
+    expect(defaultVerb(false, 2)).toBe("REQUEST_CHANGES");
+    expect(defaultVerb(false, 0)).toBe("APPROVE");
+  });
+});
+
+describe("isNextCandidate", () => {
+  const item = (over: Partial<ReviewRequestItem> = {}) =>
+    ({ owner: "o", repo: "r", number: 7, draft: false, my_review_status: "pending", ...over }) as ReviewRequestItem;
+  test("only PRs still waiting on you, not drafts, not already open", () => {
+    const none = new Set<string | null>();
+    expect(isNextCandidate(item(), none)).toBe(true);
+    expect(isNextCandidate(item({ my_review_status: "dismissed" }), none)).toBe(true);
+    expect(isNextCandidate(item({ my_review_status: "approved" }), none)).toBe(false);
+    expect(isNextCandidate(item({ my_review_status: "commented" }), none)).toBe(false);
+    expect(isNextCandidate(item({ draft: true }), none)).toBe(false);
+    expect(isNextCandidate(item(), new Set([canonicalPrKey("https://github.com/o/r/pull/7")]))).toBe(false);
+  });
+});
+
+describe("ciChip (Overview)", () => {
+  const run = (conclusion: string | null, status = "COMPLETED") => ({ name: "b", status, conclusion, details_url: null });
+  test("no runs means no chip, even though core reports overall success", () => {
+    expect(ciChip({ overall_state: "success", check_runs: [] })).toBeNull();
+    expect(ciChip({ overall_state: "success", check_runs: [run("SUCCESS")] })?.label).toBe("CI passing");
+    expect(ciChip({ overall_state: "failure", check_runs: [run("FAILURE")] })?.label).toBe("1 CI check failing");
+    expect(ciChip({ overall_state: "pending", check_runs: [run(null, "IN_PROGRESS")] })?.label).toBe("CI running");
   });
 });

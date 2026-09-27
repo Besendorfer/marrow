@@ -12,6 +12,18 @@ export function getFileName(path: string): string {
  * show, never a "N ✗" pointing at an empty Checks lens. Single source of
  * truth reused by the overview CI chip, the header lens badge, and the
  * Checks lens (issue #175). */
+/** The Overview's CI chip, or null when no checks ran. Zero runs means no CI
+ * is configured — an absent signal, not a passing one (core defaults
+ * overall_state to "success" without a rollup). Same rule as the header lens
+ * badge and the digest's all-clear line. */
+export function ciChip(checks: PrChecksStatus): { dot: string; label: string } | null {
+  if (checks.check_runs.length === 0) return null;
+  const failing = countFailingChecks(checks);
+  if (checks.overall_state === "success") return { dot: "risk-dot--ok", label: "CI passing" };
+  if (failing > 0) return { dot: "risk-dot--critical", label: `${failing} CI ${failing === 1 ? "check" : "checks"} failing` };
+  return { dot: "risk-dot--medium", label: "CI running" };
+}
+
 export function isFailingCheck(check: CheckRunInfo): boolean {
   return (
     check.conclusion === "FAILURE" ||

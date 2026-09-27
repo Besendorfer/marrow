@@ -5,11 +5,12 @@
 // handlers the panel calls.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread } from "../types";
+import type { FinishDone, FinishDraft, PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread } from "../types";
 import { canonicalPrKey, isFailingCheck } from "../utils";
 import type { ReviewCtx } from "./ctx";
 
-export type ReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+export type { ReviewEvent } from "../types";
+import type { ReviewEvent } from "../types";
 
 /** Your comments waiting in GitHub's pending review — posted from the diff,
  * visible only to you until the review is submitted. Pending comments are by
@@ -46,6 +47,30 @@ export function ciStatus(checks: PrChecksStatus | null | undefined): { tone: "ok
   return { tone: "ok", text: "CI passing" };
 }
 
+/** An AI draft never replaces text the reviewer has already typed. */
+export function mergeDraft(current: string, drafted: string): string {
+  return current.trim() ? current : drafted;
+}
+
+/** The verdict preselected until the reviewer picks one: a comment on a merged
+ * PR, request changes while claimed defects are open, else approve. Derived
+ * every render, so it settles once threads load (a finding you commented on
+ * stops counting as open). */
+export function defaultVerb(isMerged: boolean, openFixCount: number): ReviewEvent {
+  if (isMerged) return "COMMENT";
+  return openFixCount > 0 ? "REQUEST_CHANGES" : "APPROVE";
+}
+
+/** Is this queue item a good "review next"? It must still be waiting on you
+ * (not reviewed yet, or your review was dismissed), not a draft, and not
+ * already open in a tab. `fetch_review_requests` also returns PRs you've
+ * reviewed or commented on, so this filter matters. */
+export function isNextCandidate(item: ReviewRequestItem, openKeys: Set<string | null>): boolean {
+  if (item.draft) return false;
+  if (item.my_review_status !== "pending" && item.my_review_status !== "dismissed") return false;
+  return !openKeys.has(canonicalPrKey(`${item.owner}/${item.repo}#${item.number}`));
+}
+
 /** Relevant files you've marked reviewed, out of all relevant files. */
 export function filesReviewed(manifest: ReviewManifest, viewed: Set<string>): { reviewed: number; total: number } {
   const relevant = manifest.files.filter((f) => f.classification !== "NOT_RELEVANT");
@@ -64,8 +89,22 @@ export function createFinish(ctxArg: unknown) {
     ctx.updateTab(tab.id, (t) => ({ ...t, finishOpen: true }));
   }
 
+  /** Closing keeps an unsent draft for next time; after a submit, the next
+   * open starts fresh. */
   function closeFinish() {
-    ctx.updateTab(activeTabId, (t) => ({ ...t, finishOpen: false }));
+    ctx.updateTab(activeTabId, (t) =>
+      t.finishDone ? { ...t, finishOpen: false, finishDone: null, finishDraft: null } : { ...t, finishOpen: false },
+    );
+  }
+
+  /** The panel's draft (body, chosen verdict) lives on the tab, so switching
+   * tabs and back doesn't lose what you typed or re-run the AI draft. */
+  function setFinishDraft(patch: Partial<FinishDraft>) {
+    ctx.updateTab(activeTabId, (t) => ({ ...t, finishDraft: { ...t.finishDraft, ...patch } }));
+  }
+
+  function setFinishDone(done: FinishDone) {
+    ctx.updateTab(activeTabId, (t) => ({ ...t, finishDone: done }));
   }
 
   /** Fetch fresh threads (so the recap's pending and unresolved counts are
@@ -103,10 +142,10 @@ export function createFinish(ctxArg: unknown) {
     const open = new Set(
       tabsRef.current.map((t) => (t.manifest ? canonicalPrKey(t.manifest.pr_url) : null)).filter(Boolean),
     );
-    return items.find((i) => !open.has(canonicalPrKey(`${i.owner}/${i.repo}#${i.number}`))) ?? null;
+    return items.find((i) => isNextCandidate(i, open)) ?? null;
   }
 
-  return { openFinish, closeFinish, draftReviewBody, nextInQueue };
+  return { openFinish, closeFinish, setFinishDraft, setFinishDone, draftReviewBody, nextInQueue };
 }
 
 export type FinishApi = ReturnType<typeof createFinish>;
