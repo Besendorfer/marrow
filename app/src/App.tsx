@@ -137,6 +137,7 @@ function App() {
     handleFileDrop,
     inboxLayout,
     selectInboxFinding,
+    inboxOpenAt,
     selectInboxFile,
     selectInboxPanel,
     inboxLooksFine,
@@ -154,7 +155,9 @@ function App() {
     );
   }
 
-  function renderOverview(tab: ReviewTab) {
+  /** `openAt` / `onOpenGroup` differ in the inbox, where a location link
+   * must also move the review-list selection. */
+  function renderOverview(tab: ReviewTab, openAt: (path: string, line?: number) => void = handleChatOpenFile, onOpenGroup = openGroup) {
     return (
       <PrOverview
         manifest={tab.manifest}
@@ -167,8 +170,8 @@ function App() {
         startTarget={nextUnviewed(guidedOrder(), -1)}
         onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
         onSelectFile={setSelectedFile}
-        onOpenGroup={openGroup}
-        onOpenAt={handleChatOpenFile}
+        onOpenGroup={onOpenGroup}
+        onOpenAt={openAt}
         onBriefMe={briefMe}
         onViewCommit={handleViewCommit}
         onOpenChecks={() => { if (activeTabId) setLens(activeTabId, "checks"); }}
@@ -190,14 +193,14 @@ function App() {
     );
   }
 
-  function renderChecksLens(tab: ReviewTab) {
+  function renderChecksLens(tab: ReviewTab, openAt: (path: string, line?: number) => void = handleChatOpenFile) {
     return (
       <ChecksLens
         checks={activeChecks ?? null}
         annotations={tab.checkAnnotations}
         diffPaths={diffFilePaths}
         headSha={tab.manifest.head_sha}
-        onOpenAt={handleChatOpenFile}
+        onOpenAt={openAt}
       />
     );
   }
@@ -461,7 +464,9 @@ function App() {
               onComment={inboxComment}
               onEnsureThreads={handleRequestComments}
               renderDiff={() => renderDiffViewer(activeTab as ReviewTab) ?? <div className="no-file-selected">Opening file…</div>}
-              renderAbout={() => renderOverview(activeTab as ReviewTab)}
+              renderAbout={() =>
+                renderOverview(activeTab as ReviewTab, inboxOpenAt, (_group, files) => { if (files[0]) selectInboxFile(files[0]); })
+              }
               renderSpec={() => (
                 <RequirementsCard
                   manifest={(activeTab as ReviewTab).manifest}
@@ -469,13 +474,13 @@ function App() {
                   specResolutions={activeTab.specResolutions}
                   onResolveSpec={resolveSpecItem}
                   onRestoreSpec={restoreSpecItem}
-                  onOpenAt={handleChatOpenFile}
+                  onOpenAt={inboxOpenAt}
                   localRequirements={activeTab.localRequirements}
                   analyzing={activeTab.analyzingRequirements}
                   onSaveRequirements={saveLocalRequirements}
                 />
               )}
-              renderChecks={() => renderChecksLens(activeTab as ReviewTab)}
+              renderChecks={() => renderChecksLens(activeTab as ReviewTab, inboxOpenAt)}
             />
           ) : activeTab.lens === "overview" ? (
             renderOverview(activeTab as ReviewTab)

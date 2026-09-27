@@ -503,7 +503,9 @@ export function useReviewController(): ReviewCtx {
     });
     // Lens is a dep so a reveal deferred by the same-file-wrong-lens path in
     // handleChatOpenFile fires when the Files lens (re)mounts the viewer.
-  }, [selectedFilePath, activeTab?.lens]);
+    // inboxSelection (issue #238): the inbox queues a reveal when switching
+    // between items in the already-open file, where neither dep above changes.
+  }, [selectedFilePath, activeTab?.lens, activeTab?.inboxSelection]);
 
   /** Auto-execute newly-completed ```marrow-action fences as they stream in.
    * Runs each action-block key at most once per streaming turn (tracked in

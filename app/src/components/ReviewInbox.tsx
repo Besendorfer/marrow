@@ -6,7 +6,8 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, ReviewManifest, Tab } from "../types";
-import { buildFindings, type Finding, type FindingKind } from "../review/findings";
+import { buildFindings, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
+import { listKeyAction } from "../review/inboxKeys";
 
 const KIND_LABEL: Record<FindingKind, string> = {
   ci: "CI",
@@ -34,10 +35,13 @@ const REASON_OPTIONS: { state: NoteResolutionState; label: string }[] = [
 
 export const INBOX_ABOUT = "about";
 
+/** A review-list entry. `hidden` file items back selections of files that
+ * already appear through their findings (opened via search, chat, About…),
+ * so those selections resolve instead of reading as "nothing selected". */
 type Item =
   | { id: string; kind: "about" }
   | { id: string; kind: "finding"; finding: Finding }
-  | { id: string; kind: "file"; file: FileDiff; group: string | null };
+  | { id: string; kind: "file"; file: FileDiff; group: string | null; hidden?: boolean };
 
 export interface ReviewInboxProps {
   tab: Tab & { manifest: ReviewManifest };
@@ -47,7 +51,8 @@ export interface ReviewInboxProps {
   onSelectFile: (file: FileDiff) => void;
   onSelectPanel: (key: string) => void;
   onToggleViewed: (path: string) => void;
-  onLooksFine: (f: Finding) => void;
+  /** Returns whether a mark was made — the list advances only then. */
+  onLooksFine: (f: Finding) => boolean;
   onNotAnIssue: (f: Finding, resolution: NoteResolution | null) => void;
   onReopen: (f: Finding) => void;
   onComment: (f: Finding) => void;
@@ -104,7 +109,7 @@ export function ReviewInbox(props: ReviewInboxProps) {
 
   // Files not already reachable through a finding, grouped by change group in
   // triage order; not-relevant files sit collapsed at the bottom.
-  const { otherFiles, notRelevant } = useMemo(() => {
+  const { otherFiles, notRelevant, filesWithFindings } = useMemo(() => {
     const withFindings = new Set(findings.map((f) => f.path).filter(Boolean));
     const order = new Map((manifest.triage?.review_order ?? []).map((r, i) => [r.path, i]));
     const groupOf = new Map<string, string>();
@@ -121,20 +126,27 @@ export function ReviewInbox(props: ReviewInboxProps) {
         return (ga === gb ? 0 : ga - gb) || (oa === ob ? 0 : oa - ob) || a.i - b.i;
       })
       .map(({ file }) => ({ file, group: groupOf.get(file.path) ?? null }));
-    return { otherFiles: rest, notRelevant: manifest.files.filter((f) => f.classification === "NOT_RELEVANT") };
+    return {
+      otherFiles: rest,
+      notRelevant: manifest.files.filter((f) => f.classification === "NOT_RELEVANT"),
+      filesWithFindings: manifest.files.filter((f) => withFindings.has(f.path) && f.classification !== "NOT_RELEVANT"),
+    };
   }, [manifest, findings]);
 
   const allItems: Item[] = useMemo(
     () => [
       { id: INBOX_ABOUT, kind: "about" as const },
-      ...findings.map((f) => ({ id: f.key, kind: "finding" as const, finding: f })),
+      ...findings.map((f) => ({ id: selectionIdFor(f), kind: "finding" as const, finding: f })),
       ...otherFiles.map(({ file, group }) => ({ id: `file:${file.path}`, kind: "file" as const, file, group })),
       ...notRelevant.map((file) => ({ id: `file:${file.path}`, kind: "file" as const, file, group: null })),
+      ...filesWithFindings.map((file) => ({ id: `file:${file.path}`, kind: "file" as const, file, group: null, hidden: true })),
     ],
-    [findings, otherFiles, notRelevant],
+    [findings, otherFiles, notRelevant, filesWithFindings],
   );
   // j/k walk only what's on screen.
-  const navItems = showNotRelevant ? allItems : allItems.slice(0, allItems.length - notRelevant.length);
+  const navItems = allItems.filter(
+    (i) => !(i.kind === "file" && (i.hidden || (!showNotRelevant && i.file.classification === "NOT_RELEVANT"))),
+  );
 
   const selection = tab.inboxSelection ?? null;
   const selected = allItems.find((i) => i.id === selection) ?? null;
@@ -157,10 +169,23 @@ export function ReviewInbox(props: ReviewInboxProps) {
     if (target) select(target);
   }, [tab.id, selected == null]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A not-relevant file selected from elsewhere reveals its section.
+  useEffect(() => {
+    if (selected?.kind === "file" && selected.file.classification === "NOT_RELEVANT") setShowNotRelevant(true);
+  }, [selected]);
+
   // Keep the selected row in view as j/k move.
   useEffect(() => {
     listRef.current?.querySelector(".inbox-row.selected")?.scrollIntoView({ block: "nearest" });
   }, [selection]);
+
+  /** List position of the selection; a hidden file item sits at its first finding. */
+  function selectionPos(): number {
+    if (selected?.kind === "file" && selected.hidden) {
+      return navItems.findIndex((i) => i.kind === "finding" && i.finding.path === selected.file.path);
+    }
+    return navItems.findIndex((i) => i.id === selection);
+  }
 
   /** After acting on `from`, go to the next open finding (wrapping), else the
    * next item. The acted-on finding is excluded — its state hasn't committed. */
@@ -168,52 +193,43 @@ export function ReviewInbox(props: ReviewInboxProps) {
     const idx = findings.findIndex((f) => f.key === from.key);
     for (let step = 1; step < findings.length; step++) {
       const f = findings[(idx + step) % findings.length];
-      if (f.state === "open") return select({ id: f.key, kind: "finding", finding: f });
+      if (f.state === "open") return select({ id: selectionIdFor(f), kind: "finding", finding: f });
     }
-    const pos = navItems.findIndex((i) => i.id === from.key);
+    const pos = navItems.findIndex((i) => i.id === selectionIdFor(from));
     const next = navItems[pos + 1];
     if (next) select(next);
   }
 
   function act(kind: "fine" | "dismiss" | "comment", f: Finding, resolution: NoteResolution | null = null) {
     if (kind === "comment") return props.onComment(f);
-    if (kind === "fine") props.onLooksFine(f);
-    else props.onNotAnIssue(f, resolution);
+    if (kind === "fine") {
+      if (!props.onLooksFine(f)) return;
+    } else {
+      props.onNotAnIssue(f, resolution);
+    }
     advance(f);
+    // Card buttons live outside the list; hand focus back so j/k/e/c/x keep working.
+    listRef.current?.focus({ preventScroll: true });
   }
 
   function onListKey(e: KeyboardEvent<HTMLDivElement>) {
     const t = e.target as HTMLElement;
-    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
-    const pos = navItems.findIndex((i) => i.id === selection);
+    const typing = t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && (t as HTMLInputElement).type !== "checkbox");
+    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     const f = selected?.kind === "finding" ? selected.finding : null;
-    let handled = true;
-    switch (e.key) {
-      case "j":
-      case "ArrowDown":
-        if (navItems[pos + 1]) select(navItems[pos + 1]);
-        break;
-      case "k":
-      case "ArrowUp":
-        if (pos > 0) select(navItems[pos - 1]);
-        break;
-      case "e":
-        if (f && f.state !== "checked" && f.state !== "dismissed") act("fine", f);
-        break;
-      case "x":
-        if (f && f.state !== "dismissed") act("dismiss", f);
-        break;
-      case "c":
-        if (f) act("comment", f);
-        break;
-      default:
-        handled = false;
-    }
-    // Stop here so the diff's own single-letter shortcuts (document listener)
-    // don't also fire while the list has focus.
-    if (handled) {
-      e.preventDefault();
-      e.stopPropagation();
+    const action = listKeyAction(e.key, f);
+    if (!action) return;
+    // Stop here so the diff's own single-letter shortcuts (a bubble-phase
+    // document listener) don't also fire while the list has focus.
+    e.preventDefault();
+    e.stopPropagation();
+    if (action.type === "move") {
+      const pos = selectionPos();
+      const next = navItems[pos + action.delta];
+      if (next && pos + action.delta >= 0) select(next);
+      else if (pos < 0 && navItems[0]) select(navItems[0]);
+    } else if (f) {
+      act(action.type, f);
     }
   }
 
@@ -227,9 +243,7 @@ export function ReviewInbox(props: ReviewInboxProps) {
         className="inbox-list"
         ref={listRef}
         tabIndex={0}
-        role="listbox"
         aria-label="Review list"
-        aria-activedescendant={selection ? `inbox-item-${selection}` : undefined}
         onKeyDown={onListKey}
       >
         {verdict && (
@@ -242,9 +256,7 @@ export function ReviewInbox(props: ReviewInboxProps) {
         )}
 
         <button
-          id={`inbox-item-${INBOX_ABOUT}`}
-          role="option"
-          aria-selected={selection === INBOX_ABOUT}
+          aria-current={selection === INBOX_ABOUT ? "true" : undefined}
           className={`inbox-row inbox-row--about${selection === INBOX_ABOUT ? " selected" : ""}`}
           onClick={() => props.onSelectPanel(INBOX_ABOUT)}
         >
@@ -264,13 +276,14 @@ export function ReviewInbox(props: ReviewInboxProps) {
           </span>
         </div>
         {findings.length === 0 && <div className="inbox-empty">No findings — the AI flagged nothing to act on.</div>}
-        {findings.map((f) => (
+        {findings.map((f) => {
+          const id = selectionIdFor(f);
+          const isSel = selection === id || (selected?.kind === "file" && !!selected.hidden && selected.file.path === f.path && findings.find((x) => x.path === f.path) === f);
+          return (
           <button
             key={f.key}
-            id={`inbox-item-${f.key}`}
-            role="option"
-            aria-selected={selection === f.key}
-            className={`inbox-row inbox-row--finding inbox-row--${f.state}${selection === f.key ? " selected" : ""}`}
+            aria-current={isSel ? "true" : undefined}
+            className={`inbox-row inbox-row--finding inbox-row--${f.state}${isSel ? " selected" : ""}`}
             onClick={() => props.onSelectFinding(f)}
           >
             <StateMark state={f.state} />
@@ -282,7 +295,8 @@ export function ReviewInbox(props: ReviewInboxProps) {
               </span>
             </span>
           </button>
-        ))}
+          );
+        })}
 
         {otherFiles.length > 0 && (
           <div className="inbox-section">
@@ -300,7 +314,6 @@ export function ReviewInbox(props: ReviewInboxProps) {
             <div key={id}>
               {header}
               <FileRow
-                id={id}
                 file={file}
                 viewed={viewed}
                 notes={notes}
@@ -324,7 +337,6 @@ export function ReviewInbox(props: ReviewInboxProps) {
             return (
               <FileRow
                 key={id}
-                id={id}
                 file={file}
                 viewed={tab.viewedFiles.has(file.path)}
                 notes={0}
@@ -370,8 +382,7 @@ export function ReviewInbox(props: ReviewInboxProps) {
   );
 }
 
-function FileRow({ id, file, viewed, notes, selected, onSelect, onToggleViewed }: {
-  id: string;
+function FileRow({ file, viewed, notes, selected, onSelect, onToggleViewed }: {
   file: FileDiff;
   viewed: boolean;
   notes: number;
@@ -388,7 +399,7 @@ function FileRow({ id, file, viewed, notes, selected, onSelect, onToggleViewed }
         onChange={onToggleViewed}
         aria-label={`Mark ${fileName(file.path)} ${viewed ? "unreviewed" : "reviewed"}`}
       />
-      <button id={`inbox-item-${id}`} role="option" aria-selected={selected} className="inbox-file-btn" onClick={onSelect} title={file.path}>
+      <button aria-current={selected ? "true" : undefined} className="inbox-file-btn" onClick={onSelect} title={file.path}>
         <span className="inbox-file-name">{fileName(file.path)}</span>
         <span className="inbox-file-stat">
           <span className="inbox-add">+{file.additions}</span> <span className="inbox-del">−{file.deletions}</span>

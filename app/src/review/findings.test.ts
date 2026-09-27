@@ -1,7 +1,7 @@
 // buildFindings (issue #238 phase 3): the merge / dedupe / rank / state rules
 // behind the inbox's single findings list. Run with `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { buildFindings, findingCommentBody, firstSentence, riskKey, MERGE_WINDOW } from "./findings";
+import { buildFindings, findingCommentBody, firstSentence, riskKey, selectionIdFor, MERGE_WINDOW } from "./findings";
 import { specResolveKey } from "../components/digest";
 import { highlightKey } from "../utils";
 import type { FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
@@ -207,6 +207,14 @@ describe("buildFindings — spec and CI aggregates", () => {
   });
 });
 
+describe("selectionIdFor", () => {
+  test("aggregates get fixed ids; everything else uses its key", () => {
+    expect(selectionIdFor({ kind: "spec", key: "spec-set:abc" })).toBe("spec");
+    expect(selectionIdFor({ kind: "ci", key: "ci:def" })).toBe("ci");
+    expect(selectionIdFor({ kind: "risk", key: "risk:a.ts:1:x" })).toBe("risk:a.ts:1:x");
+  });
+});
+
 describe("findingCommentBody", () => {
   test("a note drafts like the diff's own Comment…: comment, scenario, fix", () => {
     const h: Highlight = { ...hl(1, 1, "warning", "bug", "Guard removed."), scenario: "Admins bypass it.", fix: "Restore the guard." };
@@ -267,6 +275,10 @@ describe("buildFindings — state", () => {
     const f = buildFindings(base()).findings[0];
     const checked = new Map([[f.key, { lines_hash: f.linesHash }]]);
     expect(buildFindings(base(), { threads: [thread("a.ts", 11, "me")], viewerLogin: "me", checked }).findings[0].state).toBe("checked");
+    // Login not loaded yet: someone else's thread must not read as yours,
+    // but a just-posted comment (optimistic "you") does.
+    expect(at([thread("a.ts", 11, "someone")])).toBe("open");
+    expect(at([thread("a.ts", 11, "you")])).toBe("commented");
   });
 
   test("an empty stored hash never counts as checked", () => {

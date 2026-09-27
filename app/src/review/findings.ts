@@ -73,7 +73,7 @@ export interface FindingsInput {
   /** Review threads on the PR; a thread you started on a finding's lines
    * marks it `commented`. */
   threads?: ReviewThread[];
-  /** Your GitHub login (thread authorship). Unknown → any thread counts. */
+  /** Your GitHub login (thread authorship). Unknown → only just-posted ("you") threads count. */
   viewerLogin?: string | null;
 }
 
@@ -147,9 +147,19 @@ function isCommented(f: Omit<Finding, "state">, threads: ReviewThread[] | undefi
   return threads.some((t) => {
     if (t.path !== f.path || t.line == null || t.line < start || t.line > end) return false;
     const author = t.comments[0]?.author.login;
-    // "you" is the optimistic placeholder a just-posted reply renders with.
-    return !viewer || author === viewer || author === "you";
+    // "you" is the optimistic placeholder a just-posted comment renders with.
+    // Until your login is known, only that counts — someone else's thread
+    // must not read as yours.
+    return author === "you" || (!!viewer && author === viewer);
   });
+}
+
+/** The review-list selection id for a finding. Spec and CI aggregates get
+ * fixed ids: their keys hash the current item set, which changes while you
+ * work (resolving a requirement, a check starting to pass), and the
+ * selection must not jump away when it does. */
+export function selectionIdFor(f: Pick<Finding, "kind" | "key">): string {
+  return f.kind === "spec" || f.kind === "ci" ? f.kind : f.key;
 }
 
 /** Draft body when the reviewer chooses "Comment" on a finding: the note in

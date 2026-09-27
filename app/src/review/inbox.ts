@@ -4,20 +4,51 @@
 // no new persistence paths of its own.
 
 import type { FileDiff, NoteResolution } from "../types";
-import { findingCommentBody, type Finding } from "./findings";
+import { findingCommentBody, selectionIdFor, type Finding } from "./findings";
 import type { ReviewCtx } from "./ctx";
 
 // `ctxArg` is typed unknown only so ReturnType<typeof create…> (which
 // ReviewCtx is built from) doesn't loop through this parameter's type.
 export function createInbox(ctxArg: unknown) {
   const ctx = ctxArg as ReviewCtx;
-  const { activeTabId, tabsRef, addToast, diffViewerRef, pendingComposerRef } = ctx;
+  const { activeTabId, tabsRef, addToast, diffViewerRef, pendingComposerRef, pendingRevealLineRef } = ctx;
+
+  /** Select `selectionId` and show `path` at `line`. When the file is
+   * already the open one, the diff may still be unmounted (a panel — About,
+   * Spec, CI — was showing), so the reveal is queued for the pending-reveal
+   * effect, which reruns on selection changes, instead of calling into a
+   * viewer that may not exist yet. */
+  function openInInbox(selectionId: string, path: string, line?: number) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return;
+    ctx.updateTab(tab.id, (t) => ({ ...t, inboxSelection: selectionId, inboxSelectionPath: path }));
+    const open = tab.selectedFile;
+    // Head contents missing means handleChatOpenFile must fetch them before a
+    // line in unchanged code can be shown — let it take that path.
+    const canReveal = line == null || !!open?.head_content || open?.diff_type === "removed";
+    if (open?.path === path && canReveal) {
+      pendingRevealLineRef.current = line ?? null;
+      if (tab.lens !== "files") ctx.updateTab(tab.id, (t) => ({ ...t, lens: "files" }));
+      return;
+    }
+    ctx.handleChatOpenFile(path, line);
+  }
 
   /** Show a finding: its file scrolled to its line when it has one (spec and
    * CI findings render their own panel instead). */
   function selectInboxFinding(f: Finding) {
-    ctx.updateTab(activeTabId, (t) => ({ ...t, inboxSelection: f.key, inboxSelectionPath: f.path ?? null }));
-    if (f.path) ctx.handleChatOpenFile(f.path, f.startLine);
+    if (f.path) openInInbox(selectionIdFor(f), f.path, f.startLine);
+    else selectInboxPanel(selectionIdFor(f));
+  }
+
+  /** A location link inside an inbox panel (About, Spec, CI annotations):
+   * move the selection to that file, then reveal the line. */
+  function inboxOpenAt(path: string, line?: number) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab?.manifest) return;
+    const target = ctx.resolveManifestFile(tab.manifest.files, path);
+    if (!target) return;
+    openInInbox(`file:${target.path}`, target.path, line);
   }
 
   function selectInboxFile(file: FileDiff) {
@@ -47,9 +78,19 @@ export function createInbox(ctxArg: unknown) {
     ctx.saveResolvedSpecs(tab, nextKeys, nextResolutions);
   }
 
-  function inboxLooksFine(f: Finding) {
-    if (f.kind === "spec") addressSpecItems(f.itemKeys ?? []);
-    else ctx.markFindingChecked(f);
+  /** Returns whether a mark was made (the list advances only then). */
+  function inboxLooksFine(f: Finding): boolean {
+    if (f.kind === "spec") {
+      addressSpecItems(f.itemKeys ?? []);
+      return true;
+    }
+    if (!f.linesHash) {
+      // A risk on a file outside the diff has no code to anchor a mark to.
+      addToast("info", "There's no code here to anchor “Looks fine” to — use Not an issue instead.");
+      return false;
+    }
+    ctx.markFindingChecked(f);
+    return true;
   }
 
   /** "Not an issue": dismiss with an optional how/why (null = plain). Notes
@@ -97,6 +138,7 @@ export function createInbox(ctxArg: unknown) {
 
   return {
     selectInboxFinding,
+    inboxOpenAt,
     selectInboxFile,
     selectInboxPanel,
     addressSpecItems,
