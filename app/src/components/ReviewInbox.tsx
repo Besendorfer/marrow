@@ -463,11 +463,18 @@ function FindingCard({ finding: f, onLooksFine, onComment, onNotAnIssue, onReope
           />
           <button className="inbox-btn inbox-btn--ghost" onClick={() => setChoosing(false)}>Cancel</button>
         </div>
+      ) : f.kind === "spec" ? (
+        // A spec finding has one verdict: its requirements are addressed
+        // (the per-requirement store) — e and x both do that.
+        <div className="inbox-card-actions">
+          <button className="inbox-btn inbox-btn--primary" onClick={onLooksFine}>Mark addressed <kbd>e</kbd></button>
+          <button className="inbox-btn" onClick={onComment}>Comment <kbd>c</kbd></button>
+        </div>
       ) : (
         <div className="inbox-card-actions">
           <button className="inbox-btn inbox-btn--primary" onClick={onLooksFine}>Looks fine <kbd>e</kbd></button>
           <button className="inbox-btn" onClick={onComment}>Comment <kbd>c</kbd></button>
-          <button className="inbox-btn" onClick={() => (f.kind === "spec" ? onNotAnIssue(null) : setChoosing(true))}>
+          <button className="inbox-btn" onClick={() => setChoosing(true)}>
             Not an issue <kbd>x</kbd>
           </button>
           {f.state === "commented" && <span className="inbox-card-state">✎ You commented here</span>}
