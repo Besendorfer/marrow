@@ -653,13 +653,14 @@ impl GithubClient {
         Ok((head_sha, comment_count, merged))
     }
 
-    /// `"open"`, `"merged"`, or `"closed"` (closed without merging).
+    /// `("open" | "merged" | "closed", closed_at)` — `closed_at` is GitHub's
+    /// RFC 3339 close time (set for merged PRs too), `None` while open.
     pub async fn pr_state(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<String>), String> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/pulls/{}",
             owner, repo, pr_number
@@ -691,13 +692,14 @@ impl GithubClient {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         let merged = json.get("merged").and_then(|v| v.as_bool()).unwrap_or(false);
+        let closed_at = json.get("closed_at").and_then(|v| v.as_str()).map(str::to_string);
 
-        Ok(match (state, merged) {
+        let state = match (state, merged) {
             ("open", _) => "open",
             (_, true) => "merged",
             _ => "closed",
-        }
-        .to_string())
+        };
+        Ok((state.to_string(), closed_at))
     }
 
     pub async fn get_pr_metadata(
