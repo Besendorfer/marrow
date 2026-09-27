@@ -89,6 +89,40 @@ describe("inbox actions", () => {
     expect(t.lens).toBe("files");
   });
 
+  test("Comment on a finding without a line drafts a PR-level comment", () => {
+    const { inbox, calls, apply } = fakeCtx({ manifest, chat: { open: true } as Tab["chat"] });
+    const ci: Finding = { key: "ci:1", kind: "ci", rank: "critical", title: "t", items: ["build"], linesHash: "h", state: "open" };
+    inbox.inboxComment(ci);
+    const t = apply();
+    expect(t.commentsOpen).toBe(true);
+    expect(t.chat.open).toBe(false); // chat and comments share the dock
+    expect(t.prCommentDraft).toBe("CI is failing: build.");
+    expect(calls).toEqual([]); // nothing posted, no file opened
+  });
+
+  test("Comment on a finding in the open file opens the composer on its lines", () => {
+    const { inbox, ctx, calls } = fakeCtx({ manifest, selectedFile: file, lens: "files" });
+    const opened: unknown[] = [];
+    (ctx.diffViewerRef as { current: unknown }).current = { openComposer: (...a: unknown[]) => (opened.push(a), true) };
+    inbox.inboxComment({ ...risk, state: "open", endLine: 7 });
+    expect(opened).toEqual([[5, 7, "RIGHT", "t"]]);
+    expect(calls).toEqual([]);
+  });
+
+  test("Comment says so when the line can't be shown", () => {
+    const { inbox, ctx, calls } = fakeCtx({ manifest, selectedFile: file, lens: "files" });
+    (ctx.diffViewerRef as { current: unknown }).current = { openComposer: () => false };
+    inbox.inboxComment({ ...risk, state: "open" });
+    expect(calls[0]).toStartWith("toast:");
+  });
+
+  test("Comment on a finding in another file defers the composer until its diff mounts", () => {
+    const { inbox, ctx, calls } = fakeCtx({ manifest, selectedFile: null });
+    inbox.inboxComment({ ...risk, state: "open" });
+    expect(ctx.pendingComposerRef.current).toEqual({ startLine: 5, endLine: 5, side: "RIGHT", initialBody: "t" });
+    expect(calls).toEqual(["select:a.ts"]);
+  });
+
   test("a finding in another file opens it through handleChatOpenFile", () => {
     const { inbox, calls, apply } = fakeCtx({ manifest, selectedFile: null });
     inbox.selectInboxFinding({ ...risk, state: "open" });
