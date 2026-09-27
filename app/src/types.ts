@@ -247,6 +247,9 @@ export interface ReviewComment {
   updated_at: string;
   url: string;
   reactions: ReactionGroup[];
+  /** In your pending (unsubmitted) review — only you see it until you submit.
+   * Absent from older backends. */
+  pending?: boolean;
 }
 
 export interface ReviewThread {
@@ -456,6 +459,8 @@ export interface Tab {
    * null for About/Spec/CI) — lets setSelectedFile tell "open the selected
    * finding's file" from "open some other file". */
   inboxSelectionPath?: string | null;
+  /** The Finish panel (issue #238 phase 5) is open on this tab. */
+  finishOpen?: boolean;
   /** "Looks fine" marks on findings (issue #238), keyed by finding key. */
   checkedFindings: Map<string, CheckedFindingEntry>;
   /** User-provided requirements text (issue #179 phase 2), saved locally and

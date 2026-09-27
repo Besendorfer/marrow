@@ -342,17 +342,19 @@ export function createComments(ctxArg: unknown) {
     }
   }
 
+  /** Submit the review. Throws on failure so the Finish panel can show the
+   * error in place (issue #238) — it used to replace the whole PR screen. */
   async function handleSubmitReview(event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) {
     const tab = tabs.find((t) => t.id === activeTabId);
     if (!tab || !tab.manifest) return;
 
-    try {
-      await invoke<string>("submit_review", {
-        prUrl: tab.manifest.pr_url,
-        event,
-        body,
-      });
+    await invoke<string>("submit_review", {
+      prUrl: tab.manifest.pr_url,
+      event,
+      body,
+    });
 
+    {
       // Update review state immediately (submitting clears the review request)
       const statusMap: Record<string, string> = {
         APPROVE: "approved",
@@ -375,8 +377,9 @@ export function createComments(ctxArg: unknown) {
         },
       }));
 
-      // Re-fetch threads to update resolved states
-      if (tab.commentThreads.status === "loaded") {
+      // Re-fetch threads: submitting publishes pending comments and can
+      // change resolved states. Best-effort — the review itself is in.
+      try {
         const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
           prUrl: tab.manifest.pr_url,
         });
@@ -384,9 +387,9 @@ export function createComments(ctxArg: unknown) {
           ...t,
           commentThreads: { status: "loaded" as const, threads },
         }));
+      } catch {
+        // Stale thread state is fine; the panel shows the submitted review.
       }
-    } catch (err) {
-      setError(String(err));
     }
   }
 

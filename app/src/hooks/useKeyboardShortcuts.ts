@@ -43,7 +43,7 @@ export interface ShortcutHandlers {
   onFoldAtCursor: () => void;
   onComment: () => void;
   onToggleAnchor: () => void;
-  onReviewPicker: () => void;
+  onFinishReview: () => void;
   onReply: () => void;
   onResolve: () => void;
   /** Toggle the command palette (Cmd/Ctrl+K) — works everywhere, even in fields. */
@@ -200,7 +200,7 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers, options: Shortc
         case "c": h.onComment(); break;
         case "v": h.onToggleAnchor(); break;
         case "r": h.onReply(); break;
-        case "R": h.onReviewPicker(); break;
+        case "R": h.onFinishReview(); break;
         case "x": h.onResolve(); break;
         case "PageDown": h.onCursorPageDown(); e.preventDefault(); break;
         case "PageUp": h.onCursorPageUp(); e.preventDefault(); break;

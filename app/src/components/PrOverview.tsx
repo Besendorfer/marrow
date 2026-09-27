@@ -72,6 +72,10 @@ function CiChip({ checks, onOpenChecks }: { checks: PrChecksStatus; onOpenChecks
   // normalized to lowercase in core. Failing-count logic lives in
   // countFailingChecks (utils.ts) — the single source of truth also reused by
   // the header lens badge and the Checks lens (issue #175).
+  // No runs means no CI configured — an absent signal, not a passing one
+  // (core defaults overall_state to "success" when there's no rollup). Same
+  // rule as the header lens badge and the digest's all-clear line.
+  if (checks.check_runs.length === 0) return null;
   const failing = countFailingChecks(checks);
   const { dot, label } =
     checks.overall_state === "success"

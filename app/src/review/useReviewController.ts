@@ -24,6 +24,7 @@ import { createChat } from "./chat";
 import { createComments } from "./comments";
 import { createCommits } from "./commits";
 import { createInbox } from "./inbox";
+import { createFinish } from "./finish";
 import type { ReviewCtx } from "./ctx";
 
 export function useReviewController(): ReviewCtx {
@@ -42,6 +43,7 @@ export function useReviewController(): ReviewCtx {
     createComments(ctx),
     createCommits(ctx),
     createInbox(ctx),
+    createFinish(ctx),
   );
   const {
     tabs,
@@ -68,8 +70,6 @@ export function useReviewController(): ReviewCtx {
     setPaletteOpen,
     welcomeOpen,
     setWelcomeOpen,
-    reviewPickerOpen,
-    setReviewPickerOpen,
     searchOpen,
     setViewerLogin,
     searchRef,
@@ -86,7 +86,6 @@ export function useReviewController(): ReviewCtx {
     checkForUpdates,
     activeTab,
     activeChecks,
-    showChecksModal,
     selectedFilePath,
     resumePing,
     setResumePing,
@@ -104,7 +103,6 @@ export function useReviewController(): ReviewCtx {
     quitArmedRef,
     quitTimerRef,
     checksMapRef,
-    checksDismissedRef,
     guidedOrder,
     nextUnviewed,
     selectAdjacentFile,
@@ -120,6 +118,7 @@ export function useReviewController(): ReviewCtx {
     loadDismissedHighlights,
     loadResolvedSpecs,
     loadCheckedFindings,
+    openFinish,
     loadLocalRequirements,
     loadChatHistory,
     handleChatSend,
@@ -140,10 +139,6 @@ export function useReviewController(): ReviewCtx {
 
   useEffect(() => { refreshFingerprint(); }, [refreshFingerprint]);
 
-  // The review picker submits against the active tab, so it must not outlive
-  // the tab it was opened on: switching or closing tabs dismisses it
-  // (issue #238 — it used to float over the queue after the PR tab closed).
-  useEffect(() => { setReviewPickerOpen(false); }, [activeTabId]);
 
   useEffect(() => {
     if (import.meta.env.DEV) return;
@@ -193,7 +188,7 @@ export function useReviewController(): ReviewCtx {
       onRefresh: () => { if (activeTab?.manifest) handleRefreshPr(); },
       onOpenSearch: () => searchRef.current?.open("local"),
       onToggleHelp: () => setHelpOpen((o) => !o),
-      onCloseOverlays: () => { setHelpOpen(false); setReviewPickerOpen(false); setPaletteOpen(false); },
+      onCloseOverlays: () => { setHelpOpen(false); setPaletteOpen(false); },
       // Not during first-run setup — the palette would open invisibly under
       // the welcome card and pop up when setup closes.
       onTogglePalette: () => { if (!welcomeOpen) setPaletteOpen((v) => !v); },
@@ -220,13 +215,13 @@ export function useReviewController(): ReviewCtx {
       onToggleAnchor: () => diffViewerRef.current?.toggleAnchor(),
       onReply: () => diffViewerRef.current?.replyAtCursor(),
       onResolve: () => diffViewerRef.current?.resolveAtCursor(),
-      onReviewPicker: () => { if (activeTab?.manifest) setReviewPickerOpen(true); },
+      onFinishReview: () => openFinish(),
       onToggleChat: () => { if (!welcomeOpen) toggleChatOpen(); },
       onSetLens: (lens) => { if (activeTabId) setLens(activeTabId, lens); },
     },
     {
       enabled: !!activeTab?.manifest,
-      overlayOpen: helpOpen || settingsOpen || searchOpen || showChecksModal || reviewPickerOpen || paletteOpen,
+      overlayOpen: helpOpen || settingsOpen || searchOpen || !!activeTab?.finishOpen || paletteOpen,
     },
   );
 
@@ -660,7 +655,8 @@ export function useReviewController(): ReviewCtx {
         if (!tab.manifest) return false;
         const existing = checksMapRef.current[tab.id];
         if (existing && existing.overall_state === "success") return false;
-        if (checksDismissedRef.current[tab.manifest.pr_url]) return false;
+        // No per-PR opt-out any more: the CI blocking modal (and its "Ignore")
+        // is gone (issue #238), and Finish shows CI as a live status line.
         return true;
       });
 

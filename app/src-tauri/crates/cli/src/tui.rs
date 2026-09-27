@@ -2263,6 +2263,7 @@ mod tests {
                 updated_at: String::new(),
                 url: String::new(),
                 reactions: Vec::new(),
+                pending: false,
             }],
         }
     }
@@ -2808,6 +2809,7 @@ mod tests {
             updated_at: String::new(),
             url: String::new(),
             reactions: Vec::new(),
+            pending: false,
         }
     }
 

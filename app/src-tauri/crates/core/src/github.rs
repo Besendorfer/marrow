@@ -162,6 +162,9 @@ fn parse_review_comment(c: &serde_json::Value) -> Option<ReviewComment> {
         updated_at: c.get("updatedAt")?.as_str()?.to_string(),
         url: c.get("url")?.as_str()?.to_string(),
         reactions: parse_reaction_groups(c),
+        // In the viewer's unsubmitted review — visible only to them until the
+        // review is submitted (issue #238's Finish panel lists these).
+        pending: c.get("state").and_then(|v| v.as_str()) == Some("PENDING"),
     })
 }
 
@@ -1424,6 +1427,7 @@ impl GithubClient {
                                             createdAt
                                             updatedAt
                                             url
+                                            state
                                             diffHunk
                                             reactionGroups {{
                                                 content
@@ -1546,6 +1550,7 @@ impl GithubClient {
                     createdAt
                     updatedAt
                     url
+                    state
                     reactionGroups {
                         content
                         viewerHasReacted
@@ -1619,7 +1624,7 @@ impl GithubClient {
                 body: $body
             }) {
                 pullRequestReviewComment {
-                    id body author { login avatarUrl } createdAt updatedAt url
+                    id body author { login avatarUrl } createdAt updatedAt url state
                     reactionGroups {
                         content
                         viewerHasReacted
@@ -1688,7 +1693,7 @@ impl GithubClient {
                     originalLine
                     comments(first: 100) {{
                         nodes {{
-                            id body author {{ login avatarUrl }} createdAt updatedAt url diffHunk
+                            id body author {{ login avatarUrl }} createdAt updatedAt url state diffHunk
                             reactionGroups {{
                                 content
                                 viewerHasReacted
@@ -2771,7 +2776,22 @@ mod tests {
         assert_eq!(classify_pr_state("closed", false), "closed");
         assert_eq!(classify_pr_state("unknown", false), "closed");
     }
-    use super::{classify_pr_state, encode_path, failing_conclusion, first_line, graphql_is_mutation, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+    use super::{classify_pr_state, parse_review_comment, encode_path, failing_conclusion, first_line, graphql_is_mutation, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+
+    #[test]
+    fn review_comment_pending_follows_graphql_state() {
+        let base = serde_json::json!({
+            "id": "c1", "body": "b", "author": { "login": "me", "avatarUrl": "" },
+            "createdAt": "t", "updatedAt": "t", "url": "u"
+        });
+        let mut pending = base.clone();
+        pending["state"] = serde_json::json!("PENDING");
+        let mut submitted = base.clone();
+        submitted["state"] = serde_json::json!("SUBMITTED");
+        assert!(parse_review_comment(&pending).unwrap().pending);
+        assert!(!parse_review_comment(&submitted).unwrap().pending);
+        assert!(!parse_review_comment(&base).unwrap().pending, "absent state (older queries) reads as submitted");
+    }
 
     #[test]
     fn encode_path_escapes_segments_but_keeps_separators() {

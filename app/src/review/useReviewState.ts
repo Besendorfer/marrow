@@ -39,7 +39,6 @@ export function useReviewState() {
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   // Cached PR whose head moved — re-analyzing costs an AI pass, so confirm.
   const [staleConfirm, setStaleConfirm] = useState<{ prRef: string; title: string } | null>(null);
-  const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [queueFilter, setQueueFilter] = useState("");
   const [viewerLogin, setViewerLogin] = useState<string | null>(null);
@@ -165,7 +164,6 @@ export function useReviewState() {
   );
 
   const activeChecks = activeTab ? checksMap[activeTab.id] : undefined;
-  const showChecksModal = !!activeTab && !!activeTab.manifest && !!activeChecks && activeChecks.overall_state !== "success" && !checksDismissed[activeTab.manifest.pr_url];
 
   // Lens switcher segment counts (issue #170). Files count mirrors the
   // relevant/fallback-to-total rule buildChatFiles uses for whole-PR chat scope.
@@ -293,8 +291,6 @@ export function useReviewState() {
     setWelcomeOpen,
     staleConfirm,
     setStaleConfirm,
-    reviewPickerOpen,
-    setReviewPickerOpen,
     searchOpen,
     setSearchOpen,
     queueFilter,
@@ -336,7 +332,6 @@ export function useReviewState() {
     activeTab,
     openPrUrls,
     activeChecks,
-    showChecksModal,
     relevantFileCount,
     filesLensCount,
     commitsLensCount,

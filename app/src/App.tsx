@@ -7,14 +7,13 @@ import { ReviewRequestList } from "./components/ReviewRequestList";
 import { ActivityWidget } from "./components/ActivityWidget";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
-import { ChecksBlockingModal } from "./components/ChecksBlockingModal";
 import { PrOverview } from "./components/PrOverview";
 import { CommitsLens } from "./components/CommitsLens";
 import { ChecksLens } from "./components/ChecksLens";
 import { NextFileBar } from "./components/NextFileBar";
 import { SearchBar } from "./components/SearchBar";
 import { KeyboardHelp } from "./components/KeyboardHelp";
-import { ReviewPicker } from "./components/ReviewPicker";
+import { FinishPanel } from "./components/FinishPanel";
 import { ToastContainer } from "./components/Toast";
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
 import { WelcomeSetup } from "./components/WelcomeSetup";
@@ -60,8 +59,6 @@ function App() {
     setWelcomeOpen,
     staleConfirm,
     setStaleConfirm,
-    reviewPickerOpen,
-    setReviewPickerOpen,
     setSearchOpen,
     queueFilter,
     setQueueFilter,
@@ -81,7 +78,6 @@ function App() {
     activeTab,
     openPrUrls,
     activeChecks,
-    showChecksModal,
     filesLensCount,
     commitsLensCount,
     checkFailureCounts,
@@ -97,7 +93,6 @@ function App() {
     toggleThreadsView,
     handleNewReview,
     handleSelectTab,
-    handleDismissChecks,
     resolveHighlight,
     restoreHighlight,
     resolveSpecItem,
@@ -144,6 +139,10 @@ function App() {
     inboxNotAnIssue,
     inboxReopen,
     inboxComment,
+    openFinish,
+    closeFinish,
+    draftReviewBody,
+    nextInQueue,
   } = useReviewController();
 
   // Element builders shared by the classic lenses and the inbox layout
@@ -217,7 +216,7 @@ function App() {
       { id: "prev-file", section: "Review", title: "Previous file", keys: "[", run: () => selectAdjacentFile(-1) },
       { id: "mark-viewed", section: "Review", title: "Mark file reviewed", keys: "V", run: () => { const p = activeTab.selectedFile?.path; if (p) toggleViewed(p); } },
       { id: "mark-next", section: "Review", title: "Mark reviewed and go to next", run: markReviewedAndAdvance },
-      { id: "finish", section: "Review", title: "Finish review…", keys: "R", run: () => setReviewPickerOpen(true) },
+      { id: "finish", section: "Review", title: "Finish review…", keys: "R", run: openFinish },
       { id: "search", section: "Review", title: "Search in diffs", keys: "/", run: () => searchRef.current?.open("local") },
       { id: "threads", section: "Review", title: "Toggle comments panel", keys: "T", run: toggleThreadsView },
       { id: "refresh", section: "Review", title: "Refresh PR", keys: "⌃R", run: handleRefreshPr },
@@ -257,12 +256,6 @@ function App() {
         onDismiss={() => setUpdateStatus({ state: "idle" })}
       />
       {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} />}
-      {reviewPickerOpen && activeTab?.manifest && (
-        <ReviewPicker
-          onClose={() => setReviewPickerOpen(false)}
-          onSubmit={(event, body) => { handleSubmitReview(event, body); setReviewPickerOpen(false); }}
-        />
-      )}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
       <div
         className={`quit-hint${showQuitHint ? " visible" : ""}`}
@@ -317,12 +310,10 @@ function App() {
         onToggleHunkSignificance={() => setShowHunkSignificance((v) => !v)}
         showAiNotes={showAiNotes}
         onToggleAiNotes={() => setShowAiNotes((v) => !v)}
-        commentThreads={activeTab?.commentThreads}
-        onSubmitReview={activeTab ? handleSubmitReview : undefined}
+        onFinishReview={activeTab?.manifest ? openFinish : undefined}
         onRefresh={activeTab ? () => handleRefreshPr() : undefined}
         isRefreshing={activeTab?.isRefreshing}
         myReviewState={activeTab?.myReviewState}
-        checksBlocking={showChecksModal}
         onCheckForUpdates={() => checkForUpdates(false)}
         onOpenPalette={() => setPaletteOpen(true)}
         chatOpen={activeTab?.chat.open ?? false}
@@ -412,10 +403,25 @@ function App() {
         </div>
       ) : (
         <div className="review-content">
-        {showChecksModal && (
-          <ChecksBlockingModal
-            checksStatus={activeChecks!}
-            onDismiss={() => handleDismissChecks(activeTab.manifest!.pr_url)}
+        {activeTab.finishOpen && (
+          <FinishPanel
+            key={activeTab.id}
+            tab={activeTab as ReviewTab}
+            checks={activeChecks ?? null}
+            viewerLogin={viewerLogin}
+            onClose={closeFinish}
+            onDraftBody={draftReviewBody}
+            onSubmit={handleSubmitReview}
+            onJumpToFinding={(f) => {
+              closeFinish();
+              if (inboxLayout) selectInboxFinding(f);
+              else if (f.path) handleChatOpenFile(f.path, f.startLine);
+              else if (activeTabId) setLens(activeTabId, f.kind === "ci" ? "checks" : "overview");
+            }}
+            onJumpToThread={(thread) => { closeFinish(); handleJumpToThread(thread); }}
+            onNextInQueue={nextInQueue}
+            onOpenPr={(ref) => { closeFinish(); handleFetchStart(ref); }}
+            onBackToQueue={() => { closeFinish(); handleNewReview(); }}
           />
         )}
         <SearchBar
@@ -529,7 +535,7 @@ function App() {
                       onMarkReviewed={markReviewedAndAdvance}
                       onNext={() => { if (next) setSelectedFile(next); }}
                       onComment={() => diffViewerRef.current?.commentAtCursor()}
-                      onFinishReview={() => setReviewPickerOpen(true)}
+                      onFinishReview={openFinish}
                     />
                   </>
                 );
