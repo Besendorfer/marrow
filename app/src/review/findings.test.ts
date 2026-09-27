@@ -130,6 +130,23 @@ describe("buildFindings — risk/highlight dedupe", () => {
     expect(findings.filter((f) => f.kind === "risk")).toHaveLength(0);
   });
 
+  test("pairs each risk with the note it points at, not the most urgent nearby one", () => {
+    // Greedy most-urgent-first would give "At 18" to the critical note at 10.
+    const m = manifest(
+      [file("a.ts", [hl(10, 10, "critical", "bug"), hl(18, 18, "warning", "behavior")])],
+      { triage: { top_risks: [risk("a.ts", 18, "At 18"), risk("a.ts", 10, "At 10")], review_order: [] } } as Partial<ReviewManifest>,
+    );
+    const byLine = new Map(buildFindings(m).findings.map((f) => [f.startLine, f.title]));
+    expect(byLine.get(10)).toBe("At 10");
+    expect(byLine.get(18)).toBe("At 18");
+  });
+
+  test("duplicate risks get distinct keys", () => {
+    const m = manifest([], { triage: { top_risks: [risk("x.ts", 5, "Same"), risk("x.ts", 5, "Same")], review_order: [] } } as Partial<ReviewManifest>);
+    const keys = buildFindings(m).findings.map((f) => f.key);
+    expect(new Set(keys).size).toBe(2);
+  });
+
   test("info highlights never absorb a risk", () => {
     const m = manifest([file("a.ts", [hl(10, 10, "info")])], { triage: { top_risks: [risk("a.ts", 10)], review_order: [] } } as Partial<ReviewManifest>);
     expect(buildFindings(m).findings.map((f) => f.kind)).toEqual(["risk"]);
@@ -147,7 +164,12 @@ describe("buildFindings — spec and CI aggregates", () => {
   test("one spec finding for unaddressed partial/uncovered requirements", () => {
     const { findings } = buildFindings(manifest([], coverage(["covered", "partial", "uncovered", "untestable"])));
     expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({ kind: "spec", rank: "high", items: ["Requirement 1", "Requirement 2"] });
+    expect(findings[0]).toMatchObject({
+      kind: "spec",
+      rank: "high",
+      items: ["Requirement 1", "Requirement 2"],
+      itemKeys: [specResolveKey("Requirement 1"), specResolveKey("Requirement 2")],
+    });
   });
 
   test("partial-only is medium; addressed requirements drop out; all addressed → none", () => {
@@ -157,6 +179,20 @@ describe("buildFindings — spec and CI aggregates", () => {
     expect(one[0].items).toEqual(["Requirement 1"]);
     const all = new Set([specResolveKey("Requirement 0"), specResolveKey("Requirement 1")]);
     expect(buildFindings(m, { resolvedSpecKeys: all }).findings).toHaveLength(0);
+  });
+
+  test("failing CI leads the list even against critical notes in triaged files", () => {
+    const m = manifest([file("a.ts", [hl(1, 1, "critical", "bug")])], { triage: { top_risks: [], review_order: [{ path: "a.ts", rationale: "" }] } } as Partial<ReviewManifest>);
+    const checks: PrChecksStatus = { overall_state: "failure", check_runs: [{ name: "build", status: "COMPLETED", conclusion: "FAILURE", details_url: null }] };
+    expect(buildFindings(m, { checks }).findings.map((f) => f.kind)).toEqual(["ci", "bug"]);
+  });
+
+  test("a CI mark lapses on a new head even if the same checks fail", () => {
+    const checks: PrChecksStatus = { overall_state: "failure", check_runs: [{ name: "build", status: "COMPLETED", conclusion: "FAILURE", details_url: null }] };
+    const f = buildFindings(manifest([], { head_sha: "aaa" }), { checks }).findings[0];
+    const checked = new Map([[f.key, { lines_hash: f.linesHash }]]);
+    expect(buildFindings(manifest([], { head_sha: "aaa" }), { checks, checked }).findings[0].state).toBe("checked");
+    expect(buildFindings(manifest([], { head_sha: "bbb" }), { checks, checked }).findings[0].state).toBe("open");
   });
 
   test("one critical CI finding only while checks fail", () => {

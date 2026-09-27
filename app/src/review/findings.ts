@@ -50,6 +50,10 @@ export interface Finding {
   endLine?: number;
   /** Spec/CI findings: the individual items behind the aggregate. */
   items?: string[];
+  /** Spec finding: specResolveKey per item. Acting on the aggregate should
+   * resolve these (the per-requirement store) rather than key the aggregate,
+   * whose key changes whenever the set does. */
+  itemKeys?: string[];
   /** Hash of the code the finding sits on; a stored "Looks fine" only holds
    * while this still matches (see isChecked). "" = nothing to anchor on. */
   linesHash: string;
@@ -151,28 +155,29 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
     }
   }
 
-  const unmergedRisks: TopRisk[] = [];
-  for (const risk of manifest.triage?.top_risks ?? []) {
+  // Pair risks with highlights globally, nearest first (then most urgent),
+  // so a risk lands on the note it actually points at — greedy per-risk
+  // matching could hand two nearby notes each other's headline.
+  const risks = manifest.triage?.top_risks ?? [];
+  const pairs: { ri: number; p: Pending; dist: number }[] = [];
+  risks.forEach((risk, ri) => {
     const line = risk.start_line;
-    if (line == null) {
-      unmergedRisks.push(risk);
-      continue;
-    }
-    // Most urgent, then nearest, eligible highlight not already claimed.
-    let best: Pending | null = null;
-    let bestDist = Infinity;
+    if (line == null) return;
     for (const p of pending) {
-      if (p.path !== risk.path || p.merged) continue;
+      if (p.path !== risk.path) continue;
       if (line < p.h.start_line - MERGE_WINDOW || line > p.h.end_line + MERGE_WINDOW) continue;
       const dist = line < p.h.start_line ? p.h.start_line - line : line > p.h.end_line ? line - p.h.end_line : 0;
-      if (!best || compareRank(p.rank, best.rank) < 0 || (p.rank === best.rank && dist < bestDist)) {
-        best = p;
-        bestDist = dist;
-      }
+      pairs.push({ ri, p, dist });
     }
-    if (best) best.merged = risk;
-    else unmergedRisks.push(risk);
+  });
+  pairs.sort((a, b) => a.dist - b.dist || compareRank(a.p.rank, b.p.rank) || a.ri - b.ri);
+  const mergedRisk = new Set<number>();
+  for (const { ri, p } of pairs) {
+    if (mergedRisk.has(ri) || p.merged) continue;
+    p.merged = risks[ri];
+    mergedRisk.add(ri);
   }
+  const unmergedRisks = risks.filter((_, ri) => !mergedRisk.has(ri));
 
   for (const p of pending) {
     const { h, merged } = p;
@@ -213,7 +218,8 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
       !resolvedSpecKeys?.has(specResolveKey(req.text)),
   );
   if (unaddressed.length > 0) {
-    const key = `spec-set:${hashString(unaddressed.map((r) => specResolveKey(r.text)).sort().join("|"))}`;
+    const itemKeys = unaddressed.map((r) => specResolveKey(r.text));
+    const key = `spec-set:${hashString([...itemKeys].sort().join("|"))}`;
     findings.push({
       key,
       kind: "spec",
@@ -223,6 +229,7 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
           ? "1 requirement isn't fully covered"
           : `${unaddressed.length} requirements aren't fully covered`,
       items: unaddressed.map((r) => r.text),
+      itemKeys,
       // The key already encodes the set; a changed set is a new finding.
       linesHash: key,
     });
@@ -239,7 +246,9 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
       rank: "critical",
       title: failing.length === 1 ? `CI: ${names[0]} is failing` : `${failing.length} CI checks are failing`,
       items: names,
-      linesHash: key,
+      // Tied to the head commit too: the same checks failing again on a new
+      // push is a new failure, so a "Looks fine" must not carry over.
+      linesHash: hashString(`${key}@${manifest.head_sha}`),
     });
   }
 
@@ -248,11 +257,22 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
   const pos = (f: Omit<Finding, "state">) => (f.path != null ? orderIndex.get(f.path) ?? Infinity : Infinity);
   findings.sort(
     (a, b) =>
+      // Failing CI leads regardless of triage order: it blocks the merge.
+      Number(b.kind === "ci") - Number(a.kind === "ci") ||
       compareRank(a.rank, b.rank) ||
       pos(a) - pos(b) ||
       (a.path ?? "").localeCompare(b.path ?? "") ||
       (a.startLine ?? 0) - (b.startLine ?? 0),
   );
+
+  // Keys must be unique (list identity + per-finding state): triage can emit
+  // two risks with the same path, line, and title.
+  const seen = new Map<string, number>();
+  for (const f of findings) {
+    const n = (seen.get(f.key) ?? 0) + 1;
+    seen.set(f.key, n);
+    if (n > 1) f.key = `${f.key}#${n}`;
+  }
 
   return {
     findings: findings.map((f) => ({
