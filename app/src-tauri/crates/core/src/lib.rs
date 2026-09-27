@@ -9,6 +9,7 @@ pub mod budgets;
 pub mod chat;
 pub mod chat_agent;
 pub mod chat_history;
+pub mod checked_findings;
 pub mod checks_dismiss;
 pub mod config;
 pub mod dismissed_highlights;
