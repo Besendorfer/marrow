@@ -10,7 +10,7 @@
 
 import { hashString, highlightKey, isFailingCheck } from "../utils";
 import { specResolveKey } from "../components/digest";
-import type { CheckedFindingEntry, FileDiff, Highlight, PrChecksStatus, ReviewManifest, TopRisk } from "../types";
+import type { CheckedFindingEntry, FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
 
 /** What produced a finding. Highlight categories map 1:1; `note` is a
  * highlight from a manifest cached before categories existed. */
@@ -30,7 +30,16 @@ export type FindingKind =
  * defects and medium ones. */
 export type FindingRank = "critical" | "high" | "check" | "medium" | "low";
 
-export type FindingState = "open" | "checked" | "dismissed";
+/** `commented` = you left a review comment on the finding's lines (derived
+ * from GitHub threads, not stored). */
+export type FindingState = "open" | "checked" | "commented" | "dismissed";
+
+/** Does this need a fix before merge, or is it worth a look? Only a claimed
+ * defect (a critical/high bug or behavior note, or failing CI) is "fix".
+ * Triage risks are "look": the triage pass names the riskiest places to
+ * review, it never claims they're wrong. Test gaps, uncovered requirements,
+ * simplifications, and observations are "look" too. */
+export type FindingUrgency = "fix" | "look";
 
 export interface Finding {
   /** Stable identity for "Looks fine" / "Not an issue" persistence. */
@@ -54,6 +63,7 @@ export interface Finding {
    * resolve these (the per-requirement store) rather than key the aggregate,
    * whose key changes whenever the set does. */
   itemKeys?: string[];
+  urgency: FindingUrgency;
   /** Hash of the code the finding sits on; a stored "Looks fine" only holds
    * while this still matches (see isChecked). "" = nothing to anchor on. */
   linesHash: string;
@@ -68,6 +78,11 @@ export interface FindingsInput {
   checks?: PrChecksStatus | null;
   /** Requirements the user already marked addressed (specResolveKey keys). */
   resolvedSpecKeys?: Set<string>;
+  /** Review threads on the PR; a thread you started on a finding's lines
+   * marks it `commented`. */
+  threads?: ReviewThread[];
+  /** Your GitHub login (thread authorship). Unknown → only just-posted ("you") threads count. */
+  viewerLogin?: string | null;
 }
 
 export interface FindingsResult {
@@ -130,16 +145,80 @@ function lineRangeHash(file: FileDiff | undefined, start: number, end: number): 
   return file.diff_hash ?? "";
 }
 
+/** Did the viewer start a review thread on this finding's lines? A range
+ * finding (a note) matches threads inside its lines; an anchor-only finding
+ * (a risk) matches within the merge window, like the risk/note pairing. */
+function isCommented(f: Omit<Finding, "state" | "urgency">, threads: ReviewThread[] | undefined, viewer: string | null | undefined): boolean {
+  if (!threads?.length || f.path == null || f.startLine == null) return false;
+  const start = f.endLine != null ? f.startLine : f.startLine - MERGE_WINDOW;
+  const end = f.endLine ?? f.startLine + MERGE_WINDOW;
+  return threads.some((t) => {
+    if (t.path !== f.path || t.line == null || t.line < start || t.line > end) return false;
+    const author = t.comments[0]?.author.login;
+    // "you" is the optimistic placeholder a just-posted comment renders with.
+    // Until your login is known, only that counts — someone else's thread
+    // must not read as yours.
+    return author === "you" || (!!viewer && author === viewer);
+  });
+}
+
+function urgencyOf(kind: FindingKind, rank: FindingRank): FindingUrgency {
+  if (kind === "ci") return "fix";
+  const defect = kind === "bug" || kind === "behavior" || kind === "note";
+  return defect && (rank === "critical" || rank === "high") ? "fix" : "look";
+}
+
+/** One plain sentence on what the AI is (and isn't) claiming — so a
+ * reviewer can tell "this is broken" from "look here" at a glance. */
+export function findingClaim(f: Pick<Finding, "kind" | "urgency">): string {
+  if (f.kind === "ci") return "CI is failing on this PR.";
+  if (f.urgency === "fix") return "The AI thinks this is broken and needs a fix before merge.";
+  switch (f.kind) {
+    case "risk":
+      return "No defect claimed. It's one of the riskiest changes in this PR, so verify it yourself.";
+    case "test_gap":
+      return "Not a bug: behavior no test checks yet. Worth closing, not blocking.";
+    case "spec":
+      return "Requirements from the PR description that no test proves yet.";
+    case "simplification":
+      return "Optional cleanup; nothing is broken.";
+    default:
+      return "Worth knowing; the AI isn't asking for a change.";
+  }
+}
+
+/** The review-list selection id for a finding. Spec and CI aggregates get
+ * fixed ids: their keys hash the current item set, which changes while you
+ * work (resolving a requirement, a check starting to pass), and the
+ * selection must not jump away when it does. */
+export function selectionIdFor(f: Pick<Finding, "kind" | "key">): string {
+  return f.kind === "spec" || f.kind === "ci" ? f.kind : f.key;
+}
+
+/** Draft body when the reviewer chooses "Comment" on a finding: the note in
+ * the reviewer's own words — same shape as highlightCommentBody (utils.ts) for
+ * notes, the risk's reason for risks, and the item list for aggregates. The
+ * reviewer edits it before anything posts. */
+export function findingCommentBody(f: Finding): string {
+  if (f.kind === "spec") return ["These requirements aren't fully covered yet:", ...(f.items ?? []).map((i) => `- ${i}`)].join("\n");
+  if (f.kind === "ci") return `CI is failing: ${(f.items ?? []).join(", ")}.`;
+  if (f.kind === "risk") return [f.title, f.detail].filter(Boolean).join("\n\n");
+  const parts = [f.detail ?? f.title];
+  if (f.scenario) parts.push(f.scenario);
+  if (f.fix) parts.push(`Suggested fix: ${f.fix}`);
+  return parts.join("\n\n");
+}
+
 function isChecked(checked: Map<string, CheckedFindingEntry> | undefined, key: string, linesHash: string): boolean {
   const entry = checked?.get(key);
   return !!entry && linesHash !== "" && entry.lines_hash === linesHash;
 }
 
 export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {}): FindingsResult {
-  const { dismissed, checked, checks, resolvedSpecKeys } = input;
+  const { dismissed, checked, checks, resolvedSpecKeys, threads, viewerLogin } = input;
   const byPath = new Map(manifest.files.map((f) => [f.path, f]));
   const infoCountByPath = new Map<string, number>();
-  const findings: Omit<Finding, "state">[] = [];
+  const findings: Omit<Finding, "state" | "urgency">[] = [];
 
   // ── Highlights (and the risks that land on them) ──
   interface Pending { path: string; h: Highlight; rank: FindingRank; merged?: TopRisk }
@@ -254,7 +333,7 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
 
   // ── Order: rank, then triage review order, then position ──
   const orderIndex = new Map((manifest.triage?.review_order ?? []).map((item, i) => [item.path, i]));
-  const pos = (f: Omit<Finding, "state">) => (f.path != null ? orderIndex.get(f.path) ?? Infinity : Infinity);
+  const pos = (f: Omit<Finding, "state" | "urgency">) => (f.path != null ? orderIndex.get(f.path) ?? Infinity : Infinity);
   findings.sort(
     (a, b) =>
       // Failing CI leads regardless of triage order: it blocks the merge.
@@ -277,7 +356,14 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
   return {
     findings: findings.map((f) => ({
       ...f,
-      state: dismissed?.has(f.key) ? "dismissed" : isChecked(checked, f.key, f.linesHash) ? "checked" : "open",
+      urgency: urgencyOf(f.kind, f.rank),
+      state: dismissed?.has(f.key)
+        ? "dismissed"
+        : isChecked(checked, f.key, f.linesHash)
+          ? "checked"
+          : isCommented(f, threads, viewerLogin)
+            ? "commented"
+            : "open",
     })),
     infoCountByPath,
   };

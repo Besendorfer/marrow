@@ -107,6 +107,7 @@ fn default_settings() -> Settings {
         show_draft_prs: true,
         setup_done: false,
         expand_all_hunks: false,
+        inbox_layout: false,
         local_repo_roots: Vec::new(),
     }
 }
@@ -117,11 +118,15 @@ pub fn load_settings() -> Settings {
         return default_settings();
     }
 
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return default_settings(),
-    };
+    match fs::read_to_string(&path) {
+        Ok(content) => parse_settings(&content),
+        Err(_) => default_settings(),
+    }
+}
 
+/// Parse the hand-rolled `key=value` config format. Pure (no I/O) so the
+/// format is testable without touching the user's real config file.
+pub fn parse_settings(content: &str) -> Settings {
     let mut model = String::new();
     let mut github_token = String::new();
     let mut aws_profile = String::new();
@@ -142,6 +147,7 @@ pub fn load_settings() -> Settings {
     let mut show_draft_prs = true;
     let mut setup_done = false;
     let mut expand_all_hunks = false;
+    let mut inbox_layout = false;
     // One `local_repo_root=` line per directory (paths may contain commas).
     let mut local_repo_roots: Vec<String> = Vec::new();
 
@@ -188,6 +194,8 @@ pub fn load_settings() -> Settings {
             setup_done = val == "true";
         } else if let Some(val) = line.strip_prefix("expand_all_hunks=") {
             expand_all_hunks = val == "true";
+        } else if let Some(val) = line.strip_prefix("inbox_layout=") {
+            inbox_layout = val == "true";
         } else if let Some(val) = line.strip_prefix("local_repo_root=") {
             if !val.trim().is_empty() {
                 local_repo_roots.push(val.trim().to_string());
@@ -216,6 +224,7 @@ pub fn load_settings() -> Settings {
         show_draft_prs,
         setup_done,
         expand_all_hunks,
+        inbox_layout,
         local_repo_roots,
     }
 }
@@ -227,6 +236,19 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
             .map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
 
+    let content = serialize_settings(settings);
+
+    // Atomic + created 0600 from the first byte: the token never touches
+    // disk world-readable, even transiently.
+    crate::state_io::write_atomic(&path, content.as_bytes())
+        .map_err(|e| format!("Failed to save settings: {}", e))?;
+
+    Ok(())
+}
+
+/// Render settings in the `key=value` config format (inverse of
+/// `parse_settings`). Pure, like its counterpart.
+pub fn serialize_settings(settings: &Settings) -> String {
     let mut content = format!("model={}\n", settings.model);
     if !settings.github_token.is_empty() {
         content.push_str(&format!("github_token={}\n", settings.github_token));
@@ -267,16 +289,11 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     content.push_str(&format!("show_draft_prs={}\n", settings.show_draft_prs));
     content.push_str(&format!("setup_done={}\n", settings.setup_done));
     content.push_str(&format!("expand_all_hunks={}\n", settings.expand_all_hunks));
+    content.push_str(&format!("inbox_layout={}\n", settings.inbox_layout));
     for root in settings.local_repo_roots.iter().map(|r| r.trim()).filter(|r| !r.is_empty() && !r.contains('\n')) {
         content.push_str(&format!("local_repo_root={}\n", root));
     }
-
-    // Atomic + created 0600 from the first byte: the token never touches
-    // disk world-readable, even transiently.
-    crate::state_io::write_atomic(&path, content.as_bytes())
-        .map_err(|e| format!("Failed to save settings: {}", e))?;
-
-    Ok(())
+    content
 }
 
 /// Resolve a GitHub token: config file > GH_TOKEN env > GITHUB_TOKEN env.
@@ -392,6 +409,24 @@ mod tests {
         let mut s = default_settings();
         s.anthropic_api_key = "sk-ant-from-config".to_string();
         assert_eq!(resolve_anthropic_api_key(&s).as_deref(), Some("sk-ant-from-config"));
+    }
+
+    #[test]
+    fn inbox_layout_is_off_by_default() {
+        // Fresh install, and an existing config written before the setting existed.
+        assert!(!default_settings().inbox_layout);
+        assert!(!parse_settings("model=\nview_mode=split\n").inbox_layout);
+    }
+
+    #[test]
+    fn inbox_layout_round_trips_through_the_config_format() {
+        let mut s = default_settings();
+        s.inbox_layout = true;
+        let text = serialize_settings(&s);
+        assert!(text.contains("inbox_layout=true\n"));
+        assert!(parse_settings(&text).inbox_layout);
+        s.inbox_layout = false;
+        assert!(!parse_settings(&serialize_settings(&s)).inbox_layout);
     }
 
     #[test]

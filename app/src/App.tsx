@@ -24,6 +24,12 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { repoBaseUrl } from "./review/helpers";
 import { useReviewController } from "./review/useReviewController";
+import { ReviewInbox } from "./components/ReviewInbox";
+import { RequirementsCard } from "./components/RequirementsCard";
+import type { ReviewManifest, Tab } from "./types";
+
+/** A tab with a loaded PR — what the review surfaces render. */
+type ReviewTab = Tab & { manifest: ReviewManifest };
 
 function App() {
   const {
@@ -129,7 +135,75 @@ function App() {
     handleCreateComment,
     closeTab,
     handleFileDrop,
+    inboxLayout,
+    selectInboxFinding,
+    inboxOpenAt,
+    selectInboxFile,
+    selectInboxPanel,
+    inboxLooksFine,
+    inboxNotAnIssue,
+    inboxReopen,
+    inboxComment,
   } = useReviewController();
+
+  // Element builders shared by the classic lenses and the inbox layout
+  // (issue #238) — one place each is wired, so both layouts stay identical.
+  function renderDiffViewer(tab: ReviewTab) {
+    if (!tab.selectedFile) return null;
+    return (
+      <DiffViewer ref={diffViewerRef} key={tab.selectedFile.path} file={tab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} dismissedHighlights={tab.dismissedHighlights} noteResolutions={tab.noteResolutions} newHighlightKeys={tab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={tab.commentThreads.status === "loaded" ? tab.commentThreads.threads : undefined} checkAnnotations={selectedFileAnnotations} />
+    );
+  }
+
+  /** `openAt` / `onOpenGroup` differ in the inbox, where a location link
+   * must also move the review-list selection. */
+  function renderOverview(tab: ReviewTab, openAt: (path: string, line?: number) => void = handleChatOpenFile, onOpenGroup = openGroup) {
+    return (
+      <PrOverview
+        manifest={tab.manifest}
+        currentFingerprint={currentFingerprint}
+        checksStatus={activeChecks ?? null}
+        reviewState={tab.myReviewState ?? null}
+        viewedCount={tab.viewedFiles.size}
+        unresolvedThreads={tab.commentThreads.status === "loaded" ? tab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
+        hasSubmittedReview={tab.myReviewState != null && tab.myReviewState.status !== "pending" && tab.myReviewState.status !== "dismissed" && !tab.myReviewState.is_re_requested}
+        startTarget={nextUnviewed(guidedOrder(), -1)}
+        onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
+        onSelectFile={setSelectedFile}
+        onOpenGroup={onOpenGroup}
+        onOpenAt={openAt}
+        onBriefMe={briefMe}
+        onViewCommit={handleViewCommit}
+        onOpenChecks={() => { if (activeTabId) setLens(activeTabId, "checks"); }}
+        resolvedSpecKeys={tab.resolvedSpecKeys}
+        specResolutions={tab.specResolutions}
+        onResolveSpec={resolveSpecItem}
+        onRestoreSpec={restoreSpecItem}
+        localRequirements={tab.localRequirements}
+        analyzingRequirements={tab.analyzingRequirements}
+        onSaveRequirements={saveLocalRequirements}
+        newHighlightKeys={
+          // Dismissing a new note removes it from the chip immediately —
+          // a dead "1 new AI note" pointing at a hidden note is worse
+          // than no chip.
+          tab.newHighlightKeys &&
+          new Set([...tab.newHighlightKeys].filter((k) => !tab.dismissedHighlights.has(k)))
+        }
+      />
+    );
+  }
+
+  function renderChecksLens(tab: ReviewTab, openAt: (path: string, line?: number) => void = handleChatOpenFile) {
+    return (
+      <ChecksLens
+        checks={activeChecks ?? null}
+        annotations={tab.checkAnnotations}
+        diffPaths={diffFilePaths}
+        headSha={tab.manifest.head_sha}
+        onOpenAt={openAt}
+      />
+    );
+  }
 
   // Command palette registry — searchable home for every action, with the
   // keyboard hint teaching the direct shortcut. Review commands only appear
@@ -253,6 +327,7 @@ function App() {
         onOpenPalette={() => setPaletteOpen(true)}
         chatOpen={activeTab?.chat.open ?? false}
         onToggleChat={activeTab?.manifest ? toggleChatOpen : undefined}
+        inboxMode={inboxLayout}
       />
       <SettingsModal
         open={settingsOpen}
@@ -373,45 +448,42 @@ function App() {
               onViewCumulativeDiff={() => { if (activeTabId) setLens(activeTabId, "files"); }}
             />
           ) : activeTab.lens === "checks" ? (
-            <ChecksLens
+            renderChecksLens(activeTab as ReviewTab)
+          ) : inboxLayout ? (
+            <ReviewInbox
+              tab={activeTab as ReviewTab}
               checks={activeChecks ?? null}
-              annotations={activeTab.checkAnnotations}
-              diffPaths={diffFilePaths}
-              headSha={activeTab.manifest.head_sha}
-              onOpenAt={handleChatOpenFile}
+              viewerLogin={viewerLogin}
+              onSelectFinding={selectInboxFinding}
+              onSelectFile={selectInboxFile}
+              onSelectPanel={selectInboxPanel}
+              onToggleViewed={toggleViewed}
+              onLooksFine={inboxLooksFine}
+              onNotAnIssue={inboxNotAnIssue}
+              onReopen={inboxReopen}
+              onComment={inboxComment}
+              onEnsureThreads={handleRequestComments}
+              renderDiff={() => renderDiffViewer(activeTab as ReviewTab) ?? <div className="no-file-selected">Opening file…</div>}
+              renderAbout={() =>
+                renderOverview(activeTab as ReviewTab, inboxOpenAt, (_group, files) => { if (files[0]) selectInboxFile(files[0]); })
+              }
+              renderSpec={() => (
+                <RequirementsCard
+                  manifest={(activeTab as ReviewTab).manifest}
+                  resolvedSpecKeys={activeTab.resolvedSpecKeys}
+                  specResolutions={activeTab.specResolutions}
+                  onResolveSpec={resolveSpecItem}
+                  onRestoreSpec={restoreSpecItem}
+                  onOpenAt={inboxOpenAt}
+                  localRequirements={activeTab.localRequirements}
+                  analyzing={activeTab.analyzingRequirements}
+                  onSaveRequirements={saveLocalRequirements}
+                />
+              )}
+              renderChecks={() => renderChecksLens(activeTab as ReviewTab, inboxOpenAt)}
             />
           ) : activeTab.lens === "overview" ? (
-            <PrOverview
-              manifest={activeTab.manifest}
-              currentFingerprint={currentFingerprint}
-              checksStatus={activeChecks ?? null}
-              reviewState={activeTab.myReviewState ?? null}
-              viewedCount={activeTab.viewedFiles.size}
-              unresolvedThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads.filter((t) => !t.is_resolved).length : null}
-              hasSubmittedReview={activeTab.myReviewState != null && activeTab.myReviewState.status !== "pending" && activeTab.myReviewState.status !== "dismissed" && !activeTab.myReviewState.is_re_requested}
-              startTarget={nextUnviewed(guidedOrder(), -1)}
-              onStartReview={() => { const t = nextUnviewed(guidedOrder(), -1); if (t) setSelectedFile(t); }}
-              onSelectFile={setSelectedFile}
-              onOpenGroup={openGroup}
-              onOpenAt={handleChatOpenFile}
-              onBriefMe={briefMe}
-              onViewCommit={handleViewCommit}
-              onOpenChecks={() => { if (activeTabId) setLens(activeTabId, "checks"); }}
-              resolvedSpecKeys={activeTab.resolvedSpecKeys}
-              specResolutions={activeTab.specResolutions}
-              onResolveSpec={resolveSpecItem}
-              onRestoreSpec={restoreSpecItem}
-              localRequirements={activeTab.localRequirements}
-              analyzingRequirements={activeTab.analyzingRequirements}
-              onSaveRequirements={saveLocalRequirements}
-              newHighlightKeys={
-                // Dismissing a new note removes it from the chip immediately —
-                // a dead "1 new AI note" pointing at a hidden note is worse
-                // than no chip.
-                activeTab.newHighlightKeys &&
-                new Set([...activeTab.newHighlightKeys].filter((k) => !activeTab.dismissedHighlights.has(k)))
-              }
-            />
+            renderOverview(activeTab as ReviewTab)
           ) : (
           <>
           <FileSidebar
@@ -446,7 +518,7 @@ function App() {
                 const next = nextUnviewed(order, idx, activeTab.selectedFile.path);
                 return (
                   <>
-                    <DiffViewer ref={diffViewerRef} key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} onViewModeChange={setViewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} expandAllHunks={expandAllHunks} dismissedHighlights={activeTab.dismissedHighlights} noteResolutions={activeTab.noteResolutions} newHighlightKeys={activeTab.newHighlightKeys} onResolveHighlight={resolveHighlight} onRestoreHighlight={restoreHighlight} onCreateComment={handleCreateComment} onEditComment={handleEditComment} onReply={handleReply} onToggleResolved={handleToggleResolved} onToggleReaction={handleToggleReaction} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} checkAnnotations={selectedFileAnnotations} />
+                    {renderDiffViewer(activeTab as ReviewTab)}
                     <NextFileBar
                       index={idx >= 0 ? idx : 0}
                       total={order.length}

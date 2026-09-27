@@ -1,10 +1,10 @@
 // buildFindings (issue #238 phase 3): the merge / dedupe / rank / state rules
 // behind the inbox's single findings list. Run with `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { buildFindings, firstSentence, riskKey, MERGE_WINDOW } from "./findings";
+import { buildFindings, findingClaim, findingCommentBody, firstSentence, riskKey, selectionIdFor, MERGE_WINDOW } from "./findings";
 import { specResolveKey } from "../components/digest";
 import { highlightKey } from "../utils";
-import type { FileDiff, Highlight, PrChecksStatus, ReviewManifest, TopRisk } from "../types";
+import type { FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
 
 function file(path: string, highlights: Highlight[] = [], extra: Partial<FileDiff> = {}): FileDiff {
   return {
@@ -207,6 +207,67 @@ describe("buildFindings — spec and CI aggregates", () => {
   });
 });
 
+describe("urgency — does it need a fix?", () => {
+  test("claimed defects and failing CI are fix; risks and softer kinds are look", () => {
+    const m = manifest(
+      [file("a.ts", [
+        hl(10, 10, "critical", "behavior"),
+        hl(40, 40, "warning", "bug"),
+        hl(70, 70, "warning", "test_gap"),
+        hl(100, 100, "warning", "simplification"),
+        hl(130, 130, "info", "test_gap"),
+      ])],
+      {
+        triage: { top_risks: [risk("z.ts", 5)], review_order: [] },
+        requirements_coverage: { requirements: [{ text: "R", status: "uncovered", tests: [] }], orphan_tests: [] },
+      } as Partial<ReviewManifest>,
+    );
+    const checks: PrChecksStatus = { overall_state: "failure", check_runs: [{ name: "build", status: "COMPLETED", conclusion: "FAILURE", details_url: null }] };
+    const got = buildFindings(m, { checks }).findings.map((f) => `${f.kind}:${f.urgency}`);
+    expect(got.sort()).toEqual(
+      ["behavior:fix", "bug:fix", "ci:fix", "risk:look", "simplification:look", "spec:look", "test_gap:look", "test_gap:look"].sort(),
+    );
+  });
+
+  test("a risk merged into a defect stays fix; merged into a test gap stays look", () => {
+    const m = manifest(
+      [file("a.ts", [hl(10, 10, "warning", "bug"), hl(60, 60, "warning", "test_gap")])],
+      { triage: { top_risks: [risk("a.ts", 11, "R1"), risk("a.ts", 61, "R2")], review_order: [] } } as Partial<ReviewManifest>,
+    );
+    const byTitle = new Map(buildFindings(m).findings.map((f) => [f.title, f.urgency]));
+    expect(byTitle.get("R1")).toBe("fix");
+    expect(byTitle.get("R2")).toBe("look");
+  });
+
+  test("the claim line says what the AI is and isn't claiming", () => {
+    expect(findingClaim({ kind: "risk", urgency: "look" })).toStartWith("No defect claimed.");
+    expect(findingClaim({ kind: "bug", urgency: "fix" })).toContain("needs a fix before merge");
+    expect(findingClaim({ kind: "test_gap", urgency: "look" })).toStartWith("Not a bug");
+    expect(findingClaim({ kind: "ci", urgency: "fix" })).toBe("CI is failing on this PR.");
+  });
+});
+
+describe("selectionIdFor", () => {
+  test("aggregates get fixed ids; everything else uses its key", () => {
+    expect(selectionIdFor({ kind: "spec", key: "spec-set:abc" })).toBe("spec");
+    expect(selectionIdFor({ kind: "ci", key: "ci:def" })).toBe("ci");
+    expect(selectionIdFor({ kind: "risk", key: "risk:a.ts:1:x" })).toBe("risk:a.ts:1:x");
+  });
+});
+
+describe("findingCommentBody", () => {
+  test("a note drafts like the diff's own Comment…: comment, scenario, fix", () => {
+    const h: Highlight = { ...hl(1, 1, "warning", "bug", "Guard removed."), scenario: "Admins bypass it.", fix: "Restore the guard." };
+    const f = buildFindings(manifest([file("a.ts", [h])])).findings[0];
+    expect(findingCommentBody(f)).toBe("Guard removed.\n\nAdmins bypass it.\n\nSuggested fix: Restore the guard.");
+  });
+
+  test("a merged risk still drafts from the note, not the headline", () => {
+    const m = manifest([file("a.ts", [hl(10, 10, "warning", "bug", "The note.")])], { triage: { top_risks: [risk("a.ts", 10, "Headline")], review_order: [] } } as Partial<ReviewManifest>);
+    expect(findingCommentBody(buildFindings(m).findings[0])).toBe("The note.");
+  });
+});
+
 describe("buildFindings — state", () => {
   const h = hl(10, 12, "warning", "bug");
   const base = () => manifest([file("a.ts", [h])]);
@@ -241,6 +302,23 @@ describe("buildFindings — state", () => {
     const checked = new Map([[riskKey(r), { lines_hash: "dh-1" }]]);
     expect(buildFindings(m("dh-1"), { checked }).findings[0].state).toBe("checked");
     expect(buildFindings(m("dh-2"), { checked }).findings[0].state).toBe("open");
+  });
+
+  test("your review thread on a finding's lines marks it commented", () => {
+    const thread = (path: string, line: number, login: string) =>
+      ({ id: "t", path, line, is_resolved: false, is_outdated: false, original_line: line, diff_hunk: "", comments: [{ author: { login } }] }) as unknown as ReviewThread;
+    const at = (threads: ReviewThread[], viewerLogin?: string) => buildFindings(base(), { threads, viewerLogin }).findings[0].state;
+    expect(at([thread("a.ts", 11, "me")], "me")).toBe("commented");
+    expect(at([thread("a.ts", 11, "someone")], "me")).toBe("open"); // not yours
+    expect(at([thread("a.ts", 30, "me")], "me")).toBe("open"); // outside the lines
+    expect(at([thread("b.ts", 11, "me")], "me")).toBe("open"); // other file
+    const f = buildFindings(base()).findings[0];
+    const checked = new Map([[f.key, { lines_hash: f.linesHash }]]);
+    expect(buildFindings(base(), { threads: [thread("a.ts", 11, "me")], viewerLogin: "me", checked }).findings[0].state).toBe("checked");
+    // Login not loaded yet: someone else's thread must not read as yours,
+    // but a just-posted comment (optimistic "you") does.
+    expect(at([thread("a.ts", 11, "someone")])).toBe("open");
+    expect(at([thread("a.ts", 11, "you")])).toBe("commented");
   });
 
   test("an empty stored hash never counts as checked", () => {

@@ -204,7 +204,17 @@ export function createNavigation(ctxArg: unknown) {
   // guided review) routes through this, so always landing in the Files lens
   // needs no per-callsite changes (issue #170).
   function setSelectedFile(file: FileDiff) {
-    ctx.updateTab(activeTabId, (t) => ({ ...t, selectedFile: file, lens: "files" }));
+    ctx.updateTab(activeTabId, (t) => ({
+      ...t,
+      selectedFile: file,
+      lens: "files",
+      // Inbox layout (issue #238): opening a file from anywhere else (search,
+      // chat citations, About's Start review) moves the review-list selection
+      // to it — unless the selection is already anchored to this file (a
+      // finding the inbox just selected, which opens its file through here).
+      inboxSelection: t.inboxSelectionPath === file.path ? t.inboxSelection : `file:${file.path}`,
+      inboxSelectionPath: file.path,
+    }));
   }
 
   /** A change-group row on the Overview — scopes the Files sidebar to the
