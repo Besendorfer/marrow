@@ -376,8 +376,18 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
             };
             match result {
                 Ok((parsed, verdict)) => {
+                    // Findings anchored outside the PR are dropped by
+                    // validation; count them so a verdict with nothing
+                    // behind it can't hide (issue #232).
+                    let out_of_diff: Vec<String> = parsed
+                        .iter()
+                        .filter(|h| !file_list.contains(&h.path))
+                        .map(|h| format!("OUT-OF-DIFF dropped: {} L{}-{} ({})", h.path, h.start_line, h.end_line, h.category))
+                        .collect();
                     let validated = validate_highlights(parsed, &file_list);
                     let mut fs = score_findings(&validated, &labels);
+                    fs.out_of_diff = out_of_diff.len();
+                    fs.detail.extend(out_of_diff);
                     score_verdict(&mut fs, verdict.as_ref(), labels.expected_verdict.as_deref());
                     let st = stats.into_inner().unwrap();
                     fs.tool_calls = st.tool_calls;
@@ -485,7 +495,7 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
                 "substantive": f.substantive, "complete": f.complete,
                 "verdict": f.verdict, "verdict_match": f.verdict_match, "shapes": f.shapes,
                 "tool_calls": f.tool_calls, "degraded": f.degraded, "degrade_reason": f.degrade_reason,
-                "repaired": f.repaired, "reads": f.reads,
+                "repaired": f.repaired, "reads": f.reads, "out_of_diff": f.out_of_diff,
                 "detail": f.detail,
             })),
             "coverage": s.coverage.as_ref().map(|c| serde_json::json!({
@@ -543,11 +553,12 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
             };
             let _ = writeln!(
                 out,
-                "{:<24} review: verdict {verdict} · complete {}/{} · tools {}{}",
+                "{:<24} review: verdict {verdict} · complete {}/{} · tools {} · out-of-diff {}{}",
                 "",
                 f.complete,
                 f.substantive,
                 f.tool_calls,
+                f.out_of_diff,
                 if f.degraded { " · DEGRADED (single-shot fallback)" } else if f.repaired { " · repaired" } else { "" }
             );
             if let Some(r) = &f.degrade_reason {
@@ -629,6 +640,8 @@ struct FindingsScore {
     degrade_reason: Option<String>,
     repaired: bool,
     reads: Vec<String>,
+    /// Findings discarded for anchoring on a file outside the PR.
+    out_of_diff: usize,
     detail: Vec<String>,
 }
 

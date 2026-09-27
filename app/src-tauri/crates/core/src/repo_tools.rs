@@ -196,6 +196,14 @@ impl SnapshotRepo {
     fn files_at(&self, repo: &str, rev: &str) -> Option<&HashMap<String, String>> {
         self.files.get(repo).and_then(|r| r.get(rev))
     }
+
+    /// Like `files_at`, but a repo/rev the snapshot doesn't carry is an
+    /// error: "not captured here" must never read as "doesn't exist" — the
+    /// model would treat an empty search as evidence.
+    fn require(&self, repo: &str, rev: &str) -> Result<&HashMap<String, String>, String> {
+        self.files_at(repo, rev)
+            .ok_or_else(|| format!("contents of {repo} ({rev}) are unavailable in this environment — don't treat this as the code not existing"))
+    }
 }
 
 /// Where tool calls are executed.
@@ -291,7 +299,7 @@ impl<'a> ToolExecutor<'a> {
                     return Err("ref applies to this PR's repo only; other repos are read at their default branch".to_string());
                 }
                 let content = match &self.backend {
-                    ToolBackend::Snapshot(s) => s.files_at(name, "default").and_then(|f| f.get(path)).cloned().unwrap_or_default(),
+                    ToolBackend::Snapshot(s) => s.require(name, "default")?.get(path).cloned().unwrap_or_default(),
                     _ => self.github().unwrap().get_file_content(&self.target.owner, name, path, "").await?,
                 };
                 (name.clone(), "default", content)
@@ -301,9 +309,7 @@ impl<'a> ToolExecutor<'a> {
                 let content = match &self.backend {
                     ToolBackend::Github(g) => g.get_file_content(&self.target.owner, &self.target.repo, path, sha).await?,
                     ToolBackend::Local { clone, .. } => clone.read_file(sha, path).await?,
-                    ToolBackend::Snapshot(s) => {
-                        s.files_at(&s.pr_repo, &rev).and_then(|f| f.get(path)).cloned().unwrap_or_default()
-                    }
+                    ToolBackend::Snapshot(s) => s.require(&s.pr_repo, &rev)?.get(path).cloned().unwrap_or_default(),
                 };
                 (self.target.repo.clone(), if rev == "base" { "base" } else { "head" }, content)
             }
@@ -342,6 +348,9 @@ impl<'a> ToolExecutor<'a> {
             self.record("*", &query, "owner", "search_code");
             return match &self.backend {
                 ToolBackend::Snapshot(s) => {
+                    if s.files.is_empty() {
+                        return Err(format!("contents of {}'s repos are unavailable in this environment — don't treat this as the code not existing", self.target.owner));
+                    }
                     let mut rows = Vec::new();
                     let mut repos: Vec<&String> = s.files.keys().collect();
                     repos.sort();
@@ -375,7 +384,7 @@ impl<'a> ToolExecutor<'a> {
                 Ok(out)
             }
             ToolBackend::Snapshot(s) => {
-                let rows = grep_files(s.files_at(&s.pr_repo, "head"), &query);
+                let rows = grep_files(Some(s.require(&s.pr_repo, "head")?), &query);
                 Ok(format_rows(&format!("Search results for \"{query}\" at PR head"), rows))
             }
         }
@@ -391,7 +400,7 @@ impl<'a> ToolExecutor<'a> {
         let entries: Vec<(String, String, u64)> = match (&self.backend, &other) {
             (ToolBackend::Snapshot(s), _) => {
                 let rev = if other.is_some() { "default" } else { "head" };
-                snapshot_list(s.files_at(&repo_name, rev), path)
+                snapshot_list(Some(s.require(&repo_name, rev)?), path)
             }
             (ToolBackend::Local { clone, .. }, None) => clone.list_dir(&self.target.head_sha, path).await?,
             (_, Some(name)) => self
@@ -595,6 +604,28 @@ mod tests {
                 "list_dir acme/api head src",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn uncaptured_snapshot_repos_error_instead_of_looking_empty() {
+        let empty = SnapshotRepo { pr_repo: "api".into(), ..Default::default() };
+        let ex = ToolExecutor::new(ToolBackend::Snapshot(&empty), target(), ToolScope::REVIEW);
+        for call in [
+            r#"{"tool":"search_code","query":"MAX_ATTEMPTS"}"#,
+            r#"{"tool":"search_code","query":"MAX_ATTEMPTS","scope":"org"}"#,
+            r#"{"tool":"read_file","path":"src/lib.rs"}"#,
+            r#"{"tool":"list_dir","path":""}"#,
+        ] {
+            let out = ex.execute(&parse_tool_call(call).unwrap()).await;
+            assert!(out.contains("unavailable in this environment"), "{call} → {out}");
+        }
+        // A captured repo still answers "no matches" honestly.
+        let s = snapshot();
+        let ex = ToolExecutor::new(ToolBackend::Snapshot(&s), target(), ToolScope::REVIEW);
+        let out = ex.execute(&parse_tool_call(r#"{"tool":"search_code","query":"zzz"}"#).unwrap()).await;
+        assert!(out.contains("no matches"), "{out}");
+        let out = ex.execute(&parse_tool_call(r#"{"tool":"read_file","path":"x.ts","repo":"mobile"}"#).unwrap()).await;
+        assert!(out.contains("unavailable"), "{out}");
     }
 
     #[tokio::test]
