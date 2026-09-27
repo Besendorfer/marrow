@@ -691,17 +691,21 @@ pub async fn list_cached_prs() -> Vec<CachedPrInfo> {
     let all = manifest_cache::list_cached_manifests();
     let github = github_client();
 
-    let mut open_prs = Vec::new();
-    for pr in all {
-        match github.is_pr_open(&pr.owner, &pr.repo, pr.pr_number).await {
-            Ok(true) => open_prs.push(pr),
-            Ok(false) => {
-                manifest_cache::delete_cached_manifest(&pr.owner, &pr.repo, pr.pr_number);
+    let mut listed = Vec::new();
+    for mut pr in all {
+        match github.pr_state(&pr.owner, &pr.repo, pr.pr_number).await {
+            Ok(state) => {
+                if manifest_cache::should_prune_now(&state, &pr.cached_at) {
+                    manifest_cache::delete_cached_manifest(&pr.owner, &pr.repo, pr.pr_number);
+                    continue;
+                }
+                pr.state = state;
+                listed.push(pr);
             }
-            Err(_) => open_prs.push(pr), // keep on API failure
+            Err(_) => listed.push(pr), // keep on API failure
         }
     }
-    open_prs
+    listed
 }
 
 #[command]

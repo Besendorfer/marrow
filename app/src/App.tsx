@@ -220,6 +220,11 @@ function App() {
     }
   }, [addToast]);
 
+  // The review picker submits against the active tab, so it must not outlive
+  // the tab it was opened on: switching or closing tabs dismisses it
+  // (issue #238 — it used to float over the queue after the PR tab closed).
+  useEffect(() => { setReviewPickerOpen(false); }, [activeTabId]);
+
   useEffect(() => {
     if (import.meta.env.DEV) return;
     const startupTimer = setTimeout(() => checkForUpdates(true), 5000);
@@ -2757,7 +2762,7 @@ function App() {
         onDismiss={() => setUpdateStatus({ state: "idle" })}
       />
       {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} />}
-      {reviewPickerOpen && (
+      {reviewPickerOpen && activeTab?.manifest && (
         <ReviewPicker
           onClose={() => setReviewPickerOpen(false)}
           onSubmit={(event, body) => { handleSubmitReview(event, body); setReviewPickerOpen(false); }}

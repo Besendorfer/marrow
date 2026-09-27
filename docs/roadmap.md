@@ -140,6 +140,14 @@ more surfaces.
 
 ## Phase 5: Resilient Desktop UX
 
+- [ ] **UI overhaul 2 — inbox review layout ([#238](https://github.com/Besendorfer/marrow/issues/238)).**
+  One PR screen built on verdict → ranked findings → diff → finish replaces the
+  Overview/Files/Commits/Checks lenses. Seven phased PRs; it also delivers the CI
+  hard-block, resizable-dock, and dialog-primitive items below and the Phase 4
+  "hide descriptive notes" item.
+  - [x] Phase 1: review picker bound to its tab; closed/merged PRs stay in
+    "Recently analyzed" for 14 days instead of being deleted on every queue load
+    (which also forced a full re-analysis on reopen).
 - [ ] Keep review-submission failures local instead of replacing the PR screen.
 - [ ] Preserve review and comment drafts after failures.
 - [ ] Standardize pending, failure, retry, and success mutation behavior.
