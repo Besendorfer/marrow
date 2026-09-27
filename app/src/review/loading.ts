@@ -69,6 +69,7 @@ export function createLoading(ctxArg: unknown) {
     ctx.loadPersistedViewedState(tab);
     ctx.loadDismissedHighlights(tab);
     ctx.loadResolvedSpecs(tab);
+    ctx.loadCheckedFindings(tab);
     ctx.loadLocalRequirements(tab);
     ctx.loadChatHistory(tab);
     ctx.fetchMyReviewState(tabId, data.pr_url);
@@ -91,6 +92,7 @@ export function createLoading(ctxArg: unknown) {
     ctx.loadPersistedViewedState(tab);
     ctx.loadDismissedHighlights(tab);
     ctx.loadResolvedSpecs(tab);
+    ctx.loadCheckedFindings(tab);
     ctx.loadLocalRequirements(tab);
     ctx.loadChatHistory(tab);
     ctx.fetchMyReviewState(tab.id, data.pr_url);

@@ -1,9 +1,11 @@
-// Progress handlers (moved verbatim from App.tsx in issue #238 phase 2).
+// Progress handlers (moved verbatim from App.tsx in issue #238 phase 2;
+// checked-findings handlers added in phase 3).
 // Calls into other modules go through `ctx`, which holds every handler of
 // the current render — the same per-render closure semantics as before.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ReviewManifest, Tab, ViewedFileState, NoteResolution } from "../types";
+import type { ReviewManifest, Tab, ViewedFileState, NoteResolution, CheckedFindingEntry } from "../types";
+import type { Finding } from "./findings";
 import { parsePrUrl } from "../utils";
 import type { ReviewCtx } from "./ctx";
 
@@ -158,6 +160,51 @@ export function createProgress(ctxArg: unknown) {
     saveResolvedSpecs(tab, nextKeys, nextResolutions);
   }
 
+  async function loadCheckedFindings(tab: Tab) {
+    if (!tab.manifest) return;
+    try {
+      const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+      const saved = await invoke<{ entries: Record<string, CheckedFindingEntry> } | null>("load_checked_findings", { owner, repo, prNumber: number });
+      if (saved && Object.keys(saved.entries).length > 0) {
+        ctx.updateTab(tab.id, (t) => ({ ...t, checkedFindings: new Map(Object.entries(saved.entries)) }));
+      }
+    } catch {
+      // Non-critical: start with nothing checked on failure
+    }
+  }
+
+  function saveCheckedFindings(tab: Tab, entries: Map<string, CheckedFindingEntry>) {
+    if (!tab.manifest) return;
+    const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
+    invoke("save_checked_findings", {
+      owner,
+      repo,
+      prNumber: number,
+      state: { entries: Object.fromEntries(entries) },
+    }).catch(() => addToast("error", "Couldn't save — this mark may not persist"));
+  }
+
+  /** "Looks fine" on a finding (issue #238). Stores the hash of the code it
+   * sits on, so the mark lapses — and the finding reopens — once a push
+   * changes those lines (see buildFindings). */
+  function markFindingChecked(finding: Pick<Finding, "key" | "linesHash">) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest || !finding.linesHash) return;
+    const next = new Map(tab.checkedFindings);
+    next.set(finding.key, { lines_hash: finding.linesHash, at: new Date().toISOString() });
+    ctx.updateTab(tab.id, (t) => ({ ...t, checkedFindings: next }));
+    saveCheckedFindings(tab, next);
+  }
+
+  function unmarkFindingChecked(key: string) {
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (!tab || !tab.manifest || !tab.checkedFindings.has(key)) return;
+    const next = new Map(tab.checkedFindings);
+    next.delete(key);
+    ctx.updateTab(tab.id, (t) => ({ ...t, checkedFindings: next }));
+    saveCheckedFindings(tab, next);
+  }
+
   async function loadLocalRequirements(tab: Tab) {
     if (!tab.manifest) return;
     try {
@@ -303,6 +350,10 @@ export function createProgress(ctxArg: unknown) {
     saveResolvedSpecs,
     resolveSpecItem,
     restoreSpecItem,
+    loadCheckedFindings,
+    saveCheckedFindings,
+    markFindingChecked,
+    unmarkFindingChecked,
     loadLocalRequirements,
     saveLocalRequirements,
     toggleViewed,

@@ -116,6 +116,7 @@ export function useReviewController(): ReviewCtx {
     loadPersistedViewedState,
     loadDismissedHighlights,
     loadResolvedSpecs,
+    loadCheckedFindings,
     loadLocalRequirements,
     loadChatHistory,
     handleChatSend,
@@ -318,6 +319,7 @@ export function useReviewController(): ReviewCtx {
               loadPersistedViewedState(tab);
               loadDismissedHighlights(tab);
               loadResolvedSpecs(tab);
+              loadCheckedFindings(tab);
               loadLocalRequirements(tab);
               loadChatHistory(tab);
               fetchMyReviewState(tab.id, tab.manifest!.pr_url);

@@ -10,6 +10,7 @@ use marrow_core::manifest_cache::{self, CachedPrInfo};
 use marrow_core::session::{self, SessionState};
 use marrow_core::dismissed_highlights::{self, DismissedHighlights};
 use marrow_core::resolved_specs::{self, ResolvedSpecs};
+use marrow_core::checked_findings::{self, CheckedFindings};
 use marrow_core::pr_requirements::{self, PrRequirements};
 use marrow_core::viewed_state::{self, ViewedFileState};
 use marrow_core::activity::{self, Observed};
@@ -644,6 +645,25 @@ pub fn save_resolved_specs(
     state: ResolvedSpecs,
 ) -> Result<(), String> {
     resolved_specs::save_resolved_specs(&owner, &repo, pr_number, &state)
+}
+
+#[command]
+pub fn load_checked_findings(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+) -> Option<CheckedFindings> {
+    checked_findings::load_checked_findings(&owner, &repo, pr_number)
+}
+
+#[command]
+pub fn save_checked_findings(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    state: CheckedFindings,
+) -> Result<(), String> {
+    checked_findings::save_checked_findings(&owner, &repo, pr_number, &state)
 }
 
 #[command]

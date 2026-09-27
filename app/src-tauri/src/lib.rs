@@ -261,6 +261,8 @@ pub fn run() {
             commands::save_dismissed_highlights,
             commands::load_resolved_specs,
             commands::save_resolved_specs,
+            commands::load_checked_findings,
+            commands::save_checked_findings,
             commands::load_pr_requirements,
             commands::save_pr_requirements,
             commands::analyze_requirements,

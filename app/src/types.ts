@@ -375,6 +375,14 @@ export type ChatToolCall =
 
 export type NoteResolutionState = "fixed" | "intentional" | "noise";
 
+/** A "Looks fine" mark on a review finding (issue #238). Mirrors
+ * `CheckedEntry` in checked_findings.rs. Holds only while `lines_hash` still
+ * matches the finding's current code — see buildFindings (review/findings.ts). */
+export interface CheckedFindingEntry {
+  lines_hash: string;
+  at?: string;
+}
+
 /** How/why an AI note was resolved. Mirrors `NoteResolution` in
  * `dismissed_highlights.rs` — `reason`/`at` are optional there too (empty
  * string on the wire), kept optional here for the same reason. */
@@ -441,6 +449,8 @@ export interface Tab {
   /** Resolution metadata (state + reason) for resolved spec items, keyed by
    * resolveKey. Mirrors noteResolutions' shape/lifecycle. */
   specResolutions: Map<string, NoteResolution>;
+  /** "Looks fine" marks on findings (issue #238), keyed by finding key. */
+  checkedFindings: Map<string, CheckedFindingEntry>;
   /** User-provided requirements text (issue #179 phase 2), saved locally and
    * fed into the next coverage pass as the authoritative extraction source.
    * `null` when nothing's been saved. */
