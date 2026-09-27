@@ -116,18 +116,19 @@ pub const CLOSED_PR_RETENTION_DAYS: i64 = 14;
 /// Whether the queue listing should drop a cached PR (issue #238). Closed and
 /// merged PRs used to be deleted the moment the queue loaded, which hid a PR
 /// you'd just merged and forced a full re-analysis when you reopened it. Now
-/// they stay for `CLOSED_PR_RETENTION_DAYS` counted from `closed_at` (a
-/// long-lived PR merged today isn't pruned just because it was analyzed
-/// weeks ago), falling back to `cached_at`. An unparseable time keeps the
-/// entry rather than guessing.
+/// they stay for `CLOSED_PR_RETENTION_DAYS` counted from the LATER of
+/// `closed_at` and `cached_at`: a long-lived PR merged today isn't pruned
+/// because it was analyzed weeks ago, and a fresh analysis of a long-closed
+/// PR isn't pruned because it closed weeks ago. An unparseable `cached_at`
+/// keeps the entry rather than guessing; an unparseable `closed_at` is ignored.
 pub fn should_prune(state: &str, closed_at: Option<&str>, cached_at: &str, now: DateTime<Utc>) -> bool {
     if state == "open" {
         return false;
     }
-    match DateTime::parse_from_rfc3339(closed_at.unwrap_or(cached_at)) {
-        Ok(t) => now.signed_duration_since(t.with_timezone(&Utc)).num_days() >= CLOSED_PR_RETENTION_DAYS,
-        Err(_) => false,
-    }
+    let parse = |t: &str| DateTime::parse_from_rfc3339(t).ok().map(|t| t.with_timezone(&Utc));
+    let Some(cached) = parse(cached_at) else { return false };
+    let anchor = closed_at.and_then(parse).map_or(cached, |closed| closed.max(cached));
+    now.signed_duration_since(anchor).num_days() >= CLOSED_PR_RETENTION_DAYS
 }
 
 /// `should_prune` against the current time.
@@ -298,9 +299,12 @@ mod tests {
         assert!(should_prune("merged", None, "2026-09-13T00:00:00Z", now));
         assert!(should_prune("closed", None, "2026-01-01T00:00:00Z", now));
         assert!(!should_prune("merged", None, "not a date", now));
-        // Retention counts from the close, not the analysis: analyzed long
-        // ago but merged yesterday stays; closed long ago goes.
+        // Retention counts from the later of close and analysis: analyzed
+        // long ago but merged yesterday stays; closed long ago but analyzed
+        // yesterday stays; both old goes.
         assert!(!should_prune("merged", Some("2026-09-26T00:00:00Z"), "2026-01-01T00:00:00Z", now));
-        assert!(should_prune("closed", Some("2026-08-01T00:00:00Z"), "2026-09-26T00:00:00Z", now));
+        assert!(!should_prune("closed", Some("2026-08-01T00:00:00Z"), "2026-09-26T00:00:00Z", now));
+        assert!(should_prune("closed", Some("2026-08-01T00:00:00Z"), "2026-08-02T00:00:00Z", now));
+        assert!(!should_prune("merged", Some("garbage"), "2026-09-26T00:00:00Z", now));
     }
 }
