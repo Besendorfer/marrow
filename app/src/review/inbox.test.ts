@@ -39,7 +39,7 @@ function fakeCtx(tab: Partial<Tab>) {
 
 const file = { path: "a.ts", head_content: "x\n".repeat(50), diff_hash: "d", highlights: [], classification: "RELEVANT" } as unknown as FileDiff;
 const manifest = { files: [file], pr_url: "https://github.com/o/r/pull/1", head_sha: "h" } as unknown as ReviewManifest;
-const risk: Finding = { key: "risk:a.ts:5:x", kind: "risk", rank: "check", title: "t", path: "a.ts", startLine: 5, linesHash: "d", state: "checked" };
+const risk: Finding = { key: "risk:a.ts:5:x", kind: "risk", rank: "check", title: "t", path: "a.ts", startLine: 5, linesHash: "d", state: "checked", urgency: "look" };
 
 describe("inbox actions", () => {
   test("Not an issue clears an earlier Looks fine first — one verdict per finding", () => {
@@ -73,7 +73,7 @@ describe("inbox actions", () => {
 
   test("spec actions resolve every requirement in ONE write", () => {
     const { inbox, calls, apply } = fakeCtx({ manifest });
-    const spec: Finding = { key: "spec-set:z", kind: "spec", rank: "high", title: "t", itemKeys: ["spec:a", "spec:b"], linesHash: "spec-set:z", state: "open" };
+    const spec: Finding = { key: "spec-set:z", kind: "spec", rank: "high", title: "t", itemKeys: ["spec:a", "spec:b"], linesHash: "spec-set:z", state: "open", urgency: "look" };
     inbox.inboxNotAnIssue(spec, null);
     expect(calls).toEqual(["saveSpecs:spec:a,spec:b"]);
     expect([...apply().resolvedSpecKeys]).toEqual(["spec:a", "spec:b"]);
@@ -91,7 +91,7 @@ describe("inbox actions", () => {
 
   test("Comment on a finding without a line drafts a PR-level comment", () => {
     const { inbox, calls, apply } = fakeCtx({ manifest, chat: { open: true } as Tab["chat"] });
-    const ci: Finding = { key: "ci:1", kind: "ci", rank: "critical", title: "t", items: ["build"], linesHash: "h", state: "open" };
+    const ci: Finding = { key: "ci:1", kind: "ci", rank: "critical", title: "t", items: ["build"], linesHash: "h", state: "open", urgency: "fix" };
     inbox.inboxComment(ci);
     const t = apply();
     expect(t.commentsOpen).toBe(true);

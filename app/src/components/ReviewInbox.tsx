@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, ReviewManifest, Tab } from "../types";
-import { buildFindings, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
+import { buildFindings, findingClaim, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
 import { listKeyAction, nextAfterAction } from "../review/inboxKeys";
 
 const KIND_LABEL: Record<FindingKind, string> = {
@@ -94,7 +94,7 @@ export function ReviewInbox(props: ReviewInboxProps) {
   }, [tab.id, tab.commentThreads.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const threads = tab.commentThreads.status === "loaded" ? tab.commentThreads.threads : undefined;
-  const { findings, infoCountByPath } = useMemo(
+  const { findings: rankedFindings, infoCountByPath } = useMemo(
     () =>
       buildFindings(manifest, {
         dismissed: tab.dismissedHighlights,
@@ -106,6 +106,14 @@ export function ReviewInbox(props: ReviewInboxProps) {
       }),
     [manifest, tab.dismissedHighlights, tab.checkedFindings, checks, tab.resolvedSpecKeys, threads, viewerLogin],
   );
+  // "Fix before merge" leads, then "Worth a look" — list, j/k, and advance
+  // all follow this order.
+  const findings = useMemo(
+    () => [...rankedFindings.filter((f) => f.urgency === "fix"), ...rankedFindings.filter((f) => f.urgency === "look")],
+    [rankedFindings],
+  );
+  const toFix = findings.filter((f) => f.urgency === "fix");
+  const toLook = findings.filter((f) => f.urgency === "look");
 
   // Files not already reachable through a finding, grouped by change group in
   // triage order; not-relevant files sit collapsed at the bottom.
@@ -232,9 +240,39 @@ export function ReviewInbox(props: ReviewInboxProps) {
     }
   }
 
-  const handled = findings.filter((f) => f.state !== "open").length;
+  const openFix = toFix.filter((f) => f.state === "open").length;
+  const openLook = toLook.filter((f) => f.state === "open").length;
+  const summary =
+    findings.length === 0
+      ? "No findings"
+      : [openFix === 0 ? "Nothing to fix" : `${openFix} to fix`, openLook > 0 ? `${openLook} worth a look` : null].filter(Boolean).join(" · ");
   const verdict = manifest.review_verdict;
   let lastGroup: string | null | undefined;
+
+  function renderFindingRow(f: Finding) {
+    const id = selectionIdFor(f);
+    // A file opened from elsewhere (a hidden item) highlights its first finding.
+    const isSel =
+      selection === id ||
+      (selected?.kind === "file" && !!selected.hidden && selected.file.path === f.path && findings.find((x) => x.path === f.path) === f);
+    return (
+      <button
+        key={f.key}
+        aria-current={isSel ? "true" : undefined}
+        className={`inbox-row inbox-row--finding inbox-row--${f.state}${isSel ? " selected" : ""}`}
+        onClick={() => props.onSelectFinding(f)}
+      >
+        <StateMark state={f.state} />
+        <span className="inbox-row-main">
+          <span className="inbox-row-title">{f.title}</span>
+          <span className="inbox-row-meta">
+            <span className={`inbox-kind inbox-kind--${f.rank}`}>{KIND_LABEL[f.kind]}</span>
+            {location(f) && <span className="inbox-loc">{location(f)}</span>}
+          </span>
+        </span>
+      </button>
+    );
+  }
 
   return (
     <div className="inbox">
@@ -245,14 +283,17 @@ export function ReviewInbox(props: ReviewInboxProps) {
         aria-label="Review list"
         onKeyDown={onListKey}
       >
-        {verdict && (
-          <div className="inbox-verdict">
-            <span className={`overview-verdict-chip overview-verdict-chip--${verdict.verdict}`}>
-              {VERDICT_LABEL[verdict.verdict] ?? verdict.verdict}
-            </span>
-            {verdict.reason && <p>{verdict.reason}</p>}
+        <div className="inbox-verdict">
+          <div className="inbox-verdict-line">
+            {verdict && (
+              <span className={`overview-verdict-chip overview-verdict-chip--${verdict.verdict}`}>
+                {VERDICT_LABEL[verdict.verdict] ?? verdict.verdict}
+              </span>
+            )}
+            <span className={`inbox-summary${openFix > 0 ? " inbox-summary--fix" : ""}`}>{summary}</span>
           </div>
-        )}
+          {verdict?.reason && <p>{verdict.reason}</p>}
+        </div>
 
         <button
           aria-current={selection === INBOX_ABOUT ? "true" : undefined}
@@ -263,39 +304,13 @@ export function ReviewInbox(props: ReviewInboxProps) {
           <span className="inbox-row-meta">Summary, description, commits</span>
         </button>
 
-        <div className="inbox-section">
-          <span>Findings</span>
-          <span className="inbox-progress" aria-label={`${handled} of ${findings.length} handled`}>
-            <span className="inbox-meter">
-              {findings.map((f) => (
-                <i key={f.key} className={`inbox-meter-seg inbox-meter-seg--${f.state}`} />
-              ))}
-            </span>
-            {handled}/{findings.length}
-          </span>
-        </div>
-        {findings.length === 0 && <div className="inbox-empty">No findings — the AI flagged nothing to act on.</div>}
-        {findings.map((f) => {
-          const id = selectionIdFor(f);
-          const isSel = selection === id || (selected?.kind === "file" && !!selected.hidden && selected.file.path === f.path && findings.find((x) => x.path === f.path) === f);
-          return (
-          <button
-            key={f.key}
-            aria-current={isSel ? "true" : undefined}
-            className={`inbox-row inbox-row--finding inbox-row--${f.state}${isSel ? " selected" : ""}`}
-            onClick={() => props.onSelectFinding(f)}
-          >
-            <StateMark state={f.state} />
-            <span className="inbox-row-main">
-              <span className="inbox-row-title">{f.title}</span>
-              <span className="inbox-row-meta">
-                <span className={`inbox-kind inbox-kind--${f.rank}`}>{KIND_LABEL[f.kind]}</span>
-                {location(f) && <span className="inbox-loc">{location(f)}</span>}
-              </span>
-            </span>
-          </button>
-          );
-        })}
+        <FindingSection
+          title="Fix before merge"
+          items={toFix}
+          empty={findings.length === 0 ? "No findings — the AI flagged nothing to act on." : "Nothing to fix — the AI claims no defects."}
+          renderRow={renderFindingRow}
+        />
+        {toLook.length > 0 && <FindingSection title="Worth a look" items={toLook} renderRow={renderFindingRow} />}
 
         {otherFiles.length > 0 && (
           <div className="inbox-section">
@@ -381,6 +396,34 @@ export function ReviewInbox(props: ReviewInboxProps) {
   );
 }
 
+function FindingSection({ title, items, empty, renderRow }: {
+  title: string;
+  items: Finding[];
+  empty?: string;
+  renderRow: (f: Finding) => ReactNode;
+}) {
+  const handled = items.filter((f) => f.state !== "open").length;
+  return (
+    <>
+      <div className="inbox-section">
+        <span>{title}</span>
+        {items.length > 0 && (
+          <span className="inbox-progress" aria-label={`${handled} of ${items.length} handled`}>
+            <span className="inbox-meter">
+              {items.map((f) => (
+                <i key={f.key} className={`inbox-meter-seg inbox-meter-seg--${f.state}`} />
+              ))}
+            </span>
+            {handled}/{items.length}
+          </span>
+        )}
+      </div>
+      {items.length === 0 && empty && <div className="inbox-empty">{empty}</div>}
+      {items.map(renderRow)}
+    </>
+  );
+}
+
 function FileRow({ file, viewed, notes, selected, onSelect, onToggleViewed }: {
   file: FileDiff;
   viewed: boolean;
@@ -433,6 +476,7 @@ function FindingCard({ finding: f, onLooksFine, onComment, onNotAnIssue, onReope
         {loc && <span className="inbox-loc" title={loc}>{loc}</span>}
       </div>
       <h3 className="inbox-card-title">{f.title}</h3>
+      <p className={`inbox-card-claim inbox-card-claim--${f.urgency}`}>{findingClaim(f)}</p>
       {showDetail && <p className="inbox-card-text">{f.detail}</p>}
       {f.riskDetail && <p className="inbox-card-text inbox-card-why"><span>Why it was flagged</span>{f.riskDetail}</p>}
       {(f.scenario || f.fix) && (

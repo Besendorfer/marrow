@@ -1,7 +1,7 @@
 // buildFindings (issue #238 phase 3): the merge / dedupe / rank / state rules
 // behind the inbox's single findings list. Run with `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { buildFindings, findingCommentBody, firstSentence, riskKey, selectionIdFor, MERGE_WINDOW } from "./findings";
+import { buildFindings, findingClaim, findingCommentBody, firstSentence, riskKey, selectionIdFor, MERGE_WINDOW } from "./findings";
 import { specResolveKey } from "../components/digest";
 import { highlightKey } from "../utils";
 import type { FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
@@ -204,6 +204,46 @@ describe("buildFindings — spec and CI aggregates", () => {
     expect(failing).toHaveLength(1);
     expect(failing[0]).toMatchObject({ kind: "ci", rank: "critical", items: ["job1", "job2"] });
     expect(buildFindings(manifest([]), { checks: checks(["SUCCESS", null]) }).findings).toHaveLength(0);
+  });
+});
+
+describe("urgency — does it need a fix?", () => {
+  test("claimed defects and failing CI are fix; risks and softer kinds are look", () => {
+    const m = manifest(
+      [file("a.ts", [
+        hl(10, 10, "critical", "behavior"),
+        hl(40, 40, "warning", "bug"),
+        hl(70, 70, "warning", "test_gap"),
+        hl(100, 100, "warning", "simplification"),
+        hl(130, 130, "info", "test_gap"),
+      ])],
+      {
+        triage: { top_risks: [risk("z.ts", 5)], review_order: [] },
+        requirements_coverage: { requirements: [{ text: "R", status: "uncovered", tests: [] }], orphan_tests: [] },
+      } as Partial<ReviewManifest>,
+    );
+    const checks: PrChecksStatus = { overall_state: "failure", check_runs: [{ name: "build", status: "COMPLETED", conclusion: "FAILURE", details_url: null }] };
+    const got = buildFindings(m, { checks }).findings.map((f) => `${f.kind}:${f.urgency}`);
+    expect(got.sort()).toEqual(
+      ["behavior:fix", "bug:fix", "ci:fix", "risk:look", "simplification:look", "spec:look", "test_gap:look", "test_gap:look"].sort(),
+    );
+  });
+
+  test("a risk merged into a defect stays fix; merged into a test gap stays look", () => {
+    const m = manifest(
+      [file("a.ts", [hl(10, 10, "warning", "bug"), hl(60, 60, "warning", "test_gap")])],
+      { triage: { top_risks: [risk("a.ts", 11, "R1"), risk("a.ts", 61, "R2")], review_order: [] } } as Partial<ReviewManifest>,
+    );
+    const byTitle = new Map(buildFindings(m).findings.map((f) => [f.title, f.urgency]));
+    expect(byTitle.get("R1")).toBe("fix");
+    expect(byTitle.get("R2")).toBe("look");
+  });
+
+  test("the claim line says what the AI is and isn't claiming", () => {
+    expect(findingClaim({ kind: "risk", urgency: "look" })).toStartWith("No defect claimed.");
+    expect(findingClaim({ kind: "bug", urgency: "fix" })).toContain("needs a fix before merge");
+    expect(findingClaim({ kind: "test_gap", urgency: "look" })).toStartWith("Not a bug");
+    expect(findingClaim({ kind: "ci", urgency: "fix" })).toBe("CI is failing on this PR.");
   });
 });
 

@@ -34,6 +34,13 @@ export type FindingRank = "critical" | "high" | "check" | "medium" | "low";
  * from GitHub threads, not stored). */
 export type FindingState = "open" | "checked" | "commented" | "dismissed";
 
+/** Does this need a fix before merge, or is it worth a look? Only a claimed
+ * defect (a critical/high bug or behavior note, or failing CI) is "fix".
+ * Triage risks are "look": the triage pass names the riskiest places to
+ * review, it never claims they're wrong. Test gaps, uncovered requirements,
+ * simplifications, and observations are "look" too. */
+export type FindingUrgency = "fix" | "look";
+
 export interface Finding {
   /** Stable identity for "Looks fine" / "Not an issue" persistence. */
   key: string;
@@ -56,6 +63,7 @@ export interface Finding {
    * resolve these (the per-requirement store) rather than key the aggregate,
    * whose key changes whenever the set does. */
   itemKeys?: string[];
+  urgency: FindingUrgency;
   /** Hash of the code the finding sits on; a stored "Looks fine" only holds
    * while this still matches (see isChecked). "" = nothing to anchor on. */
   linesHash: string;
@@ -140,7 +148,7 @@ function lineRangeHash(file: FileDiff | undefined, start: number, end: number): 
 /** Did the viewer start a review thread on this finding's lines? A range
  * finding (a note) matches threads inside its lines; an anchor-only finding
  * (a risk) matches within the merge window, like the risk/note pairing. */
-function isCommented(f: Omit<Finding, "state">, threads: ReviewThread[] | undefined, viewer: string | null | undefined): boolean {
+function isCommented(f: Omit<Finding, "state" | "urgency">, threads: ReviewThread[] | undefined, viewer: string | null | undefined): boolean {
   if (!threads?.length || f.path == null || f.startLine == null) return false;
   const start = f.endLine != null ? f.startLine : f.startLine - MERGE_WINDOW;
   const end = f.endLine ?? f.startLine + MERGE_WINDOW;
@@ -152,6 +160,31 @@ function isCommented(f: Omit<Finding, "state">, threads: ReviewThread[] | undefi
     // must not read as yours.
     return author === "you" || (!!viewer && author === viewer);
   });
+}
+
+function urgencyOf(kind: FindingKind, rank: FindingRank): FindingUrgency {
+  if (kind === "ci") return "fix";
+  const defect = kind === "bug" || kind === "behavior" || kind === "note";
+  return defect && (rank === "critical" || rank === "high") ? "fix" : "look";
+}
+
+/** One plain sentence on what the AI is (and isn't) claiming — so a
+ * reviewer can tell "this is broken" from "look here" at a glance. */
+export function findingClaim(f: Pick<Finding, "kind" | "urgency">): string {
+  if (f.kind === "ci") return "CI is failing on this PR.";
+  if (f.urgency === "fix") return "The AI thinks this is broken and needs a fix before merge.";
+  switch (f.kind) {
+    case "risk":
+      return "No defect claimed. It's one of the riskiest changes in this PR, so verify it yourself.";
+    case "test_gap":
+      return "Not a bug: behavior no test checks yet. Worth closing, not blocking.";
+    case "spec":
+      return "Requirements from the PR description that no test proves yet.";
+    case "simplification":
+      return "Optional cleanup; nothing is broken.";
+    default:
+      return "Worth knowing; the AI isn't asking for a change.";
+  }
 }
 
 /** The review-list selection id for a finding. Spec and CI aggregates get
@@ -185,7 +218,7 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
   const { dismissed, checked, checks, resolvedSpecKeys, threads, viewerLogin } = input;
   const byPath = new Map(manifest.files.map((f) => [f.path, f]));
   const infoCountByPath = new Map<string, number>();
-  const findings: Omit<Finding, "state">[] = [];
+  const findings: Omit<Finding, "state" | "urgency">[] = [];
 
   // ── Highlights (and the risks that land on them) ──
   interface Pending { path: string; h: Highlight; rank: FindingRank; merged?: TopRisk }
@@ -300,7 +333,7 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
 
   // ── Order: rank, then triage review order, then position ──
   const orderIndex = new Map((manifest.triage?.review_order ?? []).map((item, i) => [item.path, i]));
-  const pos = (f: Omit<Finding, "state">) => (f.path != null ? orderIndex.get(f.path) ?? Infinity : Infinity);
+  const pos = (f: Omit<Finding, "state" | "urgency">) => (f.path != null ? orderIndex.get(f.path) ?? Infinity : Infinity);
   findings.sort(
     (a, b) =>
       // Failing CI leads regardless of triage order: it blocks the merge.
@@ -323,6 +356,7 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
   return {
     findings: findings.map((f) => ({
       ...f,
+      urgency: urgencyOf(f.kind, f.rank),
       state: dismissed?.has(f.key)
         ? "dismissed"
         : isChecked(checked, f.key, f.linesHash)
