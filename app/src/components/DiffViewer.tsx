@@ -990,10 +990,10 @@ function HighlightMarker({ highlight, isNew, onPostAsComment }: { highlight: Hig
       {(highlight.scenario || highlight.fix) && (
         <div className="highlight-detail">
           {highlight.scenario && (
-            <div><span className="highlight-detail-label">Scenario</span>{highlight.scenario}</div>
+            <div><span className="highlight-detail-label">Scenario</span><span>{highlight.scenario}</span></div>
           )}
           {highlight.fix && (
-            <div><span className="highlight-detail-label">Fix</span>{highlight.fix}</div>
+            <div><span className="highlight-detail-label">Fix</span><span>{highlight.fix}</span></div>
           )}
         </div>
       )}

@@ -859,13 +859,21 @@ fn parse_highlights_strict(
 /// but a non-empty list where NOTHING parses is unusable. A missing or
 /// unknown verdict is never fatal. Public for the corpus eval runner.
 pub fn parse_review_response(raw: &str) -> Result<(Vec<HighlightResult>, Option<ReviewVerdict>), String> {
-    let (entries, verdict) = match extract_json_object(raw).ok().filter(|o| o.get("findings").is_some()) {
+    // An object carrying either key is the review shape — a bare
+    // {"verdict":"ship"} that omits an empty findings list is a clean review,
+    // not an unusable response.
+    let review_obj = extract_json_object(raw)
+        .ok()
+        .filter(|o| o.get("findings").is_some() || o.get("verdict").is_some());
+    let (entries, verdict) = match review_obj {
         Some(obj) => {
-            let entries = obj
-                .get("findings")
-                .and_then(|f| f.as_array())
-                .cloned()
-                .ok_or_else(|| "\"findings\" is not an array.".to_string())?;
+            let entries = match obj.get("findings") {
+                None => Vec::new(),
+                Some(f) => f
+                    .as_array()
+                    .cloned()
+                    .ok_or_else(|| "\"findings\" is not an array.".to_string())?,
+            };
             (entries, normalize_verdict(&obj))
         }
         None => {
@@ -1908,6 +1916,10 @@ mod tests {
         assert!(f.is_empty() && v.is_none());
         let (_, v) = parse_highlights_strict(Ok(r#"{"findings":[]}"#.to_string())).unwrap();
         assert!(v.is_none());
+        // A verdict with no findings key is a clean review, not a hard failure.
+        let (f, v) = parse_highlights_strict(Ok(r#"{"verdict":"ship","verdict_reason":"clean"}"#.to_string())).unwrap();
+        assert!(f.is_empty());
+        assert_eq!(v.unwrap().verdict, "ship");
         let (_, v) = parse_highlights_strict(Ok(r#"{"verdict":"ship with notes","findings":[]}"#.to_string())).unwrap();
         assert_eq!(v.unwrap().verdict, "ship");
         // "findings" present but not an array is unusable, not silently empty.
