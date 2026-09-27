@@ -5,7 +5,7 @@ import { RichText } from "./RichText";
 import { AttentionDigest } from "./AttentionDigest";
 import { RequirementsCard } from "./RequirementsCard";
 import { buildAllClearSummary, buildDigestEntries } from "./digest";
-import { countFailingChecks, highlightKey, timeAgo } from "../utils";
+import { contextRow, countFailingChecks, highlightKey, prRepoOf, timeAgo } from "../utils";
 import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, PrCommit, NoteResolution } from "../types";
 
 interface PrOverviewProps {
@@ -409,6 +409,13 @@ export function PrOverview({
             those sections show defaults, not results. Refresh to retry.
           </div>
         )}
+        {manifest.passes?.some((p) => p.pass === "highlights" && p.status === "degraded") && (
+          <div className="overview-card overview-noise">
+            The AI review couldn't use its repo tools this time, so it reviewed
+            the diff alone — findings that depend on other files may be
+            missing. Refresh to retry.
+          </div>
+        )}
         {!!currentFingerprint && manifest.analysis_fingerprint !== currentFingerprint && (
           <div className="overview-card overview-noise">
             This analysis was produced by{" "}
@@ -428,6 +435,16 @@ export function PrOverview({
             </span>
             {manifest.review_verdict.reason && (
               <span className="overview-verdict-reason">{manifest.review_verdict.reason}</span>
+            )}
+            {(manifest.review_context?.length ?? 0) > 0 && (
+              <details className="overview-context">
+                <summary>Context used ({manifest.review_context!.length})</summary>
+                <ul>
+                  {manifest.review_context!.map((r, i) => (
+                    <li key={i}>{contextRow(r, prRepoOf(manifest.pr_url))}</li>
+                  ))}
+                </ul>
+              </details>
             )}
           </div>
         )}

@@ -186,6 +186,7 @@ mod tests {
             failed_passes: Vec::new(),
             analysis_fingerprint: None,
             review_verdict: None,
+            review_context: Vec::new(),
             files: Vec::new(),
         }
     }

@@ -17,6 +17,17 @@ export interface Highlight {
   fix?: string;
 }
 
+/** One read/search the review made beyond the diff (issue #232). */
+export interface ContextRead {
+  /** `owner/name` (`owner/*` for an owner-wide search). */
+  repo: string;
+  /** File/directory path, or the query text for searches. */
+  path: string;
+  /** "head" | "base" | "default" | "owner". */
+  rev: string;
+  tool: "read_file" | "search_code" | "list_dir";
+}
+
 /** The review's one-line verdict (issue #231). */
 export interface ReviewVerdict {
   verdict: "fix_first" | "ship" | "needs_discussion";
@@ -174,6 +185,8 @@ export interface ReviewManifest {
   /** The review's verdict (issue #231). Absent when the pass returned none,
    * or on manifests cached before it existed. */
   review_verdict?: ReviewVerdict | null;
+  /** What the review read or searched beyond the diff (issue #232). */
+  review_context?: ContextRead[];
   /** Fingerprint of the analysis environment that produced this manifest
    * (issue #202). Absent on pre-fingerprint caches; a mismatch with the
    * current environment means "analyzed by an older pipeline/model". */
@@ -502,6 +515,9 @@ export interface Settings {
    * low-significance hunks (issue #55). Off by default to keep the
    * collapsed-by-default behavior. */
   expand_all_hunks: boolean;
+  /** Directories holding local clones (issue #232): the review reads the
+   * PR's repo from a clone found here, read-only, when it has the commits. */
+  local_repo_roots?: string[];
 }
 
 export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";

@@ -2328,6 +2328,7 @@ mod tests {
             body: String::new(),
             commits: Vec::new(),
             review_verdict: None,
+            review_context: Vec::new(),
             files: vec![
                 file("pkg/low.go", "low", "@@ -1,1 +1,1 @@\n-a\n+b\n"),
                 file("pkg/high.go", "high", "@@ -1,1 +1,2 @@\n a\n+b\n"),

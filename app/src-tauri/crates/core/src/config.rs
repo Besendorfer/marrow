@@ -107,6 +107,7 @@ fn default_settings() -> Settings {
         show_draft_prs: true,
         setup_done: false,
         expand_all_hunks: false,
+        local_repo_roots: Vec::new(),
     }
 }
 
@@ -141,6 +142,8 @@ pub fn load_settings() -> Settings {
     let mut show_draft_prs = true;
     let mut setup_done = false;
     let mut expand_all_hunks = false;
+    // One `local_repo_root=` line per directory (paths may contain commas).
+    let mut local_repo_roots: Vec<String> = Vec::new();
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -185,6 +188,10 @@ pub fn load_settings() -> Settings {
             setup_done = val == "true";
         } else if let Some(val) = line.strip_prefix("expand_all_hunks=") {
             expand_all_hunks = val == "true";
+        } else if let Some(val) = line.strip_prefix("local_repo_root=") {
+            if !val.trim().is_empty() {
+                local_repo_roots.push(val.trim().to_string());
+            }
         }
     }
 
@@ -209,6 +216,7 @@ pub fn load_settings() -> Settings {
         show_draft_prs,
         setup_done,
         expand_all_hunks,
+        local_repo_roots,
     }
 }
 
@@ -259,6 +267,9 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     content.push_str(&format!("show_draft_prs={}\n", settings.show_draft_prs));
     content.push_str(&format!("setup_done={}\n", settings.setup_done));
     content.push_str(&format!("expand_all_hunks={}\n", settings.expand_all_hunks));
+    for root in settings.local_repo_roots.iter().map(|r| r.trim()).filter(|r| !r.is_empty() && !r.contains('\n')) {
+        content.push_str(&format!("local_repo_root={}\n", root));
+    }
 
     // Atomic + created 0600 from the first byte: the token never touches
     // disk world-readable, even transiently.

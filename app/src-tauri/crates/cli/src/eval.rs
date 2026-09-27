@@ -6,7 +6,10 @@
 
 use marrow_core::ai::{extract_json_array, extract_json_object, AiBackend};
 use marrow_core::config::load_settings;
-use marrow_core::fetch::{finalize_coverage, parse_review_response, validate_classifications, validate_highlights};
+use marrow_core::fetch::{
+    finalize_coverage, parse_review_response, run_review_pass, validate_classifications, validate_highlights,
+};
+use marrow_core::repo_tools::{RepoToolTarget, SnapshotRepo, ToolBackend, ToolExecutor, ToolScope};
 use marrow_core::prompts::{
     build_classification_prompt, build_highlight_prompt_with, build_requirements_coverage_prompt,
     has_inline_test_markers, is_test_path, HighlightExtras,
@@ -168,7 +171,59 @@ where
     Err(format!("{what} failed after {PASS_ATTEMPTS} attempts: {last}"))
 }
 
-pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
+/// Owner every fixture's PR repo (and its sibling repos) lives under.
+const FIXTURE_OWNER: &str = "corpus";
+
+/// Load a fixture's optional `repo/` snapshot (issue #232):
+/// `repo/head/**` and `repo/base/**` are the PR repo at its head/base;
+/// `repo/other/<name>/**` is sibling repo `<name>` at its default branch.
+/// A fixture without `repo/` gets an empty snapshot (tools find nothing).
+fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, String> {
+    let mut snap = SnapshotRepo { pr_repo: pr_repo.to_string(), ..Default::default() };
+    let root = fixture_dir.join("repo");
+    if !root.is_dir() {
+        return Ok(snap);
+    }
+    let mut add_tree = |repo: &str, rev: &str, dir: &Path| -> Result<(), String> {
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let rel = p.strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
+                    let content = fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+                    snap.files
+                        .entry(repo.to_string())
+                        .or_default()
+                        .entry(rev.to_string())
+                        .or_default()
+                        .insert(rel, content);
+                }
+            }
+        }
+        Ok(())
+    };
+    for rev in ["head", "base"] {
+        let d = root.join(rev);
+        if d.is_dir() {
+            add_tree(pr_repo, rev, &d)?;
+        }
+    }
+    let others = root.join("other");
+    if others.is_dir() {
+        for e in fs::read_dir(&others).map_err(|e| e.to_string())?.flatten() {
+            if e.path().is_dir() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                add_tree(&name, "default", &e.path())?;
+            }
+        }
+    }
+    Ok(snap)
+}
+
+pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), String> {
     let version = fs::read_to_string(corpus.join("VERSION"))
         .map(|v| v.trim().to_string())
         .map_err(|_| format!("{} does not look like a corpus (no VERSION file)", corpus.display()))?;
@@ -186,30 +241,32 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
 
     // Load and validate EVERY fixture before the first AI call — a bad
     // fixture or a signal-less corpus should fail fast, not mid-spend.
-    let mut fixtures: Vec<(String, FixturePr, FixtureLabels)> = Vec::new();
+    let mut fixtures: Vec<(String, FixturePr, FixtureLabels, SnapshotRepo)> = Vec::new();
     for dir in &fixture_dirs {
         let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let pr: FixturePr = read_json(&dir.join("pr.json"))?;
         let labels: FixtureLabels = read_json(&dir.join("labels.json"))?;
         validate_labels(&pr, &labels, &name)?;
-        fixtures.push((name, pr, labels));
+        let snapshot = load_snapshot(dir, &name)?;
+        fixtures.push((name, pr, labels, snapshot));
     }
     // Measurement honesty: with zero RELEVANT labels there is nothing to
     // measure — 1.00/1.00 on an empty corpus would be vacuous, not perfect.
-    if fixtures.iter().all(|(_, _, l)| l.relevant.is_empty()) {
+    if fixtures.iter().all(|(_, _, l, _)| l.relevant.is_empty()) {
         return Err("corpus has no RELEVANT labels — nothing to measure".to_string());
     }
 
     let settings = load_settings();
     let ai = AiBackend::from_settings(&settings).await?;
     eprintln!(
-        "corpus v{version} · {} fixture(s) · model {}",
+        "corpus v{version} · {} fixture(s) · model {} · review {}",
         fixtures.len(),
-        if settings.model.is_empty() { "(claude CLI default)" } else { &settings.model }
+        if settings.model.is_empty() { "(claude CLI default)" } else { &settings.model },
+        if single_shot { "single-shot" } else { "agentic" }
     );
 
     let mut scores: Vec<FixtureScore> = Vec::new();
-    for (name, pr, labels) in fixtures {
+    for (name, pr, labels, snapshot) in fixtures {
         let file_list: Vec<String> = pr.files.iter().map(|f| f.path.clone()).collect();
         let full_diff = assemble_full_diff(&pr.files);
 
@@ -268,14 +325,48 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
                 &pr.body,
                 &relevant_diffs,
                 &[],
-                &HighlightExtras { checks: &[], test_diffs: &test_diffs },
+                &HighlightExtras { checks: &[], test_diffs: &test_diffs, repo_tools: false },
+            );
+            let (agentic_prompt, _t) = build_highlight_prompt_with(
+                &pr.title,
+                &pr.body,
+                &relevant_diffs,
+                &[],
+                &HighlightExtras { checks: &[], test_diffs: &test_diffs, repo_tools: true },
             );
             eprintln!("· {}: reviewing for findings…", score.name);
-            match retry_review_pass(&score.name, || ai.invoke(&hl_prompt)).await {
+            // The last attempt's agent stats (tool calls, degraded, reads).
+            let stats: std::sync::Mutex<(usize, bool, Vec<String>)> = std::sync::Mutex::new((0, false, Vec::new()));
+            let result = if single_shot {
+                retry_review_pass(&score.name, || ai.invoke(&hl_prompt)).await
+            } else {
+                retry_review_pass(&score.name, || async {
+                    let ex = ToolExecutor::new(
+                        ToolBackend::Snapshot(&snapshot),
+                        RepoToolTarget {
+                            owner: FIXTURE_OWNER.to_string(),
+                            repo: score.name.clone(),
+                            head_sha: "head".to_string(),
+                            base_sha: "base".to_string(),
+                        },
+                        ToolScope::REVIEW,
+                    );
+                    let out = run_review_pass(&ai, &ex, &agentic_prompt, &hl_prompt).await;
+                    let reads = out.reads.iter().map(|r| format!("{} {} {} {}", r.tool, r.repo, r.rev, r.path)).collect();
+                    *stats.lock().unwrap() = (out.tool_calls, out.degraded, reads);
+                    out.raw
+                })
+                .await
+            };
+            match result {
                 Ok((parsed, verdict)) => {
                     let validated = validate_highlights(parsed, &file_list);
                     let mut fs = score_findings(&validated, &labels);
                     score_verdict(&mut fs, verdict.as_ref(), labels.expected_verdict.as_deref());
+                    let (calls, degraded, reads) = stats.into_inner().unwrap();
+                    fs.tool_calls = calls;
+                    fs.degraded = degraded;
+                    fs.reads = reads;
                     score.findings = Some(fs);
                 }
                 Err(e) => {
@@ -375,6 +466,7 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
                 "low_value": f.low_value, "extra": f.extra,
                 "substantive": f.substantive, "complete": f.complete,
                 "verdict": f.verdict, "verdict_match": f.verdict_match, "shapes": f.shapes,
+                "tool_calls": f.tool_calls, "degraded": f.degraded, "reads": f.reads,
                 "detail": f.detail,
             })),
             "coverage": s.coverage.as_ref().map(|c| serde_json::json!({
@@ -432,8 +524,12 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
             };
             let _ = writeln!(
                 out,
-                "{:<24} review: verdict {verdict} · complete {}/{}",
-                "", f.complete, f.substantive
+                "{:<24} review: verdict {verdict} · complete {}/{} · tools {}{}",
+                "",
+                f.complete,
+                f.substantive,
+                f.tool_calls,
+                if f.degraded { " · DEGRADED (single-shot fallback)" } else { "" }
             );
             for d in &f.detail {
                 let _ = writeln!(out, "    {d}");
@@ -504,6 +600,11 @@ struct FindingsScore {
     /// One "path L{s}-{e} severity/category" line per finding — JSON-only
     /// diagnostic for tuning category assignment.
     shapes: Vec<String>,
+    /// Agentic review (issue #232): tool calls attempted, whether it fell
+    /// back to single-shot, and what it read ("tool repo rev path").
+    tool_calls: usize,
+    degraded: bool,
+    reads: Vec<String>,
     detail: Vec<String>,
 }
 
@@ -802,6 +903,19 @@ mod tests {
 
     fn region(path: &str, s: u64, e: u64, importance: &str) -> LabeledRegion {
         LabeledRegion { path: path.into(), start_line: s, end_line: e, importance: importance.into(), note: String::new() }
+    }
+
+    #[test]
+    fn shipped_snapshots_load_head_base_and_sibling_repos() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../corpus/fixtures");
+        let s = load_snapshot(&fixtures.join("cross-repo-contract-rs"), "cross-repo-contract-rs").unwrap();
+        let head = &s.files["cross-repo-contract-rs"]["head"];
+        assert!(head["src/jobs.rs"].contains("rename_all"));
+        assert!(!s.files["cross-repo-contract-rs"]["base"]["src/jobs.rs"].contains("rename_all"));
+        assert!(s.files["web"]["default"]["src/jobs/StatusBadge.tsx"].contains("\"InProgress\""));
+        // A fixture without repo/ gets an empty snapshot, not an error.
+        let empty = load_snapshot(&fixtures.join("planted-bug-rs"), "planted-bug-rs").unwrap();
+        assert!(empty.files.is_empty());
     }
 
     #[test]
@@ -1203,7 +1317,7 @@ mod tests {
         // a.rs labeled in BOTH lists → validate_labels must reject.
         fs::write(fixture.join("labels.json"), r#"{ "relevant": ["a.rs"], "not_relevant": ["a.rs"] }"#).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let err = rt.block_on(eval(&dir, false)).unwrap_err();
+        let err = rt.block_on(eval(&dir, false, true)).unwrap_err();
         assert!(err.contains("broken"), "error should name the fixture: {err}");
         assert!(err.contains("exactly one"), "{err}");
         fs::remove_dir_all(&dir).unwrap();

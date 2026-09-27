@@ -1,0 +1,14 @@
+{
+  "title": "perf(cache): return None on cache miss instead of raising",
+  "body": "Cache misses are now an ordinary `None` instead of an exception — raising on the hot path showed up in profiles. All call sites are updated to check for `None`.",
+  "files": [
+    {
+      "path": "svc/cache.py",
+      "diff": "@@ -8,5 +8,5 @@ def put_user(user):\n \n \n def get_user(uid):\n-    \"\"\"Return the cached user; raises KeyError on a miss.\"\"\"\n-    return _USERS[uid]\n+    \"\"\"Return the cached user, or None on a miss.\"\"\"\n+    return _USERS.get(uid)\n"
+    },
+    {
+      "path": "svc/api/users.py",
+      "diff": "@@ -2,8 +2,7 @@ from svc import cache, db\n \n \n def show_user(uid):\n-    try:\n-        user = cache.get_user(uid)\n-    except KeyError:\n-        user = db.load_user(uid)\n+    user = cache.get_user(uid)\n+    if user is None:\n+        user = db.load_user(uid)\n     return {\"id\": user.id, \"email\": user.email}\n"
+    }
+  ]
+}

@@ -114,6 +114,11 @@ enum Command {
         corpus: std::path::PathBuf,
         #[arg(long)]
         json: bool,
+        /// Run the review as one prompt without repo tools (the pre-#232
+        /// pipeline) — for before/after comparison against the default
+        /// agentic review.
+        #[arg(long)]
+        single_shot: bool,
     },
     /// Mark a review thread resolved
     Resolve {
@@ -210,7 +215,7 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
             confirm(&format!("Reply to a thread on {pr}?"), yes)?;
             reply(&pr, &comment_id, &body).await
         }
-        Command::Eval { corpus, json } => eval::eval(&corpus, json).await,
+        Command::Eval { corpus, json, single_shot } => eval::eval(&corpus, json, single_shot).await,
         Command::Resolve { thread_id } => {
             confirm(&format!("Resolve thread {thread_id}?"), yes)?;
             set_resolved(&thread_id, true).await

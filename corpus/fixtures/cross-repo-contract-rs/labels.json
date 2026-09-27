@@ -1,0 +1,16 @@
+{
+  "relevant": [
+    "src/jobs.rs"
+  ],
+  "not_relevant": [],
+  "expected_findings": [
+    {
+      "path": "src/jobs.rs",
+      "start_line": 4,
+      "end_line": 6,
+      "importance": "important",
+      "note": "The sibling web repo (src/api.ts, src/jobs/StatusBadge.tsx) still matches PascalCase statuses such as InProgress; after this change the API sends in_progress, every badge falls to Unknown, and the TS type is wrong. The body's claim that web already reads snake_case is false, which is only knowable by reading the other repo."
+    }
+  ],
+  "expected_verdict": "fix_first"
+}
