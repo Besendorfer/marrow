@@ -29,5 +29,6 @@
       "end_line": 43,
       "note": "Pure mechanical call-site rename — the stated purpose."
     }
-  ]
+  ],
+  "expected_verdict": "fix_first"
 }

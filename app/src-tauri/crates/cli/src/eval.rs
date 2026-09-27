@@ -6,12 +6,12 @@
 
 use marrow_core::ai::{extract_json_array, extract_json_object, AiBackend};
 use marrow_core::config::load_settings;
-use marrow_core::fetch::{finalize_coverage, validate_classifications, validate_highlights};
+use marrow_core::fetch::{finalize_coverage, parse_review_response, validate_classifications, validate_highlights};
 use marrow_core::prompts::{
-    build_classification_prompt, build_highlight_prompt, build_requirements_coverage_prompt,
-    has_inline_test_markers, is_test_path,
+    build_classification_prompt, build_highlight_prompt_with, build_requirements_coverage_prompt,
+    has_inline_test_markers, is_test_path, HighlightExtras,
 };
-use marrow_core::types::{FileClassification, HighlightResult, RequirementsCoverage};
+use marrow_core::types::{FileClassification, HighlightResult, RequirementsCoverage, ReviewVerdict};
 use std::collections::HashSet;
 use serde::Deserialize;
 use std::fs;
@@ -45,7 +45,13 @@ struct FixtureLabels {
     /// #229). Substring matching because requirement text is model-extracted.
     #[serde(default)]
     expected_coverage: Vec<ExpectedCoverage>,
+    /// Expected review verdict (labels schema v4, issue #231):
+    /// "fix_first" | "ship" | "needs_discussion".
+    #[serde(default)]
+    expected_verdict: Option<String>,
 }
+
+const VERDICTS: [&str; 3] = ["fix_first", "ship", "needs_discussion"];
 
 #[derive(Deserialize)]
 struct ExpectedCoverage {
@@ -115,6 +121,27 @@ where
         }
     }
     Err(format!("{what} failed after {PASS_ATTEMPTS} attempts: {last}"))
+}
+
+/// Review-pass sibling of [`retry_json_pass`] (issue #231): parses with the
+/// core's own `parse_review_response` — object with verdict, or legacy
+/// array — so the eval can't drift from the app's parser.
+async fn retry_review_pass<F, Fut>(name: &str, mut call: F) -> Result<(Vec<HighlightResult>, Option<ReviewVerdict>), String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut last = String::new();
+    for attempt in 1..=PASS_ATTEMPTS {
+        match call().await.and_then(|raw| parse_review_response(&raw)) {
+            Ok(parsed) => return Ok(parsed),
+            Err(e) => last = e,
+        }
+        if attempt < PASS_ATTEMPTS {
+            eprintln!("· {name}: findings attempt {attempt} failed, retrying…");
+        }
+    }
+    Err(format!("findings failed after {PASS_ATTEMPTS} attempts: {last}"))
 }
 
 /// Object-shaped sibling of [`retry_json_pass`] for passes that return a
@@ -228,14 +255,28 @@ pub async fn eval(corpus: &Path, json: bool) -> Result<(), String> {
         // findings labels. The highlights pass gets the LABEL-relevant
         // files' diffs — ground truth, so classification quality can't
         // contaminate findings quality.
-        if !labels.expected_findings.is_empty() || !labels.should_not_flag.is_empty() {
+        if !labels.expected_findings.is_empty()
+            || !labels.should_not_flag.is_empty()
+            || labels.expected_verdict.is_some()
+        {
             let relevant_diffs = label_relevant_diffs(&pr.files, &labels.relevant);
-            let (hl_prompt, _t) = build_highlight_prompt(&pr.title, &pr.body, &relevant_diffs, &[]);
+            // Test-file diffs ride along as context, exactly as the app feeds
+            // them (issue #231) — detected by the core's own is_test_path.
+            let (test_diffs, _) = split_coverage_inputs(&pr.files);
+            let (hl_prompt, _t) = build_highlight_prompt_with(
+                &pr.title,
+                &pr.body,
+                &relevant_diffs,
+                &[],
+                &HighlightExtras { checks: &[], test_diffs: &test_diffs },
+            );
             eprintln!("· {}: reviewing for findings…", score.name);
-            match retry_json_pass::<HighlightResult, _, _>("findings", &score.name, || ai.invoke(&hl_prompt)).await {
-                Ok(parsed) => {
+            match retry_review_pass(&score.name, || ai.invoke(&hl_prompt)).await {
+                Ok((parsed, verdict)) => {
                     let validated = validate_highlights(parsed, &file_list);
-                    score.findings = Some(score_findings(&validated, &labels));
+                    let mut fs = score_findings(&validated, &labels);
+                    score_verdict(&mut fs, verdict.as_ref(), labels.expected_verdict.as_deref());
+                    score.findings = Some(fs);
                 }
                 Err(e) => {
                     eprintln!("· {}: {e}", score.name);
@@ -317,6 +358,8 @@ fn completion_status(scores: &[FixtureScore]) -> Result<(), String> {
 /// [`render_text_report`]: the failed/failed_pass outcome fields are part of
 /// the reporting contract (issue #226) and must stay testable offline.
 fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, precision: f64, recall: f64) -> serde_json::Value {
+    let (vm, vl, c, n) = review_totals(scores);
+    let review_json = serde_json::json!({ "verdict_matched": vm, "verdict_labeled": vl, "complete": c, "substantive": n });
     serde_json::json!({
         "corpus_version": version,
         "model": model,
@@ -329,7 +372,10 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
             "findings": s.findings.as_ref().map(|f| serde_json::json!({
                 "important_found": f.important_found, "important_missed": f.important_missed,
                 "minor_found": f.minor_found, "minor_missed": f.minor_missed,
-                "low_value": f.low_value, "extra": f.extra, "detail": f.detail,
+                "low_value": f.low_value, "extra": f.extra,
+                "substantive": f.substantive, "complete": f.complete,
+                "verdict": f.verdict, "verdict_match": f.verdict_match, "shapes": f.shapes,
+                "detail": f.detail,
             })),
             "coverage": s.coverage.as_ref().map(|c| serde_json::json!({
                 "status_match": c.status_match, "status_mismatch": c.status_mismatch,
@@ -339,6 +385,7 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
         })).collect::<Vec<_>>(),
         "precision": precision,
         "recall": recall,
+        "review": review_json,
     })
 }
 
@@ -378,6 +425,16 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
                 f.low_value,
                 f.extra
             );
+            let verdict = match (&f.verdict, f.verdict_match) {
+                (v, Some(true)) => format!("{} ✓", v.as_deref().unwrap_or("none")),
+                (v, Some(false)) => format!("{} ✗", v.as_deref().unwrap_or("none")),
+                (v, None) => format!("{} (unlabeled)", v.as_deref().unwrap_or("none")),
+            };
+            let _ = writeln!(
+                out,
+                "{:<24} review: verdict {verdict} · complete {}/{}",
+                "", f.complete, f.substantive
+            );
             for d in &f.detail {
                 let _ = writeln!(out, "    {d}");
             }
@@ -408,7 +465,22 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
         );
     }
     let _ = writeln!(out, "RELEVANT precision {precision:.2} · recall {recall:.2} (corpus v{version})");
+    let (vm, vl, comp, subst) = review_totals(scores);
+    let _ = writeln!(out, "REVIEW verdict {vm}/{vl} · complete findings {comp}/{subst}");
     out
+}
+
+/// Aggregate review metrics (issue #231): (verdicts matched, verdicts
+/// labeled, complete findings, substantive findings).
+fn review_totals(scores: &[FixtureScore]) -> (usize, usize, usize, usize) {
+    scores.iter().filter_map(|s| s.findings.as_ref()).fold((0, 0, 0, 0), |(vm, vl, c, n), f| {
+        (
+            vm + usize::from(f.verdict_match == Some(true)),
+            vl + usize::from(f.verdict_match.is_some()),
+            c + f.complete,
+            n + f.substantive,
+        )
+    })
 }
 
 /// Findings scorecard for one fixture (issue #221).
@@ -420,6 +492,18 @@ struct FindingsScore {
     minor_missed: usize,
     low_value: usize,
     extra: usize,
+    /// bug/behavior/test_gap findings (issue #231) — the ones that owe a
+    /// scenario and a fix.
+    substantive: usize,
+    /// …of which carry both a non-empty scenario and fix.
+    complete: usize,
+    /// The model's verdict (None = absent/unknown).
+    verdict: Option<String>,
+    /// Some(matched?) when the fixture labels an expected verdict.
+    verdict_match: Option<bool>,
+    /// One "path L{s}-{e} severity/category" line per finding — JSON-only
+    /// diagnostic for tuning category assignment.
+    shapes: Vec<String>,
     detail: Vec<String>,
 }
 
@@ -545,8 +629,36 @@ fn score_findings(
         } else if !expected {
             score.extra += 1;
         }
+        score.shapes.push(format!("{} L{}-{} {}/{}", h.path, h.start_line, h.end_line, h.severity, h.category));
+        if matches!(h.category.as_str(), "bug" | "behavior" | "test_gap") {
+            score.substantive += 1;
+            if !h.scenario.trim().is_empty() && !h.fix.trim().is_empty() {
+                score.complete += 1;
+            } else {
+                score.detail.push(format!(
+                    "INCOMPLETE: {} L{}-{} ({}) lacks a scenario or fix",
+                    h.path, h.start_line, h.end_line, h.category
+                ));
+            }
+        }
     }
     score
+}
+
+/// Record the model's verdict and, when the fixture labels one, whether it
+/// matched (issue #231). A missing verdict against a label is a mismatch.
+fn score_verdict(score: &mut FindingsScore, got: Option<&ReviewVerdict>, expected: Option<&str>) {
+    score.verdict = got.map(|v| v.verdict.clone());
+    if let Some(exp) = expected {
+        let ok = score.verdict.as_deref() == Some(exp);
+        score.verdict_match = Some(ok);
+        if !ok {
+            score.detail.push(format!(
+                "VERDICT: expected {exp}, got {}",
+                score.verdict.as_deref().unwrap_or("none")
+            ));
+        }
+    }
 }
 
 /// Assemble the whole-PR diff the way GitHub serves it — per-file bodies
@@ -618,6 +730,11 @@ fn validate_labels(pr: &FixturePr, labels: &FixtureLabels, name: &str) -> Result
             ));
         }
     }
+    if let Some(v) = &labels.expected_verdict {
+        if !VERDICTS.contains(&v.as_str()) {
+            return Err(format!("{name}: unknown expected_verdict {v:?} (use one of {VERDICTS:?})"));
+        }
+    }
     for e in &labels.expected_coverage {
         if e.requirement_contains.trim().is_empty() {
             return Err(format!("{name}: expected_coverage entry with empty requirement_contains"));
@@ -646,11 +763,11 @@ mod tests {
                 FixtureFile { path: "b.rs".into(), diff: String::new() },
             ],
         };
-        let ok = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![] };
+        let ok = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None };
         assert!(validate_labels(&pr, &ok, "f").is_ok());
-        let overlap = FixtureLabels { relevant: vec!["a.rs".into(), "b.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![] };
+        let overlap = FixtureLabels { relevant: vec!["a.rs".into(), "b.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None };
         assert!(validate_labels(&pr, &overlap, "f").is_err());
-        let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![] };
+        let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None };
         assert!(validate_labels(&pr, &missing, "f").is_err());
         // A typo'd importance must not silently bucket as "important".
         let typo = FixtureLabels {
@@ -659,6 +776,7 @@ mod tests {
             expected_findings: vec![region("a.rs", 1, 2, "importnat")],
             should_not_flag: vec![],
             expected_coverage: vec![],
+            expected_verdict: None,
         };
         assert!(validate_labels(&pr, &typo, "f").is_err());
         // A findings region on a non-relevant path could never be scored.
@@ -668,6 +786,7 @@ mod tests {
             expected_findings: vec![region("b.rs", 1, 2, "important")],
             should_not_flag: vec![],
             expected_coverage: vec![],
+            expected_verdict: None,
         };
         assert!(validate_labels(&pr, &unwinnable, "f").is_err());
     }
@@ -685,8 +804,50 @@ mod tests {
         LabeledRegion { path: path.into(), start_line: s, end_line: e, importance: importance.into(), note: String::new() }
     }
 
+    #[test]
+    fn verdict_scoring_matches_labels_and_flags_absence() {
+        let v = |s: &str| ReviewVerdict { verdict: s.to_string(), reason: String::new() };
+        let mut f = FindingsScore::default();
+        score_verdict(&mut f, Some(&v("fix_first")), Some("fix_first"));
+        assert_eq!((f.verdict.as_deref(), f.verdict_match), (Some("fix_first"), Some(true)));
+        let mut f = FindingsScore::default();
+        score_verdict(&mut f, None, Some("ship"));
+        assert_eq!(f.verdict_match, Some(false));
+        assert!(f.detail[0].contains("expected ship, got none"));
+        let mut f = FindingsScore::default();
+        score_verdict(&mut f, Some(&v("ship")), None);
+        assert_eq!(f.verdict_match, None, "unlabeled fixtures don't score the verdict");
+    }
+
+    #[test]
+    fn completeness_counts_only_substantive_findings() {
+        let labels: FixtureLabels = serde_json::from_str(r#"{"relevant":["a.rs"],"not_relevant":[]}"#).unwrap();
+        let h = |cat: &str, scenario: &str, fix: &str| HighlightResult {
+            path: "a.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            category: cat.into(),
+            scenario: scenario.into(),
+            fix: fix.into(),
+            ..Default::default()
+        };
+        let s = score_findings(
+            &[h("bug", "x", "y"), h("test_gap", "x", ""), h("observation", "", ""), h("behavior", " ", "y")],
+            &labels,
+        );
+        assert_eq!((s.complete, s.substantive), (1, 3));
+    }
+
+    #[test]
+    fn label_validation_rejects_unknown_verdict() {
+        let pr: FixturePr = serde_json::from_str(r#"{"title":"t","body":"","files":[{"path":"a.rs","diff":"+x"}]}"#).unwrap();
+        let bad: FixtureLabels =
+            serde_json::from_str(r#"{"relevant":["a.rs"],"not_relevant":[],"expected_verdict":"lgtm"}"#).unwrap();
+        assert!(validate_labels(&pr, &bad, "f").unwrap_err().contains("expected_verdict"));
+    }
+
     fn highlight(path: &str, s: u64, e: u64) -> HighlightResult {
-        HighlightResult { path: path.into(), start_line: s, end_line: e, severity: "warning".into(), comment: "c".into() }
+        HighlightResult { path: path.into(), start_line: s, end_line: e, severity: "warning".into(), comment: "c".into(), ..Default::default() }
     }
 
     #[test]
@@ -697,6 +858,7 @@ mod tests {
             expected_findings: vec![region("a.rs", 20, 30, "important"), region("a.rs", 50, 55, "minor")],
             should_not_flag: vec![region("b.rs", 3, 6, "important")],
             expected_coverage: vec![],
+            expected_verdict: None,
         };
         let highlights = vec![
             highlight("a.rs", 25, 27),  // overlaps the important region → found
@@ -922,6 +1084,7 @@ mod tests {
             expected_findings: vec![],
             should_not_flag: vec![],
             expected_coverage: vec![exp("retries", "mostly-covered")],
+            expected_verdict: None,
         };
         assert!(validate_labels(&pr, &bad_status, "f").is_err());
         let empty_needle = FixtureLabels {
@@ -930,6 +1093,7 @@ mod tests {
             expected_findings: vec![],
             should_not_flag: vec![],
             expected_coverage: vec![exp("  ", "covered")],
+            expected_verdict: None,
         };
         assert!(validate_labels(&pr, &empty_needle, "f").is_err());
         let valid = FixtureLabels {
@@ -938,6 +1102,7 @@ mod tests {
             expected_findings: vec![],
             should_not_flag: vec![],
             expected_coverage: vec![exp("retries", "covered"), exp("toast", "untestable")],
+            expected_verdict: None,
         };
         assert!(validate_labels(&pr, &valid, "f").is_ok());
     }

@@ -6,12 +6,12 @@ use crate::manifest_cache;
 use crate::pr_parser::parse_pr_ref;
 use crate::pr_requirements;
 use crate::prompts::{
-    build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_requirements_coverage_prompt,
-    build_summary_prompt, build_triage_prompt, extract_test_hunks, has_inline_test_markers, is_test_path, PriorNote,
+    build_classification_prompt, build_grouping_prompt, build_highlight_prompt_with, build_requirements_coverage_prompt,
+    build_summary_prompt, build_triage_prompt, extract_test_hunks, has_inline_test_markers, is_test_path, HighlightExtras, PriorNote,
 };
 use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, LinkedIssue,
-    PassStatus, RequirementsCoverage, ReviewManifest, ReviewOrderItem, Settings, TopRisk, TriageReport,
+    PassStatus, RequirementsCoverage, ReviewManifest, ReviewOrderItem, ReviewVerdict, Settings, TopRisk, TriageReport,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use sha2::{Sha256, Digest};
@@ -303,6 +303,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let mut summary = String::new();
     let mut failed_passes: Vec<String> = Vec::new();
     let mut change_groups: Vec<ChangeGroup> = Vec::new();
+    let mut review_verdict: Option<ReviewVerdict> = None;
     // Triage guidance (top risks + contract-first order). Only computed for large
     // PRs (see the gate below); None means the UI falls back to its normal views.
     let mut triage: Option<TriageReport> = None;
@@ -352,8 +353,20 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         emit_progress(app, 4, "Analyzing highlights, summary, grouping, and coverage", FetchStatus::Running, None, Some((0, ai_total)));
         let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
         let prior_notes = build_prior_notes(&previous_manifest, &parsed.owner, &parsed.repo, parsed.number);
-        let (highlight_prompt, highlight_truncated) =
-            build_highlight_prompt(&pr_title, &pr_body, &per_file_diffs, &prior_notes);
+        // CI checks are best-effort context (issue #231): a failed lookup
+        // just means the review runs without them.
+        let checks = github
+            .get_pr_checks(&parsed.owner, &parsed.repo, parsed.number)
+            .await
+            .map(|c| c.check_runs)
+            .unwrap_or_default();
+        let (highlight_prompt, highlight_truncated) = build_highlight_prompt_with(
+            &pr_title,
+            &pr_body,
+            &per_file_diffs,
+            &prior_notes,
+            &HighlightExtras { checks: &checks, test_diffs: &test_diffs },
+        );
         if highlight_truncated {
             truncated_passes.push("highlights".to_string());
         }
@@ -447,7 +460,9 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         // The highlights pass is load-bearing: a failure errors the whole
         // fetch (keeping any cached manifest) rather than rendering as a
         // clean review with zero findings (issue #198).
-        let highlight_results = validate_highlights(parse_highlights_strict(highlights_raw)?, &file_list);
+        let (highlight_results, verdict) = parse_highlights_strict(highlights_raw)?;
+        let highlight_results = validate_highlights(highlight_results, &file_list);
+        review_verdict = verdict;
 
         // The remaining passes degrade gracefully, but a failure is recorded
         // in `failed_passes` so the Overview can say the analysis is
@@ -475,6 +490,9 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
                     end_line: h.end_line,
                     severity: h.severity,
                     comment: h.comment,
+                    category: h.category,
+                    scenario: h.scenario,
+                    fix: h.fix,
                 });
         }
 
@@ -681,6 +699,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         truncated_passes,
         failed_passes,
         analysis_fingerprint: Some(crate::fingerprint::analysis_fingerprint(settings)),
+        review_verdict,
         files: file_diffs,
     };
 
@@ -748,7 +767,9 @@ pub fn validate_classifications(
 pub fn validate_highlights(raw: Vec<HighlightResult>, file_list: &[String]) -> Vec<HighlightResult> {
     let known: HashSet<&str> = file_list.iter().map(|s| s.as_str()).collect();
     raw.into_iter()
-        .filter(|h| known.contains(h.path.as_str()))
+        // Test files are context for test_gap findings, never review targets
+        // (issue #231): a finding anchored on one is misplaced.
+        .filter(|h| known.contains(h.path.as_str()) && !is_test_path(&h.path))
         .map(|mut h| {
             h.start_line = h.start_line.max(1);
             h.end_line = h.end_line.max(1);
@@ -759,6 +780,12 @@ pub fn validate_highlights(raw: Vec<HighlightResult>, file_list: &[String]) -> V
             h.severity = match sev.as_str() {
                 "critical" | "warning" | "info" => sev,
                 _ => "info".to_string(),
+            };
+            let cat = h.category.trim().to_lowercase().replace(['-', ' '], "_");
+            h.category = match cat.as_str() {
+                "bug" | "behavior" | "test_gap" | "simplification" | "observation" => cat,
+                "behaviour" => "behavior".to_string(),
+                _ => "observation".to_string(),
             };
             h
         })
@@ -817,27 +844,70 @@ fn upsert_pass(passes: &mut Vec<PassStatus>, pass: &str, status: &str) {
 /// review's core product, so an AI error or unusable JSON is a fetch-level
 /// error — "no findings" must mean the analysis succeeded and found nothing
 /// (issue #198). The error keeps any previously cached manifest in place.
-fn parse_highlights_strict(raw: Result<String, String>) -> Result<Vec<HighlightResult>, String> {
+fn parse_highlights_strict(
+    raw: Result<String, String>,
+) -> Result<(Vec<HighlightResult>, Option<ReviewVerdict>), String> {
     let raw = raw.map_err(|e| format!("The highlights analysis failed — keeping any previous results. {e}"))?;
-    let json = extract_json_array(&raw)
-        .map_err(|e| format!("The highlights analysis returned an unusable response — keeping any previous results. {e}"))?;
-    let entries = json.as_array().cloned().unwrap_or_default();
+    parse_review_response(&raw)
+        .map_err(|e| format!("The highlights analysis returned an unusable response — keeping any previous results. {e}"))
+}
+
+/// Parse a review response (issue #231): the `{verdict, verdict_reason,
+/// findings}` object the prompt asks for, or — for robustness and older
+/// prompts — a bare findings array (verdict then `None`). Per-element
+/// salvage: one malformed finding must not discard the valid ones around it,
+/// but a non-empty list where NOTHING parses is unusable. A missing or
+/// unknown verdict is never fatal. Public for the corpus eval runner.
+pub fn parse_review_response(raw: &str) -> Result<(Vec<HighlightResult>, Option<ReviewVerdict>), String> {
+    // An object carrying either key is the review shape — a bare
+    // {"verdict":"ship"} that omits an empty findings list is a clean review,
+    // not an unusable response.
+    let review_obj = extract_json_object(raw)
+        .ok()
+        .filter(|o| o.get("findings").is_some() || o.get("verdict").is_some());
+    let (entries, verdict) = match review_obj {
+        Some(obj) => {
+            let entries = match obj.get("findings") {
+                None => Vec::new(),
+                Some(f) => f
+                    .as_array()
+                    .cloned()
+                    .ok_or_else(|| "\"findings\" is not an array.".to_string())?,
+            };
+            (entries, normalize_verdict(&obj))
+        }
+        None => {
+            let json = extract_json_array(raw)?;
+            (json.as_array().cloned().unwrap_or_default(), None)
+        }
+    };
     let total = entries.len();
-    // Per-element salvage: one malformed entry must not discard the valid
-    // findings around it. But an array where NOTHING parses is an unusable
-    // response, same as no array at all — that hard-fails.
     let parsed: Vec<HighlightResult> = entries
         .into_iter()
         .filter_map(|v| serde_json::from_value(v).ok())
         .collect();
     if parsed.is_empty() && total > 0 {
-        return Err(
-            "The highlights analysis returned an unusable response — keeping any previous results. \
-             None of the returned entries matched the expected shape."
-                .to_string(),
-        );
+        return Err("None of the returned entries matched the expected shape.".to_string());
     }
-    Ok(parsed)
+    Ok((parsed, verdict))
+}
+
+/// Normalize the verdict fields of a review object; `None` when absent or
+/// not one of the three known verdicts (never invent one).
+fn normalize_verdict(obj: &serde_json::Value) -> Option<ReviewVerdict> {
+    let v = obj.get("verdict")?.as_str()?.trim().to_lowercase().replace(['-', ' '], "_");
+    let verdict = match v.as_str() {
+        "fix_first" | "ship" | "needs_discussion" => v,
+        "ship_with_notes" => "ship".to_string(),
+        _ => return None,
+    };
+    let reason = obj
+        .get("verdict_reason")
+        .and_then(|r| r.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Some(ReviewVerdict { verdict, reason })
 }
 
 /// Parse a degradable JSON-array pass (e.g. grouping). `Err` means the pass
@@ -1708,6 +1778,7 @@ mod tests {
             end_line: e,
             severity: sev.to_string(),
             comment: "c".to_string(),
+            ..Default::default()
         };
         let files = vec!["a.rs".to_string()];
         let out = validate_highlights(
@@ -1797,9 +1868,9 @@ mod tests {
             {"path":"b.rs","start_line":3,"end_line":4,"severity":"warning","comment":"y"}
         ]"#;
         let ok = parse_highlights_strict(Ok(raw.to_string())).unwrap();
-        assert_eq!(ok.len(), 2);
-        assert_eq!(ok[0].path, "a.rs");
-        assert_eq!(ok[1].path, "b.rs");
+        assert_eq!(ok.0.len(), 2);
+        assert_eq!(ok.0[0].path, "a.rs");
+        assert_eq!(ok.0[1].path, "b.rs");
     }
 
     #[test]
@@ -1808,9 +1879,89 @@ mod tests {
             r#"[{"path":"a.rs","start_line":1,"end_line":2,"severity":"info","comment":"x"}]"#.to_string(),
         ))
         .unwrap();
-        assert_eq!(ok.len(), 1);
+        assert_eq!(ok.0.len(), 1);
         // A genuinely empty result is a success — that's the honest "no findings".
-        assert!(parse_highlights_strict(Ok("[]".to_string())).unwrap().is_empty());
+        assert!(parse_highlights_strict(Ok("[]".to_string())).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn review_object_parses_findings_fields_and_verdict() {
+        let raw = r#"Here you go:
+{"verdict":"Fix-First","verdict_reason":"Expired tokens are served.","findings":[
+ {"path":"a.rs","start_line":20,"end_line":30,"severity":"critical","category":"bug",
+  "comment":"expires_at check dropped","scenario":"A token cached yesterday is returned today","fix":"Restore the expiry check"}]}"#;
+        let (findings, verdict) = parse_highlights_strict(Ok(raw.to_string())).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].category, "bug");
+        assert_eq!(findings[0].scenario, "A token cached yesterday is returned today");
+        assert_eq!(findings[0].fix, "Restore the expiry check");
+        let v = verdict.unwrap();
+        assert_eq!(v.verdict, "fix_first");
+        assert_eq!(v.reason, "Expired tokens are served.");
+    }
+
+    #[test]
+    fn legacy_array_parses_without_verdict() {
+        let raw = r#"[{"path":"a.rs","start_line":1,"end_line":2,"severity":"info","comment":"x"},
+                      {"path":"b.rs","start_line":3,"end_line":4,"severity":"info","comment":"y"}]"#;
+        let (findings, verdict) = parse_highlights_strict(Ok(raw.to_string())).unwrap();
+        assert_eq!(findings.len(), 2);
+        assert!(verdict.is_none());
+        assert_eq!(findings[0].category, "");
+    }
+
+    #[test]
+    fn unknown_or_missing_verdict_is_none_not_fatal() {
+        let (f, v) = parse_highlights_strict(Ok(r#"{"verdict":"lgtm!!","findings":[]}"#.to_string())).unwrap();
+        assert!(f.is_empty() && v.is_none());
+        let (_, v) = parse_highlights_strict(Ok(r#"{"findings":[]}"#.to_string())).unwrap();
+        assert!(v.is_none());
+        // A verdict with no findings key is a clean review, not a hard failure.
+        let (f, v) = parse_highlights_strict(Ok(r#"{"verdict":"ship","verdict_reason":"clean"}"#.to_string())).unwrap();
+        assert!(f.is_empty());
+        assert_eq!(v.unwrap().verdict, "ship");
+        let (_, v) = parse_highlights_strict(Ok(r#"{"verdict":"ship with notes","findings":[]}"#.to_string())).unwrap();
+        assert_eq!(v.unwrap().verdict, "ship");
+        // "findings" present but not an array is unusable, not silently empty.
+        assert!(parse_highlights_strict(Ok(r#"{"verdict":"ship","findings":"none"}"#.to_string())).is_err());
+    }
+
+    #[test]
+    fn validation_drops_test_anchors_and_normalizes_category() {
+        use super::validate_highlights;
+        use crate::types::HighlightResult;
+        let hl = |path: &str, cat: &str| HighlightResult {
+            path: path.to_string(),
+            start_line: 1,
+            end_line: 1,
+            severity: "warning".to_string(),
+            comment: "c".to_string(),
+            category: cat.to_string(),
+            ..Default::default()
+        };
+        let files: Vec<String> = ["src/a.rs", "src/a.test.ts", "tests/b.rs"].iter().map(|s| s.to_string()).collect();
+        let out = validate_highlights(
+            vec![
+                hl("src/a.rs", "Test-Gap"),
+                hl("src/a.rs", "behaviour"),
+                hl("src/a.rs", "vibes"),
+                hl("src/a.rs", ""),
+                hl("src/a.test.ts", "bug"), // test file: dropped
+                hl("tests/b.rs", "bug"),    // test dir: dropped
+            ],
+            &files,
+        );
+        let cats: Vec<&str> = out.iter().map(|h| h.category.as_str()).collect();
+        assert_eq!(cats, ["test_gap", "behavior", "observation", "observation"]);
+    }
+
+    #[test]
+    fn manifests_cached_before_231_still_load() {
+        let old = r#"{"start_line":1,"end_line":2,"severity":"info","comment":"x"}"#;
+        let h: Highlight = serde_json::from_str(old).unwrap();
+        assert_eq!((h.category.as_str(), h.scenario.as_str(), h.fix.as_str()), ("", "", ""));
+        // Empty new fields stay off the wire, so old readers see the old shape.
+        assert_eq!(serde_json::to_string(&h).unwrap(), old);
     }
 
     #[test]
@@ -1860,7 +2011,7 @@ mod tests {
         let mut highlights = HashMap::new();
         highlights.insert(
             "b.rs".to_string(),
-            vec![Highlight { start_line: 42, end_line: 50, severity: "critical".into(), comment: "auth check removed".into() }],
+            vec![Highlight { start_line: 42, end_line: 50, severity: "critical".into(), comment: "auth check removed".into(), ..Default::default() }],
         );
 
         let report = fallback_triage(&relevant, &highlights);

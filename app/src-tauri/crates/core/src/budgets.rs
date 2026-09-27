@@ -22,6 +22,14 @@ pub const HIGHLIGHT_PER_FILE: usize = 25_000;
 pub const HIGHLIGHT_TOTAL: usize = 250_000;
 /// Highlight pass, PR description cap.
 pub const HIGHLIGHT_BODY: usize = 10_000;
+/// Highlight pass, CI check summary cap (issue #231) — one line per check.
+pub const HIGHLIGHT_CHECKS: usize = 6_000;
+/// Highlight pass, per-test-file diff cap (issue #231): test diffs are
+/// context for `test_gap` findings, not review targets, so they get less.
+pub const HIGHLIGHT_TEST_PER_FILE: usize = 8_000;
+/// Highlight pass, shared pool across all test-file diffs. Worst case with
+/// the pools above: ≈ 265k + 6k + 40k ≈ 311k chars.
+pub const HIGHLIGHT_TEST_TOTAL: usize = 40_000;
 
 /// Triage pass, per-file diff cap (ordering needs signatures/imports, not
 /// full bodies — still tighter than the highlight pass).

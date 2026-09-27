@@ -1,4 +1,5 @@
 {
   "relevant": ["src/sync_client.rs"],
-  "not_relevant": ["README.md", "Cargo.lock"]
+  "not_relevant": ["README.md", "Cargo.lock"],
+  "expected_verdict": "ship"
 }

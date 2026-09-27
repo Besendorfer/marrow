@@ -2,11 +2,25 @@ export type RiskLevel = "critical" | "high" | "medium" | "low";
 
 export type HighlightSeverity = "critical" | "warning" | "info";
 
+/** Finding kind (issue #231). Absent on manifests cached before it existed. */
+export type HighlightCategory = "bug" | "behavior" | "test_gap" | "simplification" | "observation";
+
 export interface Highlight {
   start_line: number;
   end_line: number;
   severity: HighlightSeverity;
   comment: string;
+  category?: HighlightCategory;
+  /** Concrete failure scenario — how the defect bites (issue #231). */
+  scenario?: string;
+  /** The fix in a line or two (issue #231). */
+  fix?: string;
+}
+
+/** The review's one-line verdict (issue #231). */
+export interface ReviewVerdict {
+  verdict: "fix_first" | "ship" | "needs_discussion";
+  reason: string;
 }
 
 export interface FileDiff {
@@ -157,6 +171,9 @@ export interface ReviewManifest {
   /** AI passes that errored or returned an unusable response — their manifest
    * sections are absent/defaulted, not real results (issue #198). */
   failed_passes?: string[];
+  /** The review's verdict (issue #231). Absent when the pass returned none,
+   * or on manifests cached before it existed. */
+  review_verdict?: ReviewVerdict | null;
   /** Fingerprint of the analysis environment that produced this manifest
    * (issue #202). Absent on pre-fingerprint caches; a mismatch with the
    * current environment means "analyzed by an older pipeline/model". */

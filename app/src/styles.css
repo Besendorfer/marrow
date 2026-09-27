@@ -2432,6 +2432,74 @@ tr.cursor-selected td {
   flex: 1;
 }
 
+/* Finding category + scenario/fix (issue #231): quiet, below the note. */
+.highlight-marker:has(.highlight-detail) {
+  flex-wrap: wrap;
+}
+
+.highlight-category {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.highlight-detail {
+  flex-basis: 100%;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--space-3);
+  row-gap: 2px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Label/text pairs sit in the grid's two columns, so wrapped text aligns
+   with its first line instead of falling back under the label. */
+.highlight-detail > div {
+  display: contents;
+}
+
+.highlight-detail-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.overview-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.overview-verdict-chip {
+  align-self: flex-start;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--chip-border);
+}
+
+.overview-verdict-chip--fix_first {
+  color: var(--white);
+  background: var(--sev-critical-fill);
+  border-color: var(--sev-critical-fill);
+}
+
+.overview-verdict-chip--needs_discussion {
+  color: var(--risk-high);
+  border-color: var(--risk-high);
+}
+
+.overview-verdict-chip--ship {
+  color: var(--text-primary);
+}
+
+.overview-verdict-reason {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 /* Inline CI failure annotations (issue #61) — same card treatment as an AI
    note (.highlight-marker), red-accented, read-only besides expand/collapse. */
 .check-annotation-row td {

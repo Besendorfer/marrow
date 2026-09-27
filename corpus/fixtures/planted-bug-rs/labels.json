@@ -24,5 +24,6 @@
       "end_line": 6,
       "note": "Removing refresh_legacy IS the PR's stated purpose — flagging it as a behavior change is noise per HIGHLIGHT_PROMPT."
     }
-  ]
+  ],
+  "expected_verdict": "fix_first"
 }

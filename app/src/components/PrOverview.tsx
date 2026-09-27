@@ -52,6 +52,12 @@ interface PrOverviewProps {
 }
 
 /** First file (in manifest order) whose highlights include a new-note key. */
+const verdictLabel: Record<string, string> = {
+  fix_first: "Fix first",
+  ship: "Ship",
+  needs_discussion: "Needs discussion",
+};
+
 function firstNewNoteFile(manifest: ReviewManifest, newHighlightKeys: Set<string>): FileDiff | null {
   for (const f of manifest.files) {
     for (const h of f.highlights ?? []) {
@@ -414,6 +420,17 @@ export function PrOverview({
         )}
       </div>
       <div className="overview-rail">
+        {manifest.review_verdict && (
+          <div className="overview-card overview-verdict">
+            <h4>AI verdict</h4>
+            <span className={`overview-verdict-chip overview-verdict-chip--${manifest.review_verdict.verdict}`}>
+              {verdictLabel[manifest.review_verdict.verdict] ?? manifest.review_verdict.verdict}
+            </span>
+            {manifest.review_verdict.reason && (
+              <span className="overview-verdict-reason">{manifest.review_verdict.reason}</span>
+            )}
+          </div>
+        )}
         <AttentionDigest
           entries={digestEntries}
           allClear={digestAllClear}

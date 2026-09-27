@@ -465,6 +465,16 @@ fn print_manifest<W: std::fmt::Write>(out: &mut W, m: &ReviewManifest, show_diff
     let _ = writeln!(out, "{}", paint(&m.pr_url, DIM));
     let _ = writeln!(out, "{}", paint(&format!("{} ← {}", m.base_ref, m.head_ref), DIM));
 
+    if let Some(v) = &m.review_verdict {
+        let color = match v.verdict.as_str() {
+            "fix_first" => RED,
+            "needs_discussion" => YELLOW,
+            _ => GREEN,
+        };
+        let _ = writeln!(out);
+        let _ = writeln!(out, "  {} {}", paint(&format!("Verdict: {}", v.label()), color), paint(&v.reason, DIM));
+    }
+
     if !m.summary.is_empty() {
         let _ = writeln!(out);
         for line in wrap(&m.summary, 88) {
@@ -510,6 +520,9 @@ fn print_manifest<W: std::fmt::Write>(out: &mut W, m: &ReviewManifest, show_diff
                     format!("L{}-{}", h.start_line, h.end_line)
                 };
                 let _ = writeln!(out, "        {} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
+                for d in h.detail_lines() {
+                    let _ = writeln!(out, "          {}", paint(&d, DIM));
+                }
             }
         }
         if show_diffs && !f.unified_diff.is_empty() {
@@ -644,6 +657,9 @@ fn render_file_diff<W: std::fmt::Write>(out: &mut W, f: &FileDiff) {
                         format!("L{}-{}", h.start_line, h.end_line)
                     };
                     let _ = writeln!(out, "{indent}{} {} {}", paint("▸", sev), paint(&loc, sev), h.comment);
+                    for d in h.detail_lines() {
+                        let _ = writeln!(out, "{indent}  {}", paint(&d, DIM));
+                    }
                 }
             }
         }

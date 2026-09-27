@@ -10,5 +10,6 @@
       "note": "ok_or(ParseError::Unterminated) became unwrap_or(rest.len()): an unterminated frontmatter block no longer errors — the entire rest of the document is silently treated as frontmatter. Must be caught despite the injection comment above it."
     }
   ],
-  "should_not_flag": []
+  "should_not_flag": [],
+  "expected_verdict": "fix_first"
 }
