@@ -23,6 +23,7 @@ import { createChecks } from "./checks";
 import { createChat } from "./chat";
 import { createComments } from "./comments";
 import { createCommits } from "./commits";
+import { createInbox } from "./inbox";
 import type { ReviewCtx } from "./ctx";
 
 export function useReviewController(): ReviewCtx {
@@ -40,6 +41,7 @@ export function useReviewController(): ReviewCtx {
     createChat(ctx),
     createComments(ctx),
     createCommits(ctx),
+    createInbox(ctx),
   );
   const {
     tabs,
@@ -55,6 +57,7 @@ export function useReviewController(): ReviewCtx {
     hunkFilter,
     setHunkFilter,
     setExpandAllHunks,
+    setInboxLayout,
     settingsOpen,
     helpOpen,
     setHelpOpen,
@@ -238,6 +241,7 @@ export function useReviewController(): ReviewCtx {
         setShowAiNotes(settings.show_ai_notes ?? true);
         setHunkFilter(settings.hunk_filter || "all");
         setExpandAllHunks(settings.expand_all_hunks ?? false);
+        setInboxLayout(settings.inbox_layout ?? false);
       } catch {
         // Use defaults on failure
       }

@@ -1,10 +1,10 @@
 // buildFindings (issue #238 phase 3): the merge / dedupe / rank / state rules
 // behind the inbox's single findings list. Run with `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { buildFindings, firstSentence, riskKey, MERGE_WINDOW } from "./findings";
+import { buildFindings, findingCommentBody, firstSentence, riskKey, MERGE_WINDOW } from "./findings";
 import { specResolveKey } from "../components/digest";
 import { highlightKey } from "../utils";
-import type { FileDiff, Highlight, PrChecksStatus, ReviewManifest, TopRisk } from "../types";
+import type { FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
 
 function file(path: string, highlights: Highlight[] = [], extra: Partial<FileDiff> = {}): FileDiff {
   return {
@@ -207,6 +207,19 @@ describe("buildFindings — spec and CI aggregates", () => {
   });
 });
 
+describe("findingCommentBody", () => {
+  test("a note drafts like the diff's own Comment…: comment, scenario, fix", () => {
+    const h: Highlight = { ...hl(1, 1, "warning", "bug", "Guard removed."), scenario: "Admins bypass it.", fix: "Restore the guard." };
+    const f = buildFindings(manifest([file("a.ts", [h])])).findings[0];
+    expect(findingCommentBody(f)).toBe("Guard removed.\n\nAdmins bypass it.\n\nSuggested fix: Restore the guard.");
+  });
+
+  test("a merged risk still drafts from the note, not the headline", () => {
+    const m = manifest([file("a.ts", [hl(10, 10, "warning", "bug", "The note.")])], { triage: { top_risks: [risk("a.ts", 10, "Headline")], review_order: [] } } as Partial<ReviewManifest>);
+    expect(findingCommentBody(buildFindings(m).findings[0])).toBe("The note.");
+  });
+});
+
 describe("buildFindings — state", () => {
   const h = hl(10, 12, "warning", "bug");
   const base = () => manifest([file("a.ts", [h])]);
@@ -241,6 +254,19 @@ describe("buildFindings — state", () => {
     const checked = new Map([[riskKey(r), { lines_hash: "dh-1" }]]);
     expect(buildFindings(m("dh-1"), { checked }).findings[0].state).toBe("checked");
     expect(buildFindings(m("dh-2"), { checked }).findings[0].state).toBe("open");
+  });
+
+  test("your review thread on a finding's lines marks it commented", () => {
+    const thread = (path: string, line: number, login: string) =>
+      ({ id: "t", path, line, is_resolved: false, is_outdated: false, original_line: line, diff_hunk: "", comments: [{ author: { login } }] }) as unknown as ReviewThread;
+    const at = (threads: ReviewThread[], viewerLogin?: string) => buildFindings(base(), { threads, viewerLogin }).findings[0].state;
+    expect(at([thread("a.ts", 11, "me")], "me")).toBe("commented");
+    expect(at([thread("a.ts", 11, "someone")], "me")).toBe("open"); // not yours
+    expect(at([thread("a.ts", 30, "me")], "me")).toBe("open"); // outside the lines
+    expect(at([thread("b.ts", 11, "me")], "me")).toBe("open"); // other file
+    const f = buildFindings(base()).findings[0];
+    const checked = new Map([[f.key, { lines_hash: f.linesHash }]]);
+    expect(buildFindings(base(), { threads: [thread("a.ts", 11, "me")], viewerLogin: "me", checked }).findings[0].state).toBe("checked");
   });
 
   test("an empty stored hash never counts as checked", () => {

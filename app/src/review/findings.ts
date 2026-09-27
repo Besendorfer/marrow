@@ -10,7 +10,7 @@
 
 import { hashString, highlightKey, isFailingCheck } from "../utils";
 import { specResolveKey } from "../components/digest";
-import type { CheckedFindingEntry, FileDiff, Highlight, PrChecksStatus, ReviewManifest, TopRisk } from "../types";
+import type { CheckedFindingEntry, FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
 
 /** What produced a finding. Highlight categories map 1:1; `note` is a
  * highlight from a manifest cached before categories existed. */
@@ -30,7 +30,9 @@ export type FindingKind =
  * defects and medium ones. */
 export type FindingRank = "critical" | "high" | "check" | "medium" | "low";
 
-export type FindingState = "open" | "checked" | "dismissed";
+/** `commented` = you left a review comment on the finding's lines (derived
+ * from GitHub threads, not stored). */
+export type FindingState = "open" | "checked" | "commented" | "dismissed";
 
 export interface Finding {
   /** Stable identity for "Looks fine" / "Not an issue" persistence. */
@@ -68,6 +70,11 @@ export interface FindingsInput {
   checks?: PrChecksStatus | null;
   /** Requirements the user already marked addressed (specResolveKey keys). */
   resolvedSpecKeys?: Set<string>;
+  /** Review threads on the PR; a thread you started on a finding's lines
+   * marks it `commented`. */
+  threads?: ReviewThread[];
+  /** Your GitHub login (thread authorship). Unknown → any thread counts. */
+  viewerLogin?: string | null;
 }
 
 export interface FindingsResult {
@@ -130,13 +137,42 @@ function lineRangeHash(file: FileDiff | undefined, start: number, end: number): 
   return file.diff_hash ?? "";
 }
 
+/** Did the viewer start a review thread on this finding's lines? A range
+ * finding (a note) matches threads inside its lines; an anchor-only finding
+ * (a risk) matches within the merge window, like the risk/note pairing. */
+function isCommented(f: Omit<Finding, "state">, threads: ReviewThread[] | undefined, viewer: string | null | undefined): boolean {
+  if (!threads?.length || f.path == null || f.startLine == null) return false;
+  const start = f.endLine != null ? f.startLine : f.startLine - MERGE_WINDOW;
+  const end = f.endLine ?? f.startLine + MERGE_WINDOW;
+  return threads.some((t) => {
+    if (t.path !== f.path || t.line == null || t.line < start || t.line > end) return false;
+    const author = t.comments[0]?.author.login;
+    // "you" is the optimistic placeholder a just-posted reply renders with.
+    return !viewer || author === viewer || author === "you";
+  });
+}
+
+/** Draft body when the reviewer chooses "Comment" on a finding: the note in
+ * the reviewer's own words — same shape as highlightCommentBody (utils.ts) for
+ * notes, the risk's reason for risks, and the item list for aggregates. The
+ * reviewer edits it before anything posts. */
+export function findingCommentBody(f: Finding): string {
+  if (f.kind === "spec") return ["These requirements aren't fully covered yet:", ...(f.items ?? []).map((i) => `- ${i}`)].join("\n");
+  if (f.kind === "ci") return `CI is failing: ${(f.items ?? []).join(", ")}.`;
+  if (f.kind === "risk") return [f.title, f.detail].filter(Boolean).join("\n\n");
+  const parts = [f.detail ?? f.title];
+  if (f.scenario) parts.push(f.scenario);
+  if (f.fix) parts.push(`Suggested fix: ${f.fix}`);
+  return parts.join("\n\n");
+}
+
 function isChecked(checked: Map<string, CheckedFindingEntry> | undefined, key: string, linesHash: string): boolean {
   const entry = checked?.get(key);
   return !!entry && linesHash !== "" && entry.lines_hash === linesHash;
 }
 
 export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {}): FindingsResult {
-  const { dismissed, checked, checks, resolvedSpecKeys } = input;
+  const { dismissed, checked, checks, resolvedSpecKeys, threads, viewerLogin } = input;
   const byPath = new Map(manifest.files.map((f) => [f.path, f]));
   const infoCountByPath = new Map<string, number>();
   const findings: Omit<Finding, "state">[] = [];
@@ -277,7 +313,13 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
   return {
     findings: findings.map((f) => ({
       ...f,
-      state: dismissed?.has(f.key) ? "dismissed" : isChecked(checked, f.key, f.linesHash) ? "checked" : "open",
+      state: dismissed?.has(f.key)
+        ? "dismissed"
+        : isChecked(checked, f.key, f.linesHash)
+          ? "checked"
+          : isCommented(f, threads, viewerLogin)
+            ? "commented"
+            : "open",
     })),
     infoCountByPath,
   };

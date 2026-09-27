@@ -449,6 +449,13 @@ export interface Tab {
   /** Resolution metadata (state + reason) for resolved spec items, keyed by
    * resolveKey. Mirrors noteResolutions' shape/lifecycle. */
   specResolutions: Map<string, NoteResolution>;
+  /** Inbox layout (issue #238): the review-list item shown in the detail
+   * pane — a finding key, or `file:<path>`. Null = auto-select. Not persisted. */
+  inboxSelection?: string | null;
+  /** File the inbox selection is anchored to (a finding's or file's path;
+   * null for About/Spec/CI) — lets setSelectedFile tell "open the selected
+   * finding's file" from "open some other file". */
+  inboxSelectionPath?: string | null;
   /** "Looks fine" marks on findings (issue #238), keyed by finding key. */
   checkedFindings: Map<string, CheckedFindingEntry>;
   /** User-provided requirements text (issue #179 phase 2), saved locally and
@@ -525,6 +532,8 @@ export interface Settings {
    * low-significance hunks (issue #55). Off by default to keep the
    * collapsed-by-default behavior. */
   expand_all_hunks: boolean;
+  /** Inbox review layout preview (issue #238). Absent on older backends. */
+  inbox_layout?: boolean;
   /** Directories holding local clones (issue #232): the review reads the
    * PR's repo from a clone found here, read-only, when it has the commits. */
   local_repo_roots?: string[];
