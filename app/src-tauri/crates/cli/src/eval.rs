@@ -374,7 +374,7 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
                 "minor_found": f.minor_found, "minor_missed": f.minor_missed,
                 "low_value": f.low_value, "extra": f.extra,
                 "substantive": f.substantive, "complete": f.complete,
-                "verdict": f.verdict, "verdict_match": f.verdict_match,
+                "verdict": f.verdict, "verdict_match": f.verdict_match, "shapes": f.shapes,
                 "detail": f.detail,
             })),
             "coverage": s.coverage.as_ref().map(|c| serde_json::json!({
@@ -501,6 +501,9 @@ struct FindingsScore {
     verdict: Option<String>,
     /// Some(matched?) when the fixture labels an expected verdict.
     verdict_match: Option<bool>,
+    /// One "path L{s}-{e} severity/category" line per finding — JSON-only
+    /// diagnostic for tuning category assignment.
+    shapes: Vec<String>,
     detail: Vec<String>,
 }
 
@@ -626,6 +629,7 @@ fn score_findings(
         } else if !expected {
             score.extra += 1;
         }
+        score.shapes.push(format!("{} L{}-{} {}/{}", h.path, h.start_line, h.end_line, h.severity, h.category));
         if matches!(h.category.as_str(), "bug" | "behavior" | "test_gap") {
             score.substantive += 1;
             if !h.scenario.trim().is_empty() && !h.fix.trim().is_empty() {

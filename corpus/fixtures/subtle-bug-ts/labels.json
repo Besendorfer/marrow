@@ -10,5 +10,6 @@
       "note": "pageCount() standardizes on Math.floor where the inline code used Math.ceil: any total that isn't an exact multiple of pageSize loses its last partial page. Region spans the helper and the first call site so a flag at either counts."
     }
   ],
-  "should_not_flag": []
+  "should_not_flag": [],
+  "expected_verdict": "fix_first"
 }

@@ -29,6 +29,12 @@ shipped on faith.
       Substring matching because requirement text is model-extracted. The
       eval also counts hallucinated citations — test paths cited in the raw
       output that were never shown to the model (expected 0).
+    One optional field (schema v4, issue #231) drives verdict scoring:
+    - `expected_verdict`: `"fix_first"|"ship"|"needs_discussion"` — the
+      review's expected one-line verdict. A fixture with only this label
+      still runs the findings pass. The report also counts "complete"
+      findings: bug/behavior/test_gap findings carrying both a scenario and
+      a fix.
 
 ## Labeling rules
 
