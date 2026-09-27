@@ -27,6 +27,10 @@ import type { ReviewCtx } from "./ctx";
 
 export function useReviewController(): ReviewCtx {
   const ctx = { ...useReviewState() } as ReviewCtx;
+  // Every factory runs before any handler lands on ctx, so a factory may
+  // destructure STATE from ctx at creation time but must reach another
+  // module's handler as `ctx.fn(...)` inside a function body — destructuring
+  // a handler up front would capture undefined.
   Object.assign(ctx,
     createTabs(ctx),
     createNavigation(ctx),
