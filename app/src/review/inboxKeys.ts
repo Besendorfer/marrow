@@ -31,3 +31,20 @@ export function listKeyAction(key: string, finding: { state: FindingState } | nu
       return null;
   }
 }
+
+/** Where the list goes after acting on `fromId`: the next OPEN finding after
+ * it in list order (wrapping; the acted-on one is skipped — its new state
+ * hasn't committed yet), else the next list item, else nowhere. */
+export function nextAfterAction(
+  findings: { id: string; state: FindingState }[],
+  navIds: string[],
+  fromId: string,
+): string | null {
+  const idx = findings.findIndex((f) => f.id === fromId);
+  for (let step = 1; step < findings.length; step++) {
+    const f = findings[(idx + step) % findings.length];
+    if (f.state === "open" && f.id !== fromId) return f.id;
+  }
+  const pos = navIds.indexOf(fromId);
+  return pos >= 0 && pos + 1 < navIds.length ? navIds[pos + 1] : null;
+}

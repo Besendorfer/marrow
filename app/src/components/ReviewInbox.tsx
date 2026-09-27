@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, ReviewManifest, Tab } from "../types";
 import { buildFindings, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
-import { listKeyAction } from "../review/inboxKeys";
+import { listKeyAction, nextAfterAction } from "../review/inboxKeys";
 
 const KIND_LABEL: Record<FindingKind, string> = {
   ci: "CI",
@@ -190,13 +190,12 @@ export function ReviewInbox(props: ReviewInboxProps) {
   /** After acting on `from`, go to the next open finding (wrapping), else the
    * next item. The acted-on finding is excluded — its state hasn't committed. */
   function advance(from: Finding) {
-    const idx = findings.findIndex((f) => f.key === from.key);
-    for (let step = 1; step < findings.length; step++) {
-      const f = findings[(idx + step) % findings.length];
-      if (f.state === "open") return select({ id: selectionIdFor(f), kind: "finding", finding: f });
-    }
-    const pos = navItems.findIndex((i) => i.id === selectionIdFor(from));
-    const next = navItems[pos + 1];
+    const id = nextAfterAction(
+      findings.map((f) => ({ id: selectionIdFor(f), state: f.state })),
+      navItems.map((i) => i.id),
+      selectionIdFor(from),
+    );
+    const next = id ? allItems.find((i) => i.id === id) : undefined;
     if (next) select(next);
   }
 
