@@ -48,3 +48,15 @@ export function nextAfterAction(
   const pos = navIds.indexOf(fromId);
   return pos >= 0 && pos + 1 < navIds.length ? navIds[pos + 1] : null;
 }
+
+export type ChooserKeyAction = { type: "pick"; index: number } | { type: "cancel" };
+
+/** Keys while the "Not an issue" reason picker is open: 1–n pick a reason,
+ * x again (or Enter) picks the first ("Not a real issue") so `x x` stays a
+ * two-key quick dismiss, Escape cancels. null = not a picker key. */
+export function chooserKeyAction(key: string, optionCount: number): ChooserKeyAction | null {
+  if (key === "Escape") return { type: "cancel" };
+  if (key === "x" || key === "Enter") return { type: "pick", index: 0 };
+  const n = Number(key);
+  return Number.isInteger(n) && n >= 1 && n <= optionCount ? { type: "pick", index: n - 1 } : null;
+}

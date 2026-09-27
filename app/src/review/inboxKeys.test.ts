@@ -1,6 +1,6 @@
 // listKeyAction (issue #238 phase 4): the inbox list's key guards.
 import { describe, expect, test } from "bun:test";
-import { listKeyAction, nextAfterAction } from "./inboxKeys";
+import { chooserKeyAction, listKeyAction, nextAfterAction } from "./inboxKeys";
 
 describe("listKeyAction", () => {
   test("j/k and arrows move, with or without a finding selected", () => {
@@ -54,5 +54,20 @@ describe("nextAfterAction", () => {
   test("with no open findings left, moves to the next list item; at the end, nowhere", () => {
     expect(nextAfterAction([f("a", "checked"), f("b", "commented"), f("c")], nav, "c")).toBe("file:x");
     expect(nextAfterAction([f("y")], ["about", "y"], "y")).toBeNull();
+  });
+});
+
+describe("chooserKeyAction", () => {
+  test("digits pick a reason, x or Enter picks the first, Escape cancels", () => {
+    expect(chooserKeyAction("2", 3)).toEqual({ type: "pick", index: 1 });
+    expect(chooserKeyAction("x", 3)).toEqual({ type: "pick", index: 0 });
+    expect(chooserKeyAction("Enter", 3)).toEqual({ type: "pick", index: 0 });
+    expect(chooserKeyAction("Escape", 3)).toEqual({ type: "cancel" });
+  });
+
+  test("out-of-range digits and other keys aren't picker keys", () => {
+    expect(chooserKeyAction("4", 3)).toBeNull();
+    expect(chooserKeyAction("0", 3)).toBeNull();
+    expect(chooserKeyAction("j", 3)).toBeNull();
   });
 });

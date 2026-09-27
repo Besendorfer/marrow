@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, ReviewManifest, Tab } from "../types";
 import { buildFindings, findingClaim, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
-import { listKeyAction, nextAfterAction } from "../review/inboxKeys";
+import { chooserKeyAction, listKeyAction, nextAfterAction } from "../review/inboxKeys";
 
 const KIND_LABEL: Record<FindingKind, string> = {
   ci: "CI",
@@ -87,6 +87,10 @@ export function ReviewInbox(props: ReviewInboxProps) {
   const { tab, checks, viewerLogin, onEnsureThreads } = props;
   const manifest = tab.manifest;
   const [showNotRelevant, setShowNotRelevant] = useState(false);
+  // The "Not an issue" reason picker, lifted here so the button and the x key
+  // behave the same: both open it, then 1–3 / x / Enter / Esc drive it.
+  const [choosingKey, setChoosingKey] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -182,6 +186,12 @@ export function ReviewInbox(props: ReviewInboxProps) {
     if (selected?.kind === "file" && selected.file.classification === "NOT_RELEVANT") setShowNotRelevant(true);
   }, [selected]);
 
+  // Moving on closes an open reason picker.
+  useEffect(() => {
+    setChoosingKey(null);
+    setReason("");
+  }, [selection]);
+
   // Keep the selected row in view as j/k move.
   useEffect(() => {
     listRef.current?.querySelector(".inbox-row.selected")?.scrollIntoView({ block: "nearest" });
@@ -224,6 +234,16 @@ export function ReviewInbox(props: ReviewInboxProps) {
     const typing = t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && (t as HTMLInputElement).type !== "checkbox");
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     const f = selected?.kind === "finding" ? selected.finding : null;
+    if (f && choosingKey === f.key) {
+      const pick = chooserKeyAction(e.key, REASON_OPTIONS.length);
+      if (pick) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (pick.type === "cancel") setChoosingKey(null);
+        else dismissWith(f, REASON_OPTIONS[pick.index].state);
+        return;
+      }
+    }
     const action = listKeyAction(e.key, f);
     if (!action) return;
     // Stop here so the diff's own single-letter shortcuts (a bubble-phase
@@ -236,8 +256,21 @@ export function ReviewInbox(props: ReviewInboxProps) {
       if (next && pos + action.delta >= 0) select(next);
       else if (pos < 0 && navItems[0]) select(navItems[0]);
     } else if (f) {
-      act(action.type, f);
+      if (action.type === "dismiss" && f.kind !== "spec") startChoosing(f);
+      else act(action.type, f);
     }
+  }
+
+  function startChoosing(f: Finding) {
+    setChoosingKey(f.key);
+    listRef.current?.focus({ preventScroll: true });
+  }
+
+  function dismissWith(f: Finding, state: NoteResolutionState) {
+    const why = reason.trim();
+    setChoosingKey(null);
+    setReason("");
+    act("dismiss", f, { state, reason: why });
   }
 
   const openFix = toFix.filter((f) => f.state === "open").length;
@@ -377,7 +410,12 @@ export function ReviewInbox(props: ReviewInboxProps) {
               finding={selected.finding}
               onLooksFine={() => act("fine", selected.finding)}
               onComment={() => act("comment", selected.finding)}
-              onNotAnIssue={(r) => act("dismiss", selected.finding, r)}
+              choosing={choosingKey === selected.finding.key}
+              reason={reason}
+              onReason={setReason}
+              onStartChoosing={() => (selected.finding.kind === "spec" ? act("dismiss", selected.finding) : startChoosing(selected.finding))}
+              onCancelChoosing={() => setChoosingKey(null)}
+              onPickReason={(state) => dismissWith(selected.finding, state)}
               onReopen={() => props.onReopen(selected.finding)}
             />
             {selected.finding.kind === "spec" ? (
@@ -452,20 +490,18 @@ function FileRow({ file, viewed, notes, selected, onSelect, onToggleViewed }: {
   );
 }
 
-function FindingCard({ finding: f, onLooksFine, onComment, onNotAnIssue, onReopen }: {
+function FindingCard({ finding: f, onLooksFine, onComment, onReopen, choosing, reason, onReason, onStartChoosing, onCancelChoosing, onPickReason }: {
   finding: Finding;
   onLooksFine: () => void;
   onComment: () => void;
-  onNotAnIssue: (resolution: NoteResolution | null) => void;
   onReopen: () => void;
+  choosing: boolean;
+  reason: string;
+  onReason: (text: string) => void;
+  onStartChoosing: () => void;
+  onCancelChoosing: () => void;
+  onPickReason: (state: NoteResolutionState) => void;
 }) {
-  const [choosing, setChoosing] = useState(false);
-  const [reason, setReason] = useState("");
-  useEffect(() => {
-    setChoosing(false);
-    setReason("");
-  }, [f.key]);
-
   const loc = f.path ? `${f.path}${f.startLine != null ? `:${f.startLine}` : ""}` : null;
   const showDetail = f.detail && f.detail.trim() !== f.title.trim();
 
@@ -494,18 +530,18 @@ function FindingCard({ finding: f, onLooksFine, onComment, onNotAnIssue, onReope
         </div>
       ) : choosing ? (
         <div className="inbox-card-actions inbox-card-choose">
-          {REASON_OPTIONS.map((o) => (
-            <button key={o.state} className="inbox-btn" onClick={() => onNotAnIssue({ state: o.state, reason: reason.trim() })}>
-              {o.label}
+          {REASON_OPTIONS.map((o, i) => (
+            <button key={o.state} className="inbox-btn" onClick={() => onPickReason(o.state)}>
+              {o.label} <kbd>{i + 1}</kbd>
             </button>
           ))}
           <input
             className="inbox-reason"
             placeholder="Why? (optional — feeds future AI runs)"
             value={reason}
-            onChange={(e) => setReason(e.target.value)}
+            onChange={(e) => onReason(e.target.value)}
           />
-          <button className="inbox-btn inbox-btn--ghost" onClick={() => setChoosing(false)}>Cancel</button>
+          <button className="inbox-btn inbox-btn--ghost" onClick={onCancelChoosing}>Cancel <kbd>esc</kbd></button>
         </div>
       ) : f.kind === "spec" ? (
         // A spec finding has one verdict: its requirements are addressed
@@ -518,7 +554,7 @@ function FindingCard({ finding: f, onLooksFine, onComment, onNotAnIssue, onReope
         <div className="inbox-card-actions">
           <button className="inbox-btn inbox-btn--primary" onClick={onLooksFine}>Looks fine <kbd>e</kbd></button>
           <button className="inbox-btn" onClick={onComment}>Comment <kbd>c</kbd></button>
-          <button className="inbox-btn" onClick={() => setChoosing(true)}>
+          <button className="inbox-btn" onClick={onStartChoosing}>
             Not an issue <kbd>x</kbd>
           </button>
           {f.state === "commented" && <span className="inbox-card-state">✎ You commented here</span>}
