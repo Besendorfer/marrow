@@ -96,14 +96,17 @@ export function createInbox(ctxArg: unknown) {
   /** "Not an issue": dismiss with an optional how/why (null = plain). Notes
    * hide from the diff like any dismissal; risk/CI keys are inert there. */
   function inboxNotAnIssue(f: Finding, resolution: NoteResolution | null) {
-    if (f.kind === "spec") addressSpecItems(f.itemKeys ?? []);
-    else ctx.resolveHighlight(f.key, resolution);
+    if (f.kind === "spec") return addressSpecItems(f.itemKeys ?? []);
+    // Changing your mind from Looks fine: one verdict per finding, so the
+    // earlier mark goes (else Reopen would surface it as a second state).
+    ctx.unmarkFindingChecked(f.key);
+    ctx.resolveHighlight(f.key, resolution);
   }
 
-  /** Undo a Looks fine / Not an issue. */
+  /** Undo a Looks fine / Not an issue — both stores, so nothing stale resurfaces. */
   function inboxReopen(f: Finding) {
+    ctx.unmarkFindingChecked(f.key);
     if (f.state === "dismissed") ctx.restoreHighlight(f.key);
-    else if (f.state === "checked") ctx.unmarkFindingChecked(f.key);
   }
 
   /** "Comment": open the inline composer on the finding's lines, prefilled.
