@@ -505,6 +505,11 @@ function CachedPrSection({
                     <span className="queue-why">
                       Analyzed · {pr.file_count} file{pr.file_count !== 1 ? "s" : ""} · opens instantly
                     </span>
+                    {(pr.state === "merged" || pr.state === "closed") && (
+                      <span className={`queue-pr-state queue-pr-state--${pr.state}`}>
+                        {pr.state === "merged" ? "Merged" : "Closed"}
+                      </span>
+                    )}
                   </span>
                 </span>
                 <span className="queue-time">{timeAgo(pr.cached_at, true)}</span>

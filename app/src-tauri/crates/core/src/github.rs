@@ -464,6 +464,16 @@ fn graphql_is_mutation(body: &serde_json::Value) -> bool {
         })
 }
 
+/// Collapse GitHub's PR `state` (`open`/`closed`) + `merged` flag into the
+/// three states the queue shows. `open` wins even if `merged` were set.
+pub fn classify_pr_state(state: &str, merged: bool) -> &'static str {
+    match (state, merged) {
+        ("open", _) => "open",
+        (_, true) => "merged",
+        _ => "closed",
+    }
+}
+
 impl GithubClient {
     pub fn new(token: Option<String>) -> Self {
         Self {
@@ -653,12 +663,14 @@ impl GithubClient {
         Ok((head_sha, comment_count, merged))
     }
 
-    pub async fn is_pr_open(
+    /// `("open" | "merged" | "closed", closed_at)` — `closed_at` is GitHub's
+    /// RFC 3339 close time (set for merged PRs too), `None` while open.
+    pub async fn pr_state(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<(String, Option<String>), String> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/pulls/{}",
             owner, repo, pr_number
@@ -689,8 +701,10 @@ impl GithubClient {
             .get("state")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
+        let merged = json.get("merged").and_then(|v| v.as_bool()).unwrap_or(false);
+        let closed_at = json.get("closed_at").and_then(|v| v.as_str()).map(str::to_string);
 
-        Ok(state == "open")
+        Ok((classify_pr_state(state, merged).to_string(), closed_at))
     }
 
     pub async fn get_pr_metadata(
@@ -2748,7 +2762,16 @@ pub struct CollectedActivity {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_path, failing_conclusion, first_line, graphql_is_mutation, latest_viewer_review, parse_check_annotation, parse_pr_commit};
+
+    #[test]
+    fn classify_pr_state_maps_github_state_and_merged_flag() {
+        assert_eq!(classify_pr_state("open", false), "open");
+        assert_eq!(classify_pr_state("open", true), "open");
+        assert_eq!(classify_pr_state("closed", true), "merged");
+        assert_eq!(classify_pr_state("closed", false), "closed");
+        assert_eq!(classify_pr_state("unknown", false), "closed");
+    }
+    use super::{classify_pr_state, encode_path, failing_conclusion, first_line, graphql_is_mutation, latest_viewer_review, parse_check_annotation, parse_pr_commit};
 
     #[test]
     fn encode_path_escapes_segments_but_keeps_separators() {

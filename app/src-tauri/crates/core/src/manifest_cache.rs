@@ -60,6 +60,7 @@ pub fn save_cached_manifest(
         head_sha: manifest.head_sha.clone(),
         file_count: manifest.files.len(),
         cached_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        state: default_pr_state(),
     };
     let meta_json = serde_json::to_string(&meta)
         .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
@@ -97,6 +98,42 @@ pub struct CachedPrInfo {
     pub head_sha: String,
     pub file_count: usize,
     pub cached_at: String,
+    /// PR state (`open` / `merged` / `closed`), refreshed from GitHub by the
+    /// queue listing. The sidecar's stored value is only a placeholder;
+    /// older sidecars without it default to `open`.
+    #[serde(default = "default_pr_state")]
+    pub state: String,
+}
+
+fn default_pr_state() -> String {
+    "open".to_string()
+}
+
+/// How long a closed or merged PR's analysis stays listed (and on disk)
+/// after the PR closed. Open PRs are never pruned.
+pub const CLOSED_PR_RETENTION_DAYS: i64 = 14;
+
+/// Whether the queue listing should drop a cached PR (issue #238). Closed and
+/// merged PRs used to be deleted the moment the queue loaded, which hid a PR
+/// you'd just merged and forced a full re-analysis when you reopened it. Now
+/// they stay for `CLOSED_PR_RETENTION_DAYS` counted from the LATER of
+/// `closed_at` and `cached_at`: a long-lived PR merged today isn't pruned
+/// because it was analyzed weeks ago, and a fresh analysis of a long-closed
+/// PR isn't pruned because it closed weeks ago. An unparseable `cached_at`
+/// keeps the entry rather than guessing; an unparseable `closed_at` is ignored.
+pub fn should_prune(state: &str, closed_at: Option<&str>, cached_at: &str, now: DateTime<Utc>) -> bool {
+    if state == "open" {
+        return false;
+    }
+    let parse = |t: &str| DateTime::parse_from_rfc3339(t).ok().map(|t| t.with_timezone(&Utc));
+    let Some(cached) = parse(cached_at) else { return false };
+    let anchor = closed_at.and_then(parse).map_or(cached, |closed| closed.max(cached));
+    now.signed_duration_since(anchor).num_days() >= CLOSED_PR_RETENTION_DAYS
+}
+
+/// `should_prune` against the current time.
+pub fn should_prune_now(state: &str, closed_at: Option<&str>, cached_at: &str) -> bool {
+    should_prune(state, closed_at, cached_at, Utc::now())
 }
 
 pub fn list_cached_manifests() -> Vec<CachedPrInfo> {
@@ -146,6 +183,7 @@ fn list_cached_in(dir: &std::path::Path) -> Vec<CachedPrInfo> {
                     head_sha: manifest.head_sha,
                     file_count: manifest.files.len(),
                     cached_at: cached_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    state: default_pr_state(),
                 })
             })();
             if let Some(info) = info {
@@ -235,7 +273,7 @@ mod tests {
         let meta = CachedPrInfo {
             owner: "o".into(), repo: "r".into(), pr_number: 1, pr_title: "new".into(),
             pr_url: "https://github.com/o/r/pull/1".into(), head_sha: "h".into(),
-            file_count: 0, cached_at: "2026-08-30T00:00:00Z".into(),
+            file_count: 0, cached_at: "2026-08-30T00:00:00Z".into(), state: "open".into(),
         };
         fs::write(dir.join("o_r_1.meta.json"), serde_json::to_string(&meta).unwrap()).unwrap();
         // Old-style: manifest only, no sidecar — the old all-or-nothing
@@ -250,5 +288,23 @@ mod tests {
         assert_eq!(listed.iter().filter(|i| i.pr_number == 1).count(), 1);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn should_prune_keeps_open_and_recent_closed_prs() {
+        let now = DateTime::parse_from_rfc3339("2026-09-27T00:00:00Z").unwrap().with_timezone(&Utc);
+        assert!(!should_prune("open", None, "2025-01-01T00:00:00Z", now));
+        assert!(!should_prune("merged", None, "2026-09-26T00:00:00Z", now));
+        assert!(!should_prune("closed", None, "2026-09-14T00:00:01Z", now));
+        assert!(should_prune("merged", None, "2026-09-13T00:00:00Z", now));
+        assert!(should_prune("closed", None, "2026-01-01T00:00:00Z", now));
+        assert!(!should_prune("merged", None, "not a date", now));
+        // Retention counts from the later of close and analysis: analyzed
+        // long ago but merged yesterday stays; closed long ago but analyzed
+        // yesterday stays; both old goes.
+        assert!(!should_prune("merged", Some("2026-09-26T00:00:00Z"), "2026-01-01T00:00:00Z", now));
+        assert!(!should_prune("closed", Some("2026-08-01T00:00:00Z"), "2026-09-26T00:00:00Z", now));
+        assert!(should_prune("closed", Some("2026-08-01T00:00:00Z"), "2026-08-02T00:00:00Z", now));
+        assert!(!should_prune("merged", Some("garbage"), "2026-09-26T00:00:00Z", now));
     }
 }

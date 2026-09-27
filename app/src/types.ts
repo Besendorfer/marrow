@@ -589,6 +589,9 @@ export interface CachedPrInfo {
   head_sha: string;
   file_count: number;
   cached_at: string;
+  /** PR state from the queue listing; closed/merged PRs stay listed for a
+   * retention window (issue #238). Absent from older backends. */
+  state?: "open" | "merged" | "closed";
 }
 
 export interface ReviewRequestItem {

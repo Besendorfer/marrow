@@ -6121,6 +6121,21 @@ mark.search-highlight-current {
   white-space: nowrap;
 }
 
+.queue-pr-state {
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+  padding: 0px 7px;
+  white-space: nowrap;
+  border: 1px solid var(--chip-border);
+  color: var(--text-secondary);
+}
+
+.queue-pr-state--merged {
+  color: var(--merged);
+  border-color: color-mix(in srgb, var(--merged) 45%, transparent);
+}
+
 .queue-approval-chip {
   display: inline-flex;
   align-items: center;
