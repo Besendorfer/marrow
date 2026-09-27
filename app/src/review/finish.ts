@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { FinishDone, FinishDraft, PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread } from "../types";
 import { canonicalPrKey, isFailingCheck } from "../utils";
+import type { Finding } from "./findings";
 import type { ReviewCtx } from "./ctx";
 
 export type { ReviewEvent } from "../types";
@@ -71,6 +72,31 @@ export function isNextCandidate(item: ReviewRequestItem, openKeys: Set<string | 
   return !openKeys.has(canonicalPrKey(`${item.owner}/${item.repo}#${item.number}`));
 }
 
+/** The recap headline: open claimed defects first, then open "worth a look". */
+export function recapSummary(findings: Pick<Finding, "urgency" | "state">[]): string {
+  const openFix = findings.filter((f) => f.urgency === "fix" && f.state === "open").length;
+  const openLook = findings.filter((f) => f.urgency === "look" && f.state === "open").length;
+  const head = openFix > 0 ? `${openFix} to fix` : "Nothing to fix";
+  return openLook > 0 ? `${head} · ${openLook} worth a look still open` : head;
+}
+
+/** Submit and report the outcome instead of throwing, so the panel can show
+ * an error in place and only enter its done state on success. `posted` is
+ * counted by the caller before submitting (submitting publishes them). */
+export async function attemptSubmit(
+  submit: (event: ReviewEvent, body: string) => Promise<void>,
+  event: ReviewEvent,
+  body: string,
+  posted: number,
+): Promise<{ ok: true; done: FinishDone } | { ok: false; error: string }> {
+  try {
+    await submit(event, body.trim());
+    return { ok: true, done: { event, posted } };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 /** Relevant files you've marked reviewed, out of all relevant files. */
 export function filesReviewed(manifest: ReviewManifest, viewed: Set<string>): { reviewed: number; total: number } {
   const relevant = manifest.files.filter((f) => f.classification !== "NOT_RELEVANT");
@@ -108,26 +134,33 @@ export function createFinish(ctxArg: unknown) {
   }
 
   /** Fetch fresh threads (so the recap's pending and unresolved counts are
-   * current), store them on the tab, and ask the AI for a review body that
-   * reflects the unresolved ones. */
-  async function draftReviewBody(): Promise<string> {
+   * current), store them on the tab, and ask the AI for a review body. It
+   * reflects the unresolved threads AND the open claimed defects — the same
+   * "is there something to change?" signal the preselected verdict uses. */
+  async function draftReviewBody(openDefects: Pick<Finding, "path" | "startLine" | "title" | "fix">[] = []): Promise<string> {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab?.manifest) return "";
     const tabId = tab.id;
     const threads = await invoke<ReviewThread[]>("fetch_review_comments", { prUrl: tab.manifest.pr_url });
     ctx.updateTab(tabId, (t) => ({ ...t, commentThreads: { status: "loaded", threads } }));
     const unresolved = threads.filter((t) => !t.is_resolved);
-    const threadsJson = JSON.stringify(
-      unresolved.map((t) => ({
+    const items = [
+      ...unresolved.map((t) => ({
         path: t.path,
         line: t.line,
         comments: t.comments.map((c) => ({ author: c.author.login, body: c.body })),
       })),
-    );
+      // Open defects read like review threads the AI raised.
+      ...openDefects.map((f) => ({
+        path: f.path ?? "",
+        line: f.startLine ?? null,
+        comments: [{ author: "ai-review", body: f.fix ? `${f.title} Suggested fix: ${f.fix}` : f.title }],
+      })),
+    ];
     return invoke<string>("generate_review_body", {
-      threadsJson,
+      threadsJson: JSON.stringify(items),
       prTitle: tab.manifest.pr_title,
-      hasUnresolved: unresolved.length > 0,
+      hasUnresolved: items.length > 0,
     });
   }
 

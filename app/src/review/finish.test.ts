@@ -1,8 +1,8 @@
 // Finish panel rules (issue #238 phase 5). Run with `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { ciStatus, defaultVerb, filesReviewed, isNextCandidate, mergeDraft, pendingComments, submitBlocker } from "./finish";
+import { attemptSubmit, ciStatus, createFinish, defaultVerb, filesReviewed, isNextCandidate, mergeDraft, pendingComments, recapSummary, submitBlocker } from "./finish";
 import { canonicalPrKey, ciChip } from "../utils";
-import type { FileDiff, PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread } from "../types";
+import type { FileDiff, PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread, Tab } from "../types";
 
 const thread = (id: string, comments: { body: string; pending?: boolean }[]) =>
   ({ id, path: "a.ts", line: 3, is_resolved: false, comments }) as unknown as ReviewThread;
@@ -104,5 +104,59 @@ describe("ciChip (Overview)", () => {
     expect(ciChip({ overall_state: "success", check_runs: [run("SUCCESS")] })?.label).toBe("CI passing");
     expect(ciChip({ overall_state: "failure", check_runs: [run("FAILURE")] })?.label).toBe("1 CI check failing");
     expect(ciChip({ overall_state: "pending", check_runs: [run(null, "IN_PROGRESS")] })?.label).toBe("CI running");
+  });
+});
+
+describe("recapSummary", () => {
+  const f = (urgency: "fix" | "look", state: "open" | "checked" = "open") => ({ urgency, state });
+  test("open defects lead; open looks follow; handled ones don't count", () => {
+    expect(recapSummary([f("look"), f("look"), f("look", "checked")])).toBe("Nothing to fix · 2 worth a look still open");
+    expect(recapSummary([f("fix"), f("fix", "checked"), f("look")])).toBe("1 to fix · 1 worth a look still open");
+    expect(recapSummary([])).toBe("Nothing to fix");
+  });
+});
+
+describe("attemptSubmit", () => {
+  test("success reports done with the pre-counted batched comments", async () => {
+    const calls: string[] = [];
+    const got = await attemptSubmit(async (e, b) => { calls.push(`${e}:${b}`); }, "APPROVE", "  LGTM  ", 2);
+    expect(got).toEqual({ ok: true, done: { event: "APPROVE", posted: 2 } });
+    expect(calls).toEqual(["APPROVE:LGTM"]);
+  });
+
+  test("a failed submit reports the error instead of throwing, and isn't done", async () => {
+    const got = await attemptSubmit(async () => { throw "Can not approve your own pull request"; }, "APPROVE", "", 0);
+    expect(got).toEqual({ ok: false, error: "Can not approve your own pull request" });
+  });
+});
+
+describe("createFinish — per-tab panel state", () => {
+  function run(tabs: Partial<Tab>[], activeTabId: string) {
+    let state = tabs.map((t) => ({ manifest: {}, ...t }) as Tab);
+    const ctx = {
+      activeTabId,
+      tabsRef: { get current() { return state; } },
+      updateTab: (id: string, fn: (t: Tab) => Tab) => { state = state.map((t) => (t.id === id ? fn(t) : t)); },
+    };
+    return { finish: createFinish(ctx), get: (id: string) => state.find((t) => t.id === id)! };
+  }
+
+  test("opening affects only the active tab", () => {
+    const { finish, get } = run([{ id: "a" }, { id: "b" }], "a");
+    finish.openFinish();
+    expect(get("a").finishOpen).toBe(true);
+    expect(get("b").finishOpen).toBeFalsy();
+  });
+
+  test("closing keeps an unsent draft; after a submit the next open starts fresh", () => {
+    const { finish, get } = run([{ id: "a", finishOpen: true }], "a");
+    finish.setFinishDraft({ body: "half-written", verb: "COMMENT" });
+    finish.closeFinish();
+    expect(get("a").finishDraft).toEqual({ body: "half-written", verb: "COMMENT" });
+    finish.openFinish();
+    finish.setFinishDone({ event: "COMMENT", posted: 1 });
+    finish.closeFinish();
+    expect(get("a").finishDraft).toBeNull();
+    expect(get("a").finishDone).toBeNull();
   });
 });

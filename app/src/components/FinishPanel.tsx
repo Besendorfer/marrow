@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { FinishDone, FinishDraft, PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread, Tab } from "../types";
 import { buildFindings, type Finding } from "../review/findings";
-import { ciStatus, defaultVerb, filesReviewed, mergeDraft, pendingComments, submitBlocker, type ReviewEvent } from "../review/finish";
+import { attemptSubmit, ciStatus, defaultVerb, filesReviewed, mergeDraft, pendingComments, recapSummary, submitBlocker, type ReviewEvent } from "../review/finish";
 
 const VERBS: { event: ReviewEvent; label: string; hint: string }[] = [
   { event: "APPROVE", label: "Approve", hint: "Ready to merge" },
@@ -29,7 +29,7 @@ export interface FinishPanelProps {
   onClose: () => void;
   onDraftChange: (patch: Partial<FinishDraft>) => void;
   onDone: (done: FinishDone) => void;
-  onDraftBody: () => Promise<string>;
+  onDraftBody: (openDefects: Finding[]) => Promise<string>;
   onSubmit: (event: ReviewEvent, body: string) => Promise<void>;
   onJumpToFinding: (f: Finding) => void;
   onJumpToThread: (thread: ReviewThread) => void;
@@ -63,7 +63,6 @@ export function FinishPanel(props: FinishPanelProps) {
   );
   const toFix = findings.filter((f) => f.urgency === "fix");
   const openFix = toFix.filter((f) => f.state === "open");
-  const openLook = findings.filter((f) => f.urgency === "look" && f.state === "open");
   const pending = pendingComments(threads);
   const unresolved = (threads ?? []).filter((t) => !t.is_resolved && !t.comments.some((c) => c.pending)).length;
   const files = filesReviewed(manifest, tab.viewedFiles);
@@ -89,7 +88,7 @@ export function FinishPanel(props: FinishPanelProps) {
     if (draft.drafted) return;
     let live = true;
     props
-      .onDraftBody()
+      .onDraftBody(openFix)
       .then((text) => {
         if (live) props.onDraftChange({ body: mergeDraft(bodyRef.current, text), drafted: true });
       })
@@ -118,15 +117,10 @@ export function FinishPanel(props: FinishPanelProps) {
     setError(null);
     // Counted now: submitting publishes them, and the refetch that follows
     // would read zero.
-    const posted = pending.length;
-    try {
-      await props.onSubmit(verb, body.trim());
-      props.onDone({ event: verb, posted });
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSubmitting(false);
-    }
+    const outcome = await attemptSubmit(props.onSubmit, verb, body, pending.length);
+    setSubmitting(false);
+    if (outcome.ok) props.onDone(outcome.done);
+    else setError(outcome.error);
   }
 
   function onKey(e: KeyboardEvent<HTMLDivElement>) {
@@ -190,10 +184,7 @@ export function FinishPanel(props: FinishPanelProps) {
           <>
             <section className="finish-section" aria-label="Recap">
               <div className="finish-lines">
-                <div className={`finish-line finish-line--${openFix.length > 0 ? "fail" : "ok"}`}>
-                  {openFix.length > 0 ? `${openFix.length} to fix` : "Nothing to fix"}
-                  {openLook.length > 0 && <span className="finish-muted"> · {openLook.length} worth a look still open</span>}
-                </div>
+                <div className={`finish-line finish-line--${openFix.length > 0 ? "fail" : "ok"}`}>{recapSummary(findings)}</div>
                 <div className={`finish-line finish-line--${ci.tone}`}>{ci.text}</div>
                 <div className="finish-line">
                   {files.reviewed} of {files.total} relevant files reviewed
