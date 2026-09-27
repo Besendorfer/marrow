@@ -35,6 +35,12 @@ shipped on faith.
       still runs the findings pass. The report also counts "complete"
       findings: bug/behavior/test_gap findings carrying both a scenario and
       a fix.
+  - `repo/` (optional, issue #232) — a snapshot the agentic review's repo
+    tools read instead of GitHub: `repo/head/**` and `repo/base/**` are the
+    PR's repo at its head/base commits; `repo/other/<name>/**` is sibling
+    repo `<name>` (same owner) at its default branch. Fixtures whose
+    findings are only knowable from outside the diff carry one; without it
+    the tools find nothing.
 
 ## Labeling rules
 
@@ -51,6 +57,11 @@ shipped on faith.
 ```bash
 cargo run -p marrow-cli -- eval --corpus ../../corpus   # from app/src-tauri
 ```
+
+Add `--single-shot` to run the review as one prompt without repo tools
+(the pre-#232 pipeline) for before/after comparison; the default is the
+agentic review the app runs, and the report shows each fixture's tool-call
+count and any single-shot fallback ("DEGRADED").
 
 Runs the real classification pass with your configured provider/model over
 every fixture and reports precision/recall for RELEVANT plus per-file

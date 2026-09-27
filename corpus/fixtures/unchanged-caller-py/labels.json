@@ -1,0 +1,17 @@
+{
+  "relevant": [
+    "svc/cache.py",
+    "svc/api/users.py"
+  ],
+  "not_relevant": [],
+  "expected_findings": [
+    {
+      "path": "svc/cache.py",
+      "start_line": 10,
+      "end_line": 12,
+      "importance": "important",
+      "note": "svc/jobs/nightly.py (unchanged, outside the diff) still wraps get_user in `except KeyError`; a miss now returns None, the except never fires, and `user.email` raises AttributeError, so the nightly digest crashes. Only knowable by reading beyond the diff; the body claims all call sites were updated."
+    }
+  ],
+  "expected_verdict": "fix_first"
+}

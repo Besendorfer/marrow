@@ -823,6 +823,7 @@ pub async fn chat_send(
                         owner: repo.owner.clone(),
                         repo: repo.repo.clone(),
                         head_sha: repo.head_sha.clone(),
+                        base_sha: String::new(),
                     };
                     marrow_core::chat_agent::run_chat_agent(&backend, &github, &target, &system, turns, &mut on_update).await
                 }

@@ -13,7 +13,14 @@ use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, LinkedIssue,
     PassStatus, RequirementsCoverage, ReviewManifest, ReviewOrderItem, ReviewVerdict, Settings, TopRisk, TriageReport,
 };
+use crate::ai::{ChatRole, ChatTurn, StreamUpdate};
+use crate::chat_agent::run_agent;
+use crate::local_repo;
+use crate::prompts::{REVIEW_KICKOFF, REVIEW_MAX_TOOL_CALLS, REVIEW_REPAIR};
+use crate::repo_tools::{ContextRead, RepoToolTarget, ToolBackend, ToolExecutor, ToolScope};
 use futures::stream::{FuturesUnordered, StreamExt};
+use std::future::Future;
+use std::pin::Pin;
 use sha2::{Sha256, Digest};
 use std::collections::{HashMap, HashSet};
 
@@ -304,6 +311,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let mut failed_passes: Vec<String> = Vec::new();
     let mut change_groups: Vec<ChangeGroup> = Vec::new();
     let mut review_verdict: Option<ReviewVerdict> = None;
+    let mut review_context: Vec<ContextRead> = Vec::new();
+    let mut review_degraded = false;
     // Triage guidance (top risks + contract-first order). Only computed for large
     // PRs (see the gate below); None means the UI falls back to its normal views.
     let mut triage: Option<TriageReport> = None;
@@ -360,12 +369,22 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
             .await
             .map(|c| c.check_runs)
             .unwrap_or_default();
+        // Two renderings of the same review: the agentic prompt (repo tools,
+        // issue #232) and the single-shot fallback used if the tool loop
+        // fails. Same inputs, so they truncate identically.
         let (highlight_prompt, highlight_truncated) = build_highlight_prompt_with(
             &pr_title,
             &pr_body,
             &per_file_diffs,
             &prior_notes,
-            &HighlightExtras { checks: &checks, test_diffs: &test_diffs },
+            &HighlightExtras { checks: &checks, test_diffs: &test_diffs, repo_tools: false },
+        );
+        let (agentic_prompt, _) = build_highlight_prompt_with(
+            &pr_title,
+            &pr_body,
+            &per_file_diffs,
+            &prior_notes,
+            &HighlightExtras { checks: &checks, test_diffs: &test_diffs, repo_tools: true },
         );
         if highlight_truncated {
             truncated_passes.push("highlights".to_string());
@@ -423,16 +442,48 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         drop(existing_tests);
         drop(prior_notes);
 
-        let mut tasks = vec![
-            ("highlights", ai.invoke(&highlight_prompt)),
-            ("summary", ai.invoke(&summary_prompt)),
-            ("grouping", ai.invoke(&grouping_prompt)),
+        // The review pass reads through a local clone when one holds the
+        // PR's commits (issue #232), else GitHub. Its outcome side-channel
+        // (degraded? what did it read?) is filled in when the future runs.
+        let review_backend = match local_repo::find_clone(
+            &settings.local_repo_roots,
+            &parsed.owner,
+            &parsed.repo,
+            &[&head_sha, &base_sha],
+        )
+        .await
+        {
+            Some(clone) => ToolBackend::Local { clone, github: &github },
+            None => ToolBackend::Github(&github),
+        };
+        let review_executor = ToolExecutor::new(
+            review_backend,
+            RepoToolTarget {
+                owner: parsed.owner.clone(),
+                repo: parsed.repo.clone(),
+                head_sha: head_sha.clone(),
+                base_sha: base_sha.clone(),
+            },
+            ToolScope::REVIEW,
+        );
+        let review_side: std::sync::Mutex<Option<ReviewPassOutcome>> = std::sync::Mutex::new(None);
+        let review_fut: PassFuture<'_> = Box::pin(async {
+            let outcome = run_review_pass(&ai, &review_executor, &agentic_prompt, &highlight_prompt).await;
+            let raw = outcome.raw.clone();
+            *review_side.lock().unwrap() = Some(outcome);
+            raw
+        });
+
+        let mut tasks: Vec<(&str, PassFuture<'_>)> = vec![
+            ("highlights", review_fut),
+            ("summary", Box::pin(ai.invoke(&summary_prompt))),
+            ("grouping", Box::pin(ai.invoke(&grouping_prompt))),
         ];
         if run_triage {
-            tasks.push(("triage", ai.invoke(&triage_prompt)));
+            tasks.push(("triage", Box::pin(ai.invoke(&triage_prompt))));
         }
         if run_coverage {
-            tasks.push(("coverage", ai.invoke(&coverage_prompt)));
+            tasks.push(("coverage", Box::pin(ai.invoke(&coverage_prompt))));
         }
         let mut ai_stream: FuturesUnordered<_> =
             tasks.into_iter().map(|(name, fut)| async move { (name, fut.await) }).collect();
@@ -463,6 +514,10 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         let (highlight_results, verdict) = parse_highlights_strict(highlights_raw)?;
         let highlight_results = validate_highlights(highlight_results, &file_list);
         review_verdict = verdict;
+        if let Some(outcome) = review_side.lock().unwrap().take() {
+            review_degraded = outcome.degraded;
+            review_context = outcome.reads;
+        }
 
         // The remaining passes degrade gracefully, but a failure is recorded
         // in `failed_passes` so the Overview can say the analysis is
@@ -694,18 +749,114 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         requirements_coverage,
         body: truncate_chars(&pr_body, 10000),
         commits,
-        passes: pass_statuses(ran.0, ran.1, ran.2, &truncated_passes, &failed_passes),
+        passes: {
+            let mut passes = pass_statuses(ran.0, ran.1, ran.2, &truncated_passes, &failed_passes);
+            if review_degraded {
+                mark_degraded(&mut passes, "highlights");
+            }
+            passes
+        },
         analysis_truncated: !truncated_passes.is_empty(),
         truncated_passes,
         failed_passes,
         analysis_fingerprint: Some(crate::fingerprint::analysis_fingerprint(settings)),
         review_verdict,
+        review_context,
         files: file_diffs,
     };
 
     let _ = manifest_cache::save_cached_manifest(&parsed.owner, &parsed.repo, parsed.number, &manifest);
 
     Ok(manifest)
+}
+
+/// A boxed AI-pass future — the review pass (an agent loop) and the plain
+/// single-shot passes share one FuturesUnordered.
+type PassFuture<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+
+/// How one review pass went (issue #232).
+#[derive(Debug, Clone)]
+pub struct ReviewPassOutcome {
+    /// The review's raw JSON answer (or the error), fed to
+    /// `parse_highlights_strict` exactly like the single-shot output.
+    pub raw: Result<String, String>,
+    /// True when the tool loop failed or returned no usable answer and the
+    /// single-shot prompt ran instead — a real review, but without context.
+    pub degraded: bool,
+    /// Why it degraded (None when it didn't) — diagnostics for the eval.
+    pub degrade_reason: Option<String>,
+    /// True when the loop's final message was unusable but one repair turn
+    /// in the same conversation produced a usable review (not degraded).
+    pub repaired: bool,
+    /// What the agent read (empty when degraded — the fallback used none).
+    pub reads: Vec<ContextRead>,
+    /// Tool calls the agent attempted.
+    pub tool_calls: usize,
+}
+
+/// Run the review: the agentic prompt through the shared tool loop. If the
+/// loop's final message isn't a usable review, ask once more IN THE SAME
+/// conversation (keeping what the tools found); only if the loop errors or
+/// the repair also fails does the single-shot prompt run instead. Public for
+/// the corpus eval, so the eval measures exactly the pipeline the app runs.
+pub async fn run_review_pass(
+    ai: &AiBackend,
+    executor: &ToolExecutor<'_>,
+    agentic_prompt: &str,
+    single_shot_prompt: &str,
+) -> ReviewPassOutcome {
+    let turns = vec![ChatTurn { role: ChatRole::User, content: REVIEW_KICKOFF.to_string() }];
+    let mut ignore = |_: StreamUpdate| {};
+    let (reason, tool_calls) = match run_agent(ai, executor, agentic_prompt, turns, REVIEW_MAX_TOOL_CALLS, &mut ignore).await {
+        Ok(run) if parse_review_response(&run.final_segment).is_ok() => {
+            return ReviewPassOutcome {
+                raw: Ok(run.final_segment),
+                degraded: false,
+                degrade_reason: None,
+                repaired: false,
+                reads: executor.reads(),
+                tool_calls: run.tool_calls,
+            };
+        }
+        Ok(run) => {
+            let mut turns = run.turns;
+            if !run.final_segment.trim().is_empty() {
+                turns.push(ChatTurn { role: ChatRole::Assistant, content: run.final_segment.trim().to_string() });
+            }
+            turns.push(ChatTurn { role: ChatRole::User, content: REVIEW_REPAIR.to_string() });
+            match ai.invoke_chat_stream(agentic_prompt, &turns, &mut ignore).await {
+                Ok(text) if parse_review_response(&text).is_ok() => {
+                    return ReviewPassOutcome {
+                        raw: Ok(text),
+                        degraded: false,
+                        degrade_reason: None,
+                        repaired: true,
+                        reads: executor.reads(),
+                        tool_calls: run.tool_calls,
+                    };
+                }
+                Ok(_) => ("final answer unusable, repair turn unusable too".to_string(), run.tool_calls),
+                Err(e) => (format!("final answer unusable, repair turn failed: {e}"), run.tool_calls),
+            }
+        }
+        Err(e) => (format!("tool loop failed: {e}"), 0),
+    };
+    ReviewPassOutcome {
+        raw: ai.invoke(single_shot_prompt).await,
+        degraded: true,
+        degrade_reason: Some(reason),
+        repaired: false,
+        reads: Vec::new(),
+        tool_calls,
+    }
+}
+
+/// Mark a completed pass "degraded" in place (issue #232). A failed pass
+/// stays failed — one honest word per pass, failure first.
+fn mark_degraded(passes: &mut [PassStatus], pass: &str) {
+    for p in passes.iter_mut().filter(|p| p.pass == pass && p.status != "failed" && p.status != "not_run") {
+        p.status = "degraded".to_string();
+    }
 }
 
 /// Minimum number of relevant files before the triage pass runs. Small PRs are
@@ -1814,6 +1965,144 @@ mod tests {
         assert_eq!(get("triage"), "complete");
         assert_eq!(get("coverage"), "not_run");
         assert_eq!(s.len(), 6, "one record per pass, always");
+    }
+
+    #[test]
+    fn degraded_marks_only_a_pass_that_ran_and_did_not_fail() {
+        use super::{mark_degraded, pass_statuses};
+        let mut p = pass_statuses(true, false, false, &["highlights".to_string()], &[]);
+        mark_degraded(&mut p, "highlights");
+        let get = |p: &[crate::types::PassStatus], n: &str| p.iter().find(|x| x.pass == n).unwrap().status.clone();
+        assert_eq!(get(&p, "highlights"), "degraded", "degraded outranks truncated");
+        assert_eq!(get(&p, "summary"), "complete");
+        let mut p = pass_statuses(true, false, false, &[], &["highlights".to_string()]);
+        mark_degraded(&mut p, "highlights");
+        assert_eq!(get(&p, "highlights"), "failed", "failed stays failed");
+    }
+
+    #[tokio::test]
+    async fn review_pass_falls_back_and_records_degraded_when_the_loop_fails() {
+        use super::run_review_pass;
+        use crate::repo_tools::{RepoToolTarget, SnapshotRepo, ToolBackend, ToolExecutor, ToolScope};
+        // Nothing listens on the discard port: the agent loop and the
+        // single-shot fallback both fail fast, offline.
+        let ai = crate::ai::AiBackend::OpenAiCompatible {
+            base_url: "http://127.0.0.1:9/v1".to_string(),
+            api_key: "x".to_string(),
+            model: "m".to_string(),
+        };
+        let snap = SnapshotRepo::default();
+        let ex = ToolExecutor::new(
+            ToolBackend::Snapshot(&snap),
+            RepoToolTarget { owner: "o".into(), repo: "r".into(), head_sha: "h".into(), base_sha: "b".into() },
+            ToolScope::REVIEW,
+        );
+        let out = run_review_pass(&ai, &ex, "agentic", "single").await;
+        assert!(out.degraded, "a failed loop is recorded as degraded, not hidden");
+        assert!(out.reads.is_empty());
+        assert!(out.raw.is_err(), "the fallback's own failure still surfaces to the strict parser");
+    }
+
+    /// A scripted OpenAI-compatible endpoint on localhost: each connection
+    /// gets the next reply — as SSE when the request asked to stream, else as
+    /// a chat-completion JSON. Returns the base URL and the request bodies.
+    fn mock_ai(replies: Vec<&'static str>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let body = loop {
+                    let n = sock.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break String::new();
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(h) = text.find("\r\n\r\n") {
+                        let len = text[..h]
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .unwrap_or(0);
+                        if buf.len() >= h + 4 + len {
+                            break text[h + 4..].to_string();
+                        }
+                    }
+                };
+                let streaming = body.contains("\"stream\":true");
+                seen.lock().unwrap().push(body);
+                let resp = if streaming {
+                    let delta = serde_json::json!({ "choices": [{ "delta": { "content": reply } }] });
+                    let payload = format!("data: {delta}\n\ndata: [DONE]\n\n");
+                    format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{payload}")
+                } else {
+                    let json = serde_json::json!({ "choices": [{ "message": { "content": reply } }] }).to_string();
+                    format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}", json.len())
+                };
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        (url, bodies)
+    }
+
+    fn snapshot_executor(snap: &crate::repo_tools::SnapshotRepo) -> crate::repo_tools::ToolExecutor<'_> {
+        use crate::repo_tools::{RepoToolTarget, ToolBackend, ToolExecutor, ToolScope};
+        ToolExecutor::new(
+            ToolBackend::Snapshot(snap),
+            RepoToolTarget { owner: "o".into(), repo: "r".into(), head_sha: "h".into(), base_sha: "b".into() },
+            ToolScope::REVIEW,
+        )
+    }
+
+    #[tokio::test]
+    async fn unusable_final_answer_is_repaired_in_the_same_conversation() {
+        use super::run_review_pass;
+        let mut snap = crate::repo_tools::SnapshotRepo { pr_repo: "r".into(), ..Default::default() };
+        snap.files.entry("r".into()).or_default().entry("head".into()).or_default().insert("a.rs".into(), "fn a() {}".into());
+        let (url, bodies) = mock_ai(vec![
+            "Checking the caller.\n```marrow-tool\n{\"tool\":\"read_file\",\"path\":\"a.rs\"}\n```\n",
+            "I think this looks fine overall.",
+            r#"{"verdict":"ship","verdict_reason":"clean","findings":[]}"#,
+        ]);
+        let ai = crate::ai::AiBackend::OpenAiCompatible { base_url: url, api_key: "k".into(), model: "m".into() };
+        let ex = snapshot_executor(&snap);
+        let out = run_review_pass(&ai, &ex, "agentic", "single").await;
+        assert!(!out.degraded, "{:?}", out.degrade_reason);
+        assert!(out.repaired);
+        assert_eq!(out.tool_calls, 1);
+        assert_eq!(out.reads.len(), 1, "the tool read survives the repair");
+        assert!(out.raw.unwrap().contains("\"ship\""));
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 3, "no single-shot call was made");
+        // The repair continued the conversation: it carries the tool result
+        // and the unusable answer, then the repair request.
+        assert!(bodies[2].contains("marrow-tool result") && bodies[2].contains("looks fine overall"));
+        assert!(bodies[2].contains("not a usable final answer"));
+    }
+
+    #[tokio::test]
+    async fn failed_repair_degrades_to_single_shot_with_a_reason() {
+        use super::run_review_pass;
+        let snap = crate::repo_tools::SnapshotRepo::default();
+        let (url, bodies) = mock_ai(vec![
+            "no json here",
+            "still no json",
+            r#"[{"path":"a.rs","start_line":1,"end_line":1,"severity":"info","comment":"c"}]"#,
+        ]);
+        let ai = crate::ai::AiBackend::OpenAiCompatible { base_url: url, api_key: "k".into(), model: "m".into() };
+        let ex = snapshot_executor(&snap);
+        let out = run_review_pass(&ai, &ex, "agentic", "single").await;
+        assert!(out.degraded && !out.repaired);
+        assert!(out.degrade_reason.unwrap().contains("repair turn unusable"));
+        assert!(out.raw.unwrap().contains("a.rs"));
+        let bodies = bodies.lock().unwrap();
+        assert!(!bodies[2].contains("\"stream\":true"), "the fallback is the single-shot prompt");
+        assert!(bodies[2].contains("single"));
     }
 
     #[test]

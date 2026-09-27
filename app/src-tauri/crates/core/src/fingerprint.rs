@@ -24,6 +24,9 @@ pub fn analysis_fingerprint(settings: &Settings) -> String {
         &[
             prompts::CLASSIFICATION_PROMPT,
             prompts::HIGHLIGHT_PROMPT,
+            prompts::REVIEW_REPO_TOOLS,
+            prompts::REVIEW_KICKOFF,
+            prompts::REVIEW_REPAIR,
             prompts::SUMMARY_PROMPT,
             prompts::GROUPING_PROMPT,
             prompts::TRIAGE_PROMPT,

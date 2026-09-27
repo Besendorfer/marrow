@@ -49,6 +49,8 @@ struct RawDirEntry {
 /// text-match fragments (GitHub only indexes the default branch).
 pub struct CodeSearchHit {
     pub path: String,
+    /// `owner/name` of the hit's repository (empty if GitHub omitted it).
+    pub repo: String,
     pub fragments: Vec<String>,
 }
 
@@ -63,7 +65,14 @@ struct CodeSearchResponse {
 struct CodeSearchItem {
     path: String,
     #[serde(default)]
+    repository: Option<CodeSearchRepo>,
+    #[serde(default)]
     text_matches: Vec<CodeSearchTextMatch>,
+}
+
+#[derive(Deserialize)]
+struct CodeSearchRepo {
+    full_name: String,
 }
 
 #[derive(Deserialize)]
@@ -426,6 +435,17 @@ fn normalize_ci_state(state: &str) -> String {
 /// terminate or corrupt the URL (paths with spaces exist in real repos).
 fn encode_path(path: &str) -> String {
     path.split('/').map(|seg| urlencoding::encode(seg).into_owned()).collect::<Vec<_>>().join("/")
+}
+
+/// Contents-API URL for `path` at `ref_sha`; an empty ref omits the query so
+/// GitHub serves the repo's default branch (cross-repo reads, issue #232).
+fn contents_url(owner: &str, repo: &str, path: &str, ref_sha: &str) -> String {
+    let base = format!("https://api.github.com/repos/{}/{}/contents/{}", owner, repo, encode_path(path));
+    if ref_sha.is_empty() {
+        base
+    } else {
+        format!("{}?ref={}", base, urlencoding::encode(ref_sha))
+    }
 }
 
 /// Whether a GraphQL payload gets mutation retry semantics (connect-only).
@@ -981,10 +1001,7 @@ impl GithubClient {
         path: &str,
         ref_sha: &str,
     ) -> Result<String, String> {
-        let url = format!(
-            "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-            owner, repo, encode_path(path), urlencoding::encode(ref_sha)
-        );
+        let url = contents_url(owner, repo, path, ref_sha);
 
         // File contents are bulk downloads; this path had NO deadline or
         // retries before #198 because its 404 special case bypassed
@@ -1065,9 +1082,22 @@ impl GithubClient {
         repo: &str,
         query: &str,
     ) -> Result<(Vec<CodeSearchHit>, u32), String> {
+        self.search_code_qualified(query, &format!("repo:{owner}/{repo}")).await
+    }
+
+    /// Code search with a caller-built scope qualifier (`repo:o/r`,
+    /// `org:o`, or `user:o`). The qualifier is appended by trusted code —
+    /// model-supplied query text must have its own qualifiers stripped first
+    /// (see `repo_tools::sanitize_search_query`). Hits carry their repo so
+    /// owner-wide results stay attributable.
+    pub async fn search_code_qualified(
+        &self,
+        query: &str,
+        qualifier: &str,
+    ) -> Result<(Vec<CodeSearchHit>, u32), String> {
         let url = format!(
             "https://api.github.com/search/code?q={}&per_page=10",
-            urlencoding::encode(&format!("{query} repo:{owner}/{repo}"))
+            urlencoding::encode(&format!("{query} {qualifier}"))
         );
         let resp = self
             .send_checked(&url, "application/vnd.github.text-match+json")
@@ -1081,6 +1111,7 @@ impl GithubClient {
             .into_iter()
             .map(|item| CodeSearchHit {
                 path: item.path,
+                repo: item.repository.map(|r| r.full_name).unwrap_or_default(),
                 fragments: item.text_matches.into_iter().map(|m| m.fragment).collect(),
             })
             .collect();
@@ -1097,10 +1128,7 @@ impl GithubClient {
         path: &str,
         ref_sha: &str,
     ) -> Result<Vec<DirEntry>, String> {
-        let url = format!(
-            "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-            owner, repo, encode_path(path), urlencoding::encode(ref_sha)
-        );
+        let url = contents_url(owner, repo, path, ref_sha);
 
         let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
         let value: serde_json::Value = resp
@@ -1118,6 +1146,18 @@ impl GithubClient {
             .into_iter()
             .map(|e| DirEntry { name: e.name, entry_type: e.entry_type, size: e.size })
             .collect())
+    }
+
+    /// Whether `owner` is an "Organization" or a "User" — picks the right
+    /// code-search qualifier (`org:` vs `user:`) for owner-wide search.
+    pub async fn get_owner_type(&self, owner: &str) -> Result<String, String> {
+        let url = format!("https://api.github.com/users/{}", urlencoding::encode(owner));
+        let resp = self.send_checked(&url, "application/vnd.github.v3+json").await?;
+        let v: serde_json::Value = resp.json().await.map_err(|e| format!("Failed to parse owner: {e}"))?;
+        v.get("type")
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "GitHub returned no owner type".to_string())
     }
 
     pub async fn get_authenticated_user(&self) -> Result<String, String> {

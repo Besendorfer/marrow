@@ -1,4 +1,4 @@
-import type { CheckRunInfo, Highlight, PrChecksStatus } from "./types";
+import type { CheckRunInfo, ContextRead, Highlight, PrChecksStatus } from "./types";
 
 export function getFileName(path: string): string {
   return path.split("/").pop() || path;
@@ -102,3 +102,25 @@ export function highlightCommentBody(h: Highlight): string {
   if (h.fix) parts.push(`Suggested fix: ${h.fix}`);
   return parts.join("\n\n");
 }
+
+/** One "Context used" row (issue #232): what the review read or searched,
+ * with the repo shown only when it isn't this PR's. */
+export function contextRow(r: ContextRead, prRepo: string): string {
+  const other = r.repo !== prRepo && !r.repo.endsWith("/*");
+  const where = other ? `${r.repo} · ` : "";
+  switch (r.tool) {
+    case "search_code":
+      return r.rev === "owner" ? `Searched all ${r.repo.replace("/*", "")} repos for “${r.path}”` : `Searched for “${r.path}”`;
+    case "list_dir":
+      return `Listed ${where}${r.path || "repo root"}`;
+    default:
+      return `Read ${where}${r.path}${r.rev === "base" ? " (before this PR)" : ""}`;
+  }
+}
+
+/** `owner/name` of the PR, from its URL. */
+export function prRepoOf(url: string): string {
+  const m = url.match(/github\.com\/([^/]+\/[^/]+)\/pull\//);
+  return m ? m[1] : "";
+}
+

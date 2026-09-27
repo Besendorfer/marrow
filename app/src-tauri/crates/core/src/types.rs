@@ -244,6 +244,11 @@ pub struct ReviewManifest {
     /// pass returned no usable verdict, or on caches predating it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_verdict: Option<ReviewVerdict>,
+    /// What the review read or searched beyond the diff (issue #232), in
+    /// call order — surfaced as "Context used". Empty when it used no tools,
+    /// ran degraded, or predates the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_context: Vec<crate::repo_tools::ContextRead>,
     pub files: Vec<FileDiff>,
 }
 
@@ -341,6 +346,11 @@ pub struct Settings {
     /// never auto-shows again (config via env vars alone also suppresses it).
     #[serde(default)]
     pub setup_done: bool,
+    /// Directories holding local clones (issue #232). The review's repo
+    /// tools read the PR's repo from a clone found here — read-only, at the
+    /// PR's exact commits — instead of GitHub, when the commits are present.
+    #[serde(default)]
+    pub local_repo_roots: Vec<String>,
     /// When true, files open with every hunk expanded instead of auto-collapsing
     /// low-significance hunks (issue #55). Off by default to keep the
     /// collapsed-by-default behavior.

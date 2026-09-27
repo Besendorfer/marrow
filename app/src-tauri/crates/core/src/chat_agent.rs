@@ -8,69 +8,16 @@
 //! only renders the fence as a chip, unlike `marrow-action`.
 
 use crate::ai::{AiBackend, ChatRole, ChatTurn, StreamUpdate};
-use crate::chat::truncate;
 use crate::github::GithubClient;
+pub use crate::repo_tools::RepoToolTarget;
+#[cfg(test)]
+use crate::repo_tools::{sanitize_search_query, validate_repo_path, ToolCall};
+use crate::repo_tools::{parse_tool_call, ToolBackend, ToolExecutor, ToolScope};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
-/// Which repo (and commit) the tools read from — always the PR under review.
-pub struct RepoToolTarget {
-    pub owner: String,
-    pub repo: String,
-    pub head_sha: String,
-}
-
+/// Chat's per-question tool budget.
 const MAX_TOOL_CALLS: usize = 5;
-/// Per-result char cap — matches chat.rs PER_FILE_CONTENT_BUDGET.
-const TOOL_RESULT_BUDGET: usize = 8000;
-const LIST_DIR_MAX_ENTRIES: usize = 200;
-
-/// One read-only repo tool call the model can request via a ```marrow-tool
-/// fence — mirrors the shapes documented in `CHAT_REPO_TOOLS` (chat.rs), the
-/// single source of truth for the protocol.
-// Kept in sync BY HAND with CHAT_REPO_TOOLS (chat.rs) and the ChatToolCall
-// union (app/src/types.ts) — edit all three together.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(tag = "tool", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ToolCall {
-    ReadFile { path: String },
-    SearchCode { query: String },
-    ListDir {
-        #[serde(default)]
-        path: String,
-    },
-}
-
-impl ToolCall {
-    /// Transient status shown via `StreamUpdate::Status` while the tool runs.
-    fn status_label(&self) -> String {
-        match self {
-            ToolCall::ReadFile { path } => format!("Reading {path}…"),
-            ToolCall::SearchCode { query } => format!("Searching code for \u{201c}{query}\u{201d}…"),
-            ToolCall::ListDir { path } => {
-                let where_ = if path.is_empty() { "repo root" } else { path.as_str() };
-                format!("Listing {where_}…")
-            }
-        }
-    }
-}
-
-/// Parse a ```marrow-tool fence body into a [`ToolCall`]. Serde's
-/// `deny_unknown_fields` rejects unknown tools/fields; this additionally
-/// rejects an empty `path`/`query`, which the documented protocol never
-/// emits but a model could still produce.
-fn parse_tool_call(json: &str) -> Result<ToolCall, String> {
-    let call: ToolCall = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    match &call {
-        ToolCall::ReadFile { path } if path.trim().is_empty() => {
-            Err("read_file requires a non-empty path".to_string())
-        }
-        ToolCall::SearchCode { query } if query.trim().is_empty() => {
-            Err("search_code requires a non-empty query".to_string())
-        }
-        _ => Ok(call),
-    }
-}
 
 /// Shared implementation for [`find_tool_fence_end`] / [`find_tool_fence_end_final`].
 /// `at_end_closes` controls whether a closer line lacking a trailing newline
@@ -152,117 +99,6 @@ fn extract_tool_json(visible: &str) -> String {
     body.join("\n")
 }
 
-/// Strip GitHub search qualifiers that would widen a model-supplied query
-/// beyond the PR's repo (`repo:`, `org:`, `user:`) — the executor appends its
-/// own `repo:` scope, and model input must not be able to add more. Search
-/// qualifiers OR together, so a prompt-injected `repo:other/repo` would
-/// otherwise reach anything the token can read.
-fn sanitize_search_query(q: &str) -> String {
-    q.split_whitespace()
-        .filter(|t| {
-            let t = t.to_ascii_lowercase();
-            !(t.starts_with("repo:") || t.starts_with("org:") || t.starts_with("user:"))
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Reject model-supplied repo paths that could rewrite the API request:
-/// absolute paths, `.`/`..` segments (endpoint traversal), backslashes, and
-/// the URL metacharacters `?`/`#` (which would displace the `ref` query that
-/// pins reads to the PR head).
-fn validate_repo_path(path: &str) -> Result<(), String> {
-    if path.starts_with('/')
-        || path.contains('\\')
-        || path.contains('?')
-        || path.contains('#')
-        || path.split('/').any(|seg| seg == "." || seg == "..")
-    {
-        return Err(format!("invalid path: {path}"));
-    }
-    Ok(())
-}
-
-/// Run one tool call against the GitHub API. Never returns `Err` — API
-/// failures become a text result the model can read and recover from, same
-/// as any other tool output, rather than failing the whole chat turn. Paths
-/// and queries are model-controlled: they are validated/sanitized here so a
-/// prompt-injected tool call can't reach outside the PR's repo at its head.
-async fn execute_tool(github: &GithubClient, t: &RepoToolTarget, call: &ToolCall) -> String {
-    let result = match call {
-        ToolCall::ReadFile { path } => {
-            if let Err(e) = validate_repo_path(path) {
-                return truncate(&format!("Tool error: {e}"), TOOL_RESULT_BUDGET);
-            }
-            match github.get_file_content(&t.owner, &t.repo, path, &t.head_sha).await {
-                Ok(content) if content.is_empty() => {
-                    format!("File not found (or empty) at PR head: {path}")
-                }
-                Ok(content) => format!("Contents of {path} at PR head:\n{content}"),
-                Err(e) => format!("Tool error: {e}"),
-            }
-        }
-        ToolCall::SearchCode { query } => {
-            let query = &sanitize_search_query(query);
-            if query.is_empty() {
-                return truncate(
-                    "Tool error: the query was empty after removing repo/org/user qualifiers (search is always scoped to this PR's repo).",
-                    TOOL_RESULT_BUDGET,
-                );
-            }
-            match github.search_code(&t.owner, &t.repo, query).await {
-                Ok((hits, _)) if hits.is_empty() => {
-                    format!("No code-search results for \"{query}\" in {}/{}.", t.owner, t.repo)
-                }
-                Ok((hits, total)) => {
-                    let n = hits.len();
-                    let mut out = format!(
-                        "Code search results for \"{query}\" ({total} total, showing {n}; default branch — confirm against PR head with read_file):\n"
-                    );
-                    for hit in &hits {
-                        out.push_str(&format!("- {}\n", hit.path));
-                        for frag in hit.fragments.iter().take(2) {
-                            out.push_str(&format!("  {}\n", frag));
-                        }
-                    }
-                    out
-                }
-                Err(e) => format!("Tool error: {e}"),
-            }
-        }
-        ToolCall::ListDir { path } => {
-            if !path.is_empty() {
-                if let Err(e) = validate_repo_path(path) {
-                    return truncate(&format!("Tool error: {e}"), TOOL_RESULT_BUDGET);
-                }
-            }
-            match github.list_dir(&t.owner, &t.repo, path, &t.head_sha).await {
-                Ok(entries) => {
-                    let where_ = if path.is_empty() { "repo root" } else { path.as_str() };
-                    let mut out = format!("Contents of {where_} at PR head:\n");
-                    let total = entries.len();
-                    for entry in entries.iter().take(LIST_DIR_MAX_ENTRIES) {
-                        if entry.entry_type == "dir" {
-                            out.push_str(&format!("{}  ({})\n", entry.name, entry.entry_type));
-                        } else {
-                            out.push_str(&format!(
-                                "{}  ({}, {} B)\n",
-                                entry.name, entry.entry_type, entry.size
-                            ));
-                        }
-                    }
-                    if total > LIST_DIR_MAX_ENTRIES {
-                        out.push_str(&format!("... ({} more entries)\n", total - LIST_DIR_MAX_ENTRIES));
-                    }
-                    out
-                }
-                Err(e) => format!("Tool error: {e}"),
-            }
-        }
-    };
-    truncate(&result, TOOL_RESULT_BUDGET)
-}
-
 /// Per-segment streaming state shared between the stream callback and the
 /// fence-completion race in [`run_chat_agent`].
 struct Seg {
@@ -271,26 +107,66 @@ struct Seg {
     cut: Option<usize>,
 }
 
-/// Drive one chat answer through the tool-use loop: stream text, abort the
-/// underlying call the instant a ```marrow-tool fence completes, execute the
-/// tool against `github`, feed the result back as a turn, and re-invoke —
-/// up to `MAX_TOOL_CALLS` executed calls. The returned transcript (which
-/// includes the marrow-tool fences themselves) is what the caller sends as
-/// `Done { content }` and persists to history — fences render as chips in
-/// the saved transcript, exactly like `marrow-action`/`marrow-card`.
+/// Drive one chat answer through the tool-use loop against the PR repo at
+/// its head (chat scope, `MAX_TOOL_CALLS` calls). The returned transcript
+/// (which includes the marrow-tool fences themselves) is what the caller
+/// sends as `Done { content }` and persists to history — fences render as
+/// chips in the saved transcript, exactly like `marrow-action`/`marrow-card`.
 pub async fn run_chat_agent(
     backend: &AiBackend,
     github: &GithubClient,
     target: &RepoToolTarget,
     system: &str,
-    mut turns: Vec<ChatTurn>,
+    turns: Vec<ChatTurn>,
     on: &mut (dyn FnMut(StreamUpdate) + Send),
 ) -> Result<String, String> {
+    let executor = ToolExecutor::new(
+        ToolBackend::Github(github),
+        RepoToolTarget {
+            owner: target.owner.clone(),
+            repo: target.repo.clone(),
+            head_sha: target.head_sha.clone(),
+            base_sha: String::new(),
+        },
+        ToolScope::CHAT,
+    );
+    run_agent(backend, &executor, system, turns, MAX_TOOL_CALLS, on).await.map(|r| r.transcript)
+}
+
+/// Outcome of one [`run_agent`] loop.
+pub struct AgentRun {
+    /// Every segment, fences included (chat persists this).
+    pub transcript: String,
+    /// The model's last segment — the text after its final tool call (the
+    /// review parses its JSON answer from here, never from a fence).
+    pub final_segment: String,
+    /// Tool calls the model attempted (valid or not).
+    pub tool_calls: usize,
+    /// The conversation as the model last saw it — every tool call and
+    /// result, but NOT `final_segment` — so a caller can continue it (the
+    /// review's repair turn).
+    pub turns: Vec<ChatTurn>,
+}
+
+/// The tool-use loop shared by chat and the review pass (issue #232):
+/// stream text, abort the underlying call the instant a ```marrow-tool
+/// fence completes, execute the tool via `executor`, feed the result back as
+/// a turn, and re-invoke — up to `max_calls` executed calls. Provider-
+/// agnostic: it relies only on `invoke_chat_stream`'s streaming contract.
+pub async fn run_agent(
+    backend: &AiBackend,
+    executor: &ToolExecutor<'_>,
+    system: &str,
+    mut turns: Vec<ChatTurn>,
+    max_calls: usize,
+    on: &mut (dyn FnMut(StreamUpdate) + Send),
+) -> Result<AgentRun, String> {
     let mut transcript = String::new();
+    let mut final_segment = String::new();
     let mut calls_used: usize = 0;
 
-    // 5 executed calls + 1 budget-exhausted notice + the forced final segment.
-    for _ in 0..(MAX_TOOL_CALLS + 2) {
+    // max_calls executed calls + 1 budget-exhausted notice + the forced final segment.
+    for _ in 0..(max_calls + 2) {
         let seg = Arc::new(Mutex::new(Seg { text: String::new(), forwarded: 0, cut: None }));
         let notify = Arc::new(Notify::new());
 
@@ -353,6 +229,7 @@ pub async fn run_chat_agent(
 
         let Some(idx) = cut else {
             transcript.push_str(&text);
+            final_segment = text;
             break;
         };
 
@@ -361,7 +238,7 @@ pub async fn run_chat_agent(
         turns.push(ChatTurn { role: ChatRole::Assistant, content: visible.trim_end().to_string() });
         calls_used += 1;
 
-        let result = if calls_used > MAX_TOOL_CALLS {
+        let result = if calls_used > max_calls {
             "Tool budget exhausted. Answer now from what you already have; do not emit more marrow-tool blocks."
                 .to_string()
         } else {
@@ -371,12 +248,12 @@ pub async fn run_chat_agent(
                 ),
                 Ok(call) => {
                     on(StreamUpdate::Status(Some(call.status_label())));
-                    execute_tool(github, target, &call).await
+                    executor.execute(&call).await
                 }
             }
         };
 
-        let remaining = MAX_TOOL_CALLS.saturating_sub(calls_used);
+        let remaining = max_calls.saturating_sub(calls_used);
         turns.push(ChatTurn {
             role: ChatRole::User,
             content: format!(
@@ -393,7 +270,7 @@ pub async fn run_chat_agent(
     if transcript.trim().is_empty() {
         Err("AI returned an empty response".to_string())
     } else {
-        Ok(transcript)
+        Ok(AgentRun { transcript, final_segment, tool_calls: calls_used, turns })
     }
 }
 
@@ -465,20 +342,20 @@ mod tests {
     fn parses_the_three_valid_shapes() {
         assert_eq!(
             parse_tool_call(r#"{"tool":"read_file","path":"src/lib.rs"}"#),
-            Ok(ToolCall::ReadFile { path: "src/lib.rs".to_string() })
+            Ok(ToolCall::ReadFile { path: "src/lib.rs".to_string(), repo: None, rev: None })
         );
         assert_eq!(
             parse_tool_call(r#"{"tool":"search_code","query":"fn foo"}"#),
-            Ok(ToolCall::SearchCode { query: "fn foo".to_string() })
+            Ok(ToolCall::SearchCode { query: "fn foo".to_string(), scope: None })
         );
         assert_eq!(
             parse_tool_call(r#"{"tool":"list_dir","path":"src"}"#),
-            Ok(ToolCall::ListDir { path: "src".to_string() })
+            Ok(ToolCall::ListDir { path: "src".to_string(), repo: None })
         );
         // path defaults to "" for list_dir (repo root).
         assert_eq!(
             parse_tool_call(r#"{"tool":"list_dir"}"#),
-            Ok(ToolCall::ListDir { path: String::new() })
+            Ok(ToolCall::ListDir { path: String::new(), repo: None })
         );
     }
 
@@ -515,6 +392,8 @@ mod tests {
         assert_eq!(extract_tool_json(&s[..idx]), body);
         assert_eq!(parse_tool_call(&extract_tool_json(&s[..idx])).unwrap(), ToolCall::ReadFile {
             path: "src/lib.rs".to_string(),
+            repo: None,
+            rev: None,
         });
     }
 
@@ -543,14 +422,14 @@ mod tests {
     #[test]
     fn status_labels() {
         assert_eq!(
-            ToolCall::ReadFile { path: "src/lib.rs".to_string() }.status_label(),
+            ToolCall::ReadFile { path: "src/lib.rs".to_string(), repo: None, rev: None }.status_label(),
             "Reading src/lib.rs…"
         );
         assert_eq!(
-            ToolCall::SearchCode { query: "fn foo".to_string() }.status_label(),
+            ToolCall::SearchCode { query: "fn foo".to_string(), scope: None }.status_label(),
             "Searching code for \u{201c}fn foo\u{201d}…"
         );
-        assert_eq!(ToolCall::ListDir { path: "src".to_string() }.status_label(), "Listing src…");
-        assert_eq!(ToolCall::ListDir { path: String::new() }.status_label(), "Listing repo root…");
+        assert_eq!(ToolCall::ListDir { path: "src".to_string(), repo: None }.status_label(), "Listing src…");
+        assert_eq!(ToolCall::ListDir { path: String::new(), repo: None }.status_label(), "Listing repo root…");
     }
 }

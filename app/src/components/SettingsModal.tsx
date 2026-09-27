@@ -30,6 +30,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [perWatchCap, setPerWatchCap] = useState(50);
   const [showApprovedPrs, setShowApprovedPrs] = useState(false);
   const [expandAllHunks, setExpandAllHunks] = useState(false);
+  const [localRepoRoots, setLocalRepoRoots] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -52,6 +53,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setPerWatchCap(s.activity_per_watch_cap || 50);
         setShowApprovedPrs(s.show_approved_prs ?? false);
         setExpandAllHunks(s.expand_all_hunks ?? false);
+        setLocalRepoRoots((s.local_repo_roots ?? []).join("\n"));
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
       setSaved(false);
@@ -93,6 +95,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           activity_per_watch_cap: perWatchCap,
           show_approved_prs: showApprovedPrs,
           expand_all_hunks: expandAllHunks,
+          local_repo_roots: localRepoRoots
+            .split("\n")
+            .map((r) => r.trim())
+            .filter((r) => r !== ""),
         },
       });
       // Persist watches alongside settings, dropping blank rows.
@@ -302,6 +308,28 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             placeholder="ghp_... or github_pat_..."
             spellCheck={false}
             autoComplete="off"
+          />
+
+          <label className="settings-label" htmlFor="local-repo-roots">
+            Local clones
+          </label>
+          <p className="settings-hint">
+            Folders that contain your git clones, one per line (e.g.{" "}
+            <code>~/code</code>). When a clone already has a PR's commits, the
+            AI review searches and reads it locally — faster and exact at the
+            PR head. Read-only: Marrow never fetches or changes the clone.
+          </p>
+          <textarea
+            id="local-repo-roots"
+            className="settings-input settings-textarea"
+            rows={3}
+            value={localRepoRoots}
+            onChange={(e) => {
+              setLocalRepoRoots(e.target.value);
+              setSaved(false);
+            }}
+            placeholder="~/workspace/projects"
+            spellCheck={false}
           />
 
           <div className="settings-divider" />

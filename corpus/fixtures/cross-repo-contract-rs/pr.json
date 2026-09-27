@@ -1,0 +1,10 @@
+{
+  "title": "chore(api): serialize JobStatus as snake_case",
+  "body": "Aligns `JobStatus` JSON with the snake_case convention every other API enum already uses (see `InvoiceState`). The `web` dashboard already reads snake_case statuses, so this is a no-op for clients.",
+  "files": [
+    {
+      "path": "src/jobs.rs",
+      "diff": "@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};\n \n /// Lifecycle of a background job, as serialized in the /jobs API.\n #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]\n+#[serde(rename_all = \"snake_case\")]\n pub enum JobStatus {\n     Queued,\n     InProgress,\n     Succeeded,\n     Failed,\n"
+    }
+  ]
+}
