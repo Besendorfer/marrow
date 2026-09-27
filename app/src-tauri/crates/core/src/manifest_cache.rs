@@ -191,6 +191,39 @@ mod tests {
     }
 
     #[test]
+    fn review_verdict_and_finding_fields_round_trip_through_serialization() {
+        use crate::types::{FileDiff, Highlight, ReviewVerdict};
+        let mut m = manifest(7, "t");
+        m.review_verdict = Some(ReviewVerdict { verdict: "fix_first".into(), reason: "r".into() });
+        let file: FileDiff = serde_json::from_value(serde_json::json!({
+            "path": "a.rs", "classification": "RELEVANT", "reason": "", "category": "",
+            "diff_type": "modified", "base_content": "", "head_content": "", "unified_diff": ""
+        }))
+        .unwrap();
+        m.files = vec![FileDiff {
+            highlights: vec![Highlight {
+                start_line: 1,
+                end_line: 2,
+                severity: "critical".into(),
+                comment: "c".into(),
+                category: "bug".into(),
+                scenario: "s".into(),
+                fix: "f".into(),
+            }],
+            ..file
+        }];
+        let back: ReviewManifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.review_verdict, m.review_verdict);
+        let h = &back.files[0].highlights[0];
+        assert_eq!((h.category.as_str(), h.scenario.as_str(), h.fix.as_str()), ("bug", "s", "f"));
+        // A manifest cached before #231 (no review_verdict key) still loads.
+        let mut old = serde_json::to_value(manifest(8, "old")).unwrap();
+        old.as_object_mut().unwrap().remove("review_verdict");
+        let back: ReviewManifest = serde_json::from_value(old).unwrap();
+        assert!(back.review_verdict.is_none());
+    }
+
+    #[test]
     fn discovery_merges_sidecar_and_manifest_only_entries() {
         let dir = std::env::temp_dir().join(format!("marrow-disc-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
