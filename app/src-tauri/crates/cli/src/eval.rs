@@ -236,11 +236,13 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
 
 /// One fixture's work since `start` — every fixture gets one, including
 /// those whose classification failed, so per-model averages aren't skewed.
-fn work_entry(name: &str, start: (u64, u64), started: std::time::Instant) -> serde_json::Value {
+/// Jev time (`--jev`) is excluded; its calls don't go through the AI
+/// backend, so the character counts never include them.
+fn work_entry(name: &str, start: (u64, u64), started: std::time::Instant, jev_time: std::time::Duration) -> serde_json::Value {
     let (sent, recv) = marrow_core::ai::traffic::totals();
     serde_json::json!({
         "fixture": name, "chars_sent": sent - start.0, "chars_received": recv - start.1,
-        "seconds": started.elapsed().as_secs_f64(),
+        "seconds": started.elapsed().saturating_sub(jev_time).as_secs_f64(),
     })
 }
 
@@ -331,6 +333,9 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
         // exchanged and wall-clock time.
         let (sent0, recv0) = marrow_core::ai::traffic::totals();
         let started = std::time::Instant::now();
+        // Time spent on --jev (its calls and their spacing) is left out of
+        // the fixture's seconds, which measure the review model.
+        let mut jev_time = std::time::Duration::ZERO;
 
         let (prompt, _truncated) = build_classification_prompt(&pr.title, &file_list, &full_diff);
         eprintln!("· {}: classifying {} files…", score.name, file_list.len());
@@ -341,7 +346,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                     eprintln!("· {}: {e}", score.name);
                     score.failed = Some(e);
                     score.failed_pass = Some("classification");
-                    work.push(work_entry(&score.name, (sent0, recv0), started));
+                    work.push(work_entry(&score.name, (sent0, recv0), started, jev_time));
                     scores.push(score);
                     continue;
                 }
@@ -436,6 +441,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                         .map(|h| format!("OUT-OF-DIFF dropped: {} L{}-{} ({})", h.path, h.start_line, h.end_line, h.category))
                         .collect();
                     let validated = validate_highlights(parsed, &file_list);
+                    let jev_started = std::time::Instant::now();
                     if let Some(key) = &jev_key {
                         eprintln!("· {}: asking Jev about {} finding(s)…", score.name, validated.len());
                         for h in &validated {
@@ -463,6 +469,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                             relations.push((score.name.clone(), r));
                         }
                     }
+                    jev_time += jev_started.elapsed();
                     let mut fs = score_findings(&validated, &labels);
                     fs.out_of_diff = out_of_diff.len();
                     fs.detail.extend(out_of_diff);
@@ -521,7 +528,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                 }
             }
         }
-        work.push(work_entry(&score.name, (sent0, recv0), started));
+        work.push(work_entry(&score.name, (sent0, recv0), started, jev_time));
         scores.push(score);
     }
 
@@ -559,10 +566,13 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
 /// `eval --jev-classify` (issue #249): classify every corpus file with the
 /// LLM pass and with Jev, both through validate_classifications, and score
 /// each against the labels. No findings or coverage passes.
-pub async fn eval_jev_classify(corpus: &Path, json: bool) -> Result<(), String> {
+pub async fn eval_jev_classify(corpus: &Path, json: bool, model: Option<String>) -> Result<(), String> {
     use crate::jev_classify::{render_text, summarize, Row};
     use std::time::Instant;
-    let settings = load_settings();
+    let mut settings = load_settings();
+    if let Some(m) = model {
+        settings.model = m;
+    }
     let key = resolve_jev_api_key(&settings).ok_or("--jev-classify needs a TypeSafe API key: set it in Settings or TYPESAFE_API_KEY")?;
     let fixtures_dir = corpus.join("fixtures");
     let mut dirs: Vec<PathBuf> = fs::read_dir(&fixtures_dir)
@@ -1066,8 +1076,8 @@ mod tests {
     #[test]
     fn every_corpus_fixture_loads_and_validates() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../corpus");
-        let version = std::fs::read_to_string(dir.join("VERSION")).unwrap();
-        assert_eq!(version.trim(), "7");
+        let version: u32 = std::fs::read_to_string(dir.join("VERSION")).unwrap().trim().parse().unwrap();
+        assert!(version >= 7, "corpus VERSION {version}");
         let mut n = 0;
         for entry in std::fs::read_dir(dir.join("fixtures")).unwrap() {
             let fx = entry.unwrap().path();

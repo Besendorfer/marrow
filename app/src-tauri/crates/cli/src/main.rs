@@ -141,8 +141,10 @@ enum Command {
         jev_dedupe: bool,
         /// Review with this model instead of the configured one, for this
         /// run only (the config file isn't touched). Compares models on the
-        /// same corpus.
-        #[arg(long)]
+        /// same corpus. Like the setting, the id also picks the provider
+        /// unless one is configured (e.g. `gpt-…` → OpenAI, `arn:…` → Bedrock).
+        /// Jev-only modes make no review calls, so they reject it.
+        #[arg(long, conflicts_with_all = ["jev_probe", "jev_dedupe"])]
         model: Option<String>,
     },
     /// Compare Jev's file-relevance calls with the LLM's cached ones on real
@@ -257,7 +259,7 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
         }
         Command::Eval { corpus, json, jev_probe: true, .. } => jev_probe::run(&corpus, json).await,
         Command::Eval { corpus, json, jev_dedupe: true, .. } => jev_dedupe::run(&corpus, json).await,
-        Command::Eval { corpus, json, jev_classify: true, .. } => eval::eval_jev_classify(&corpus, json).await,
+        Command::Eval { corpus, json, jev_classify: true, model, .. } => eval::eval_jev_classify(&corpus, json, model).await,
         Command::JevAgree { manifests, repo, limit, json } => jev_classify::agree(&manifests, &repo, limit, json).await,
         Command::Eval { corpus, json, single_shot, jev, model, .. } => eval::eval(&corpus, json, single_shot, jev, model).await,
         Command::Resolve { thread_id } => {
@@ -1007,7 +1009,7 @@ mod cli_tests {
     fn eval_measurement_modes_cant_be_combined() {
         let ok = Cli::try_parse_from(["marrow", "eval", "--corpus", "c", "--jev-dedupe"]);
         assert!(ok.is_ok());
-        for combo in [["--jev-probe", "--jev-dedupe"], ["--jev-classify", "--jev"], ["--jev-dedupe", "--single-shot"]] {
+        for combo in [["--jev-probe", "--jev-dedupe"], ["--jev-classify", "--jev"], ["--jev-dedupe", "--single-shot"], ["--jev-probe", "--model=m"]] {
             let args = ["marrow", "eval", "--corpus", "c", combo[0], combo[1]];
             assert!(Cli::try_parse_from(args).is_err(), "{combo:?} should be rejected");
         }
