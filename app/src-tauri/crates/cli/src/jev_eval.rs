@@ -49,10 +49,21 @@ pub struct Summary {
     /// should_not_flag findings Jev cleared — the noise it would catch.
     pub noise_caught: usize,
     pub noise_total: usize,
+    /// Each distinct failure message and how many calls hit it, so a run
+    /// that failed (a bad key, a rate limit) says why.
+    pub errors: Vec<(String, usize)>,
 }
 
 pub fn summarize(judged: &[Judged]) -> Summary {
     let mut s = Summary::default();
+    for j in judged {
+        if let Err(e) = &j.judgement {
+            match s.errors.iter_mut().find(|(m, _)| m == e) {
+                Some((_, n)) => *n += 1,
+                None => s.errors.push((e.clone(), 1)),
+            }
+        }
+    }
     for label in LABELS {
         let mut b = Bucket { label, ..Default::default() };
         let mut p_sum = 0.0;
@@ -106,6 +117,9 @@ pub fn render_text(s: &Summary) -> String {
         let _ = writeln!(out, "    {f}");
     }
     let _ = writeln!(out, "NOISE CAUGHT (should-not-flag cleared): {}/{}", s.noise_caught, s.noise_total);
+    for (msg, n) in &s.errors {
+        let _ = writeln!(out, "JEV ERROR ×{n}: {msg}");
+    }
     out
 }
 
@@ -160,5 +174,7 @@ mod tests {
         let minor = &s.buckets[1];
         assert_eq!((minor.n, minor.errors), (2, 1));
         assert!((minor.mean_p_real - 0.6).abs() < 1e-9);
+        assert_eq!(s.errors, vec![("HTTP 500".to_string(), 1)]);
+        assert!(render_text(&s).contains("JEV ERROR ×1: HTTP 500"));
     }
 }
