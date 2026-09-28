@@ -25,6 +25,10 @@ use marrow_core::github::GithubClient;
 use marrow_core::types::{FetchProgress, FetchStatus, FileDiff, Highlight, ReviewManifest, ReviewThread};
 
 mod eval;
+mod jev_eval;
+mod jev_probe;
+mod jev_classify;
+mod jev_dedupe;
 mod tui;
 
 /// When to colorize output. `auto` = colorize only when stdout is a terminal.
@@ -119,6 +123,37 @@ enum Command {
         /// agentic review.
         #[arg(long)]
         single_shot: bool,
+        /// Also ask Jev for a second opinion on every finding and score it
+        /// against the labels (issue #249; needs a TypeSafe API key).
+        #[arg(long)]
+        jev: bool,
+        /// Only measure Jev: run corpus/jev-probes.json (real vs counterfeit
+        /// claims) through each question set. No review calls.
+        #[arg(long, conflicts_with_all = ["jev", "single_shot", "jev_classify", "jev_dedupe"])]
+        jev_probe: bool,
+        /// Only measure file relevance: the LLM pass and Jev on every corpus
+        /// file, each scored against the labels.
+        #[arg(long, conflicts_with_all = ["jev", "single_shot", "jev_dedupe"])]
+        jev_classify: bool,
+        /// Only measure duplicate-finding detection on corpus/jev-dedupe.json
+        /// (same / related / different pairs). No review calls.
+        #[arg(long, conflicts_with_all = ["jev", "single_shot"])]
+        jev_dedupe: bool,
+    },
+    /// Compare Jev's file-relevance calls with the LLM's cached ones on real
+    /// PRs (dev; sends each file's diff to TypeSafe)
+    JevAgree {
+        /// Manifest cache directory (e.g. ~/.config/marrow/manifests)
+        #[arg(long)]
+        manifests: std::path::PathBuf,
+        /// Only PRs from this repository (owner/name) — whose code may be sent
+        #[arg(long)]
+        repo: String,
+        /// Stop after this many files
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
     },
     /// Mark a review thread resolved
     Resolve {
@@ -215,7 +250,11 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
             confirm(&format!("Reply to a thread on {pr}?"), yes)?;
             reply(&pr, &comment_id, &body).await
         }
-        Command::Eval { corpus, json, single_shot } => eval::eval(&corpus, json, single_shot).await,
+        Command::Eval { corpus, json, jev_probe: true, .. } => jev_probe::run(&corpus, json).await,
+        Command::Eval { corpus, json, jev_dedupe: true, .. } => jev_dedupe::run(&corpus, json).await,
+        Command::Eval { corpus, json, jev_classify: true, .. } => eval::eval_jev_classify(&corpus, json).await,
+        Command::JevAgree { manifests, repo, limit, json } => jev_classify::agree(&manifests, &repo, limit, json).await,
+        Command::Eval { corpus, json, single_shot, jev, .. } => eval::eval(&corpus, json, single_shot, jev).await,
         Command::Resolve { thread_id } => {
             confirm(&format!("Resolve thread {thread_id}?"), yes)?;
             set_resolved(&thread_id, true).await
@@ -953,4 +992,19 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     // Drop a trailing empty line artifact but keep intentional blank paragraphs.
     let _ = std::io::stdout().flush();
     lines
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn eval_measurement_modes_cant_be_combined() {
+        let ok = Cli::try_parse_from(["marrow", "eval", "--corpus", "c", "--jev-dedupe"]);
+        assert!(ok.is_ok());
+        for combo in [["--jev-probe", "--jev-dedupe"], ["--jev-classify", "--jev"], ["--jev-dedupe", "--single-shot"]] {
+            let args = ["marrow", "eval", "--corpus", "c", combo[0], combo[1]];
+            assert!(Cli::try_parse_from(args).is_err(), "{combo:?} should be rejected");
+        }
+    }
 }

@@ -24,6 +24,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [anthropicKey, setAnthropicKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
+  const [jevKey, setJevKey] = useState("");
+  const [jevGroup, setJevGroup] = useState(false);
   const [provider, setProvider] = useState("");
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
   const [watches, setWatches] = useState<Watch[]>([]);
@@ -50,6 +52,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setAnthropicKey(s.anthropic_api_key || "");
         setOpenaiKey(s.openai_api_key || "");
         setGeminiKey(s.gemini_api_key || "");
+        setJevKey(s.typesafe_api_key || "");
+        setJevGroup(s.jev_group_findings ?? false);
         setProvider(s.provider || "");
         setOpenaiBaseUrl(s.openai_base_url || "");
         setPerWatchCap(s.activity_per_watch_cap || 50);
@@ -94,6 +98,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           anthropic_api_key: anthropicKey.trim(),
           openai_api_key: openaiKey.trim(),
           gemini_api_key: geminiKey.trim(),
+          typesafe_api_key: jevKey.trim(),
+          jev_group_findings: jevGroup,
           provider: provider.trim(),
           openai_base_url: openaiBaseUrl.trim(),
           activity_per_watch_cap: perWatchCap,
@@ -222,6 +228,48 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 spellCheck={false}
                 autoComplete="off"
               />
+
+              <label className="settings-label" htmlFor="jev-key">
+                TypeSafe API key (Jev)
+              </label>
+              <p className="settings-hint">
+                For Jev, TypeSafe's classifier, which gives a second opinion on
+                each AI finding (or <code>TYPESAFE_API_KEY</code>). Optional.
+              </p>
+              <input
+                id="jev-key"
+                className="settings-input"
+                type="password"
+                value={jevKey}
+                onChange={(e) => {
+                  setJevKey(e.target.value);
+                  setSaved(false);
+                }}
+                placeholder="TypeSafe API key"
+                spellCheck={false}
+                autoComplete="off"
+              />
+
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={jevGroup}
+                  onChange={(e) => {
+                    setJevGroup(e.target.checked);
+                    setSaved(false);
+                  }}
+                />
+                Group duplicate findings with Jev
+              </label>
+              <p className="settings-hint">
+                After each review, sends nearby pairs of findings, with the PR's
+                title, description, and those files' diffs, to TypeSafe. Findings
+                that report the same problem are merged; ones with the same cause
+                are grouped. Needs the key above.
+                {jevGroup && !jevKey.trim() && (
+                  <> No key is saved here, so this only runs if <code>TYPESAFE_API_KEY</code> is set when Marrow starts.</>
+                )}
+              </p>
 
               <label className="settings-label" htmlFor="provider">
                 Provider override

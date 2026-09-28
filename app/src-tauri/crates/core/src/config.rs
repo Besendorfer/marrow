@@ -100,6 +100,8 @@ fn default_settings() -> Settings {
         provider: String::new(),
         openai_api_key: String::new(),
         gemini_api_key: String::new(),
+        typesafe_api_key: String::new(),
+        jev_group_findings: false,
         openai_base_url: String::new(),
         filter_older: true,
         filter_team: true,
@@ -141,6 +143,8 @@ pub fn parse_settings(content: &str) -> Settings {
     let mut provider = String::new();
     let mut openai_api_key = String::new();
     let mut gemini_api_key = String::new();
+    let mut typesafe_api_key = String::new();
+    let mut jev_group_findings = false;
     let mut openai_base_url = String::new();
     let mut filter_older = true;
     let mut filter_team = true;
@@ -174,6 +178,11 @@ pub fn parse_settings(content: &str) -> Settings {
             openai_api_key = val.to_string();
         } else if let Some(val) = line.strip_prefix("gemini_api_key=") {
             gemini_api_key = val.to_string();
+        } else if let Some(val) = line.strip_prefix("jev_group_findings=") {
+            jev_group_findings = val == "true";
+        } else if let Some(val) = line.strip_prefix("typesafe_api_key=") {
+            typesafe_api_key = val.to_string();
+
         } else if let Some(val) = line.strip_prefix("openai_base_url=") {
             openai_base_url = val.to_string();
         } else if let Some(val) = line.strip_prefix("filter_older=") {
@@ -221,6 +230,8 @@ pub fn parse_settings(content: &str) -> Settings {
         provider,
         openai_api_key,
         gemini_api_key,
+        typesafe_api_key,
+        jev_group_findings,
         openai_base_url,
         filter_older,
         filter_team,
@@ -278,6 +289,10 @@ pub fn serialize_settings(settings: &Settings) -> String {
     }
     if !settings.gemini_api_key.is_empty() {
         content.push_str(&format!("gemini_api_key={}\n", settings.gemini_api_key));
+    }
+    content.push_str(&format!("jev_group_findings={}\n", settings.jev_group_findings));
+    if !settings.typesafe_api_key.is_empty() {
+        content.push_str(&format!("typesafe_api_key={}\n", settings.typesafe_api_key));
     }
     if !settings.openai_base_url.is_empty() {
         content.push_str(&format!("openai_base_url={}\n", settings.openai_base_url));
@@ -339,6 +354,18 @@ pub fn resolve_anthropic_api_key(settings: &Settings) -> Option<String> {
 /// Resolve the OpenAI (or OpenAI-compatible) API key: config > OPENAI_API_KEY.
 pub fn resolve_openai_api_key(settings: &Settings) -> Option<String> {
     resolve_secret(&settings.openai_api_key, "OPENAI_API_KEY")
+}
+
+/// The key for the in-app Jev pass (grouping duplicate findings): only when
+/// the user opted in, since it sends review content to TypeSafe. The CLI's
+/// eval tools use resolve_jev_api_key directly.
+pub fn jev_grouping_key(settings: &Settings) -> Option<String> {
+    if settings.jev_group_findings { resolve_jev_api_key(settings) } else { None }
+}
+
+/// Resolve the TypeSafe API key for Jev: config > TYPESAFE_API_KEY.
+pub fn resolve_jev_api_key(settings: &Settings) -> Option<String> {
+    resolve_secret(&settings.typesafe_api_key, "TYPESAFE_API_KEY")
 }
 
 /// Resolve the Gemini API key: config > GEMINI_API_KEY.
@@ -421,6 +448,28 @@ mod tests {
         let mut s = default_settings();
         s.anthropic_api_key = "sk-ant-from-config".to_string();
         assert_eq!(resolve_anthropic_api_key(&s).as_deref(), Some("sk-ant-from-config"));
+    }
+
+    #[test]
+    fn jev_key_round_trips_and_is_only_written_when_set() {
+        let mut s = default_settings();
+        assert!(!serialize_settings(&s).contains("typesafe_api_key"));
+        s.typesafe_api_key = "ts-from-config".to_string();
+        let text = serialize_settings(&s);
+        assert!(text.contains("typesafe_api_key=ts-from-config\n"));
+        let back = parse_settings(&text);
+        assert_eq!(resolve_jev_api_key(&back).as_deref(), Some("ts-from-config"));
+    }
+
+    #[test]
+    fn a_key_alone_never_turns_on_the_in_app_jev_pass() {
+        let mut s = default_settings();
+        s.typesafe_api_key = "ts".to_string();
+        assert!(!s.jev_group_findings && jev_grouping_key(&s).is_none());
+        s.jev_group_findings = true;
+        assert_eq!(jev_grouping_key(&s).as_deref(), Some("ts"));
+        assert!(parse_settings(&serialize_settings(&s)).jev_group_findings);
+        assert!(!parse_settings("model=\n").jev_group_findings);
     }
 
     #[test]

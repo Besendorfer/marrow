@@ -249,6 +249,11 @@ pub struct ReviewManifest {
     /// ran degraded, or predates the field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_context: Vec<crate::repo_tools::ContextRead>,
+    /// Pairs of nearby findings Jev judged to be one problem said twice
+    /// ("same") or one root cause needing different actions ("related")
+    /// (issue #249). Empty without a TypeSafe key, or on older caches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finding_relations: Vec<FindingRelation>,
     pub files: Vec<FileDiff>,
 }
 
@@ -309,6 +314,14 @@ pub struct Settings {
     /// Google Gemini API key (used via Gemini's OpenAI-compatible endpoint).
     #[serde(default)]
     pub gemini_api_key: String,
+    /// TypeSafe API key for Jev, the finding judge (issue #249).
+    #[serde(default)]
+    pub typesafe_api_key: String,
+    /// Opt-in: after each review, send nearby pairs of findings (and their
+    /// file's diff) to TypeSafe so Jev can merge or group duplicates. Off by
+    /// default — a key alone never sends review content anywhere.
+    #[serde(default)]
+    pub jev_group_findings: bool,
     /// Base URL for the OpenAI-compatible backend (e.g. OpenRouter or a local
     /// server). Empty = OpenAI's default. Setting it implies an OpenAI-compatible
     /// provider unless overridden.
@@ -397,7 +410,7 @@ pub struct FileClassification {
     pub reason: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct HighlightResult {
     pub path: String,
     pub start_line: u64,
@@ -654,4 +667,26 @@ mod tests {
         assert!(manifest.commits.is_empty());
         assert!(!manifest.analysis_truncated);
     }
+}
+
+/// A highlight, identified the way the frontend keys it (path, lines, and
+/// the comment text it hashes).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FindingRef {
+    pub path: String,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub comment: String,
+}
+
+/// Jev's call on two nearby findings (issue #249). Only "same" and
+/// "related" are stored; "different" pairs need nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FindingRelation {
+    pub a: FindingRef,
+    pub b: FindingRef,
+    /// "same" | "related"
+    pub relation: String,
+    pub p_same: f64,
+    pub p_related: f64,
 }

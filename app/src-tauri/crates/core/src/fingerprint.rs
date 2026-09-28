@@ -71,6 +71,29 @@ fn fingerprint_of(version: u32, prompts: &[&str], budgets: &[usize], settings: &
         h.update(field.as_bytes());
         h.update([0]);
     }
+    // Jev grouping (issue #249) adds finding_relations to the analysis, so
+    // turning it on or off makes cached analyses stale. Mixed in only while
+    // it's on, so everyone else's fingerprints are unchanged. The setting
+    // alone counts — not whether a key resolves, which could flip with the
+    // TYPESAFE_API_KEY env var between a terminal and a Dock launch.
+    if settings.jev_group_findings {
+        h.update(b"jev-group-findings");
+        // Everything that decides which relations get stored: the question
+        // (instructions and each label's meaning) and the pass's thresholds.
+        for q in crate::jev::pair_questions().values() {
+            h.update(q.instructions.as_bytes());
+            h.update([0]);
+            for (label, meaning) in &q.criteria {
+                h.update(label.as_bytes());
+                h.update([0]);
+                h.update(meaning.as_bytes());
+                h.update([0]);
+            }
+        }
+        h.update(crate::jev::SAME_MIN.to_le_bytes());
+        h.update(crate::jev::PAIR_WINDOW.to_le_bytes());
+        h.update((crate::jev::MAX_PAIRS as u64).to_le_bytes());
+    }
     format!("{:x}", h.finalize())
 }
 
@@ -100,6 +123,19 @@ mod tests {
         assert_ne!(base, analysis_fingerprint(&settings("m2", "", "")));
         assert_ne!(base, analysis_fingerprint(&settings("m1", "openai", "")));
         assert_ne!(base, analysis_fingerprint(&settings("m1", "", "http://localhost:1234")));
+    }
+
+    #[test]
+    fn jev_grouping_counts_only_while_on_and_never_the_key() {
+        let off = analysis_fingerprint(&settings("m1", "", ""));
+        let mut s = settings("m1", "", "");
+        s.typesafe_api_key = "ts-one".to_string();
+        assert_eq!(off, analysis_fingerprint(&s), "a key alone changes nothing");
+        s.jev_group_findings = true;
+        let on = analysis_fingerprint(&s);
+        assert_ne!(off, on, "turning grouping on marks analyses stale");
+        s.typesafe_api_key = String::new();
+        assert_eq!(on, analysis_fingerprint(&s), "whether or which key is present never contributes");
     }
 
     #[test]

@@ -134,6 +134,7 @@ more surfaces.
 - [ ] Conservatively learn recurring rejected finding categories.
 - [x] Add rationale and a suggested action to findings (#130) — failure scenario + fix per finding, plus a PR verdict (#231, PR #233; confidence remains open in #130).
 - [ ] Rank findings by confidence and actionability.
+  - [ ] Jev second opinion on each finding ([#249](https://github.com/Besendorfer/marrow/issues/249)): phase 1 (client, Settings key, `marrow eval --jev` measuring false clears against the corpus) built; wiring into analysis waits on those numbers.
 - [ ] Hide descriptive or low-confidence notes by default without deleting them.
 - [ ] Avoid unsupported precision in displayed confidence scores.
 - [ ] Bound chat history context or compact long conversations.

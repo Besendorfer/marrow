@@ -8304,3 +8304,50 @@ body.is-resizing {
 [role="dialog"]:focus {
   outline: none;
 }
+
+/* Jev relations (issue #249): a related finding sits indented under its
+   primary; a merged one lists what else was reported. */
+.inbox-row--child {
+  padding-left: calc(var(--space-4) + var(--space-4));
+}
+
+.inbox-rel {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  border: 1px solid var(--chip-border);
+  border-radius: 999px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.inbox-card-also {
+  display: grid;
+  gap: 4px;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--chip-border);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.inbox-card-also > span {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.inbox-card-also ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+
+.inbox-card-also small {
+  color: var(--text-muted);
+}

@@ -16,6 +16,7 @@ pub mod dismissed_highlights;
 pub mod fetch;
 pub mod fingerprint;
 pub mod github;
+pub mod jev;
 pub mod local_repo;
 pub mod manifest_cache;
 pub mod net;

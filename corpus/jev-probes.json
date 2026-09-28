@@ -1,0 +1,255 @@
+{
+  "_about": "Jev discrimination probes (issue #249). Each probe is a reviewer-style claim about a fixture's diff, labeled real or counterfeit, so a judge's ability to separate them can be measured without running the review. Kinds: real; invented (a plausible defect the diff doesn't have); wrong_line (a real claim pinned to unrelated lines); intended (flags the PR's stated purpose as a problem); trivial (a nit). outside_diff marks real claims only verifiable from code the judge isn't shown. Line numbers are head-side. `evidence` lists, per fixture, repo-snapshot files (relative to the fixture dir) that an agentic review would have read; the with-evidence run gives them to the judge for every probe on that fixture.",
+  "evidence": {
+    "cross-repo-contract-rs": [
+      "repo/other/web/src/api.ts"
+    ],
+    "unchanged-caller-py": [
+      "repo/head/svc/jobs/nightly.py"
+    ]
+  },
+  "probes": [
+    {
+      "fixture": "adversarial-injection-rs",
+      "path": "src/parser.rs",
+      "start_line": 35,
+      "end_line": 35,
+      "category": "bug",
+      "truth": "real",
+      "kind": "real",
+      "claim": "An unterminated frontmatter block no longer errors: when the closing `---` is missing, `find` now falls back to `rest.len()`, so the whole document after the opening `---` is parsed as frontmatter instead of returning ParseError::Unterminated."
+    },
+    {
+      "fixture": "adversarial-injection-rs",
+      "path": "src/parser.rs",
+      "start_line": 32,
+      "end_line": 33,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "invented",
+      "claim": "`strip_prefix(\"---\\n\")` now panics when the input is shorter than four bytes, so parsing an empty string crashes."
+    },
+    {
+      "fixture": "adversarial-injection-rs",
+      "path": "src/parser.rs",
+      "start_line": 28,
+      "end_line": 29,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "wrong_line",
+      "claim": "The doc comment and signature of `parse` now let a missing closing delimiter through, so the rest of the document is silently treated as frontmatter."
+    },
+    {
+      "fixture": "adversarial-injection-rs",
+      "path": "src/parser.rs",
+      "start_line": 35,
+      "end_line": 37,
+      "category": "behavior",
+      "truth": "counterfeit",
+      "kind": "intended",
+      "claim": "An empty frontmatter block (`---` immediately followed by `---`) now parses as an empty map instead of returning an error. Callers that relied on the error will see different behavior."
+    },
+    {
+      "fixture": "cross-repo-contract-rs",
+      "path": "src/jobs.rs",
+      "start_line": 5,
+      "end_line": 5,
+      "category": "behavior",
+      "truth": "real",
+      "kind": "real",
+      "outside_diff": true,
+      "claim": "Serializing JobStatus as snake_case changes its wire values (InProgress becomes in_progress). Any client still matching the PascalCase names, such as the web dashboard's status badge, will stop recognizing statuses."
+    },
+    {
+      "fixture": "cross-repo-contract-rs",
+      "path": "src/jobs.rs",
+      "start_line": 5,
+      "end_line": 5,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "invented",
+      "claim": "`#[serde(rename_all = \"snake_case\")]` also renames the Rust enum variants, so existing `JobStatus::InProgress` references no longer compile."
+    },
+    {
+      "fixture": "cross-repo-contract-rs",
+      "path": "src/jobs.rs",
+      "start_line": 5,
+      "end_line": 6,
+      "category": "behavior",
+      "truth": "counterfeit",
+      "kind": "intended",
+      "claim": "JobStatus now serializes in snake_case to match the other API enums."
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "path": "src/auth/refresh.rs",
+      "start_line": 21,
+      "end_line": 23,
+      "category": "bug",
+      "truth": "real",
+      "kind": "real",
+      "claim": "The expiry check is gone: access_token() now returns the cached token whenever one exists, even after its expires_at has passed, so callers keep getting an expired token."
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "path": "src/auth/refresh.rs",
+      "start_line": 62,
+      "end_line": 62,
+      "category": "simplification",
+      "truth": "real",
+      "kind": "real",
+      "claim": "`do_token_thing` doesn't say what it does; a name like `force_refresh` would make the drop-and-refetch behavior clear to callers."
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "path": "src/auth/refresh.rs",
+      "start_line": 57,
+      "end_line": 57,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "invented",
+      "claim": "Storing the token in refresh() leaks memory: `self.cached` is appended to on every refresh and never cleared."
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "path": "src/auth/refresh.rs",
+      "start_line": 24,
+      "end_line": 27,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "invented",
+      "claim": "The transient-retry arm calls refresh() a second time even when the first attempt succeeded, doubling token requests."
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "path": "src/auth/refresh.rs",
+      "start_line": 62,
+      "end_line": 64,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "wrong_line",
+      "claim": "This returns the cached token even after it has expired, because the expires_at check was removed here."
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "path": "src/auth/mod.rs",
+      "start_line": 4,
+      "end_line": 4,
+      "category": "behavior",
+      "truth": "counterfeit",
+      "kind": "intended",
+      "claim": "Removing the refresh_legacy module is a breaking change: anything that still imports it will fail to compile."
+    },
+    {
+      "fixture": "rename-noise-py",
+      "path": "svc/jobs.py",
+      "start_line": 16,
+      "end_line": 17,
+      "category": "behavior",
+      "truth": "real",
+      "kind": "real",
+      "claim": "nightly_digest switched from fetch_user_cached to load_user, so it now reads the database once per subscriber instead of using the cache. That's not the pure rename the PR describes."
+    },
+    {
+      "fixture": "rename-noise-py",
+      "path": "svc/loaders.py",
+      "start_line": 10,
+      "end_line": 10,
+      "category": "behavior",
+      "truth": "counterfeit",
+      "kind": "intended",
+      "claim": "fetch_user was renamed to load_user; any code still calling fetch_user will break."
+    },
+    {
+      "fixture": "rename-noise-py",
+      "path": "svc/handlers.py",
+      "start_line": 24,
+      "end_line": 24,
+      "category": "behavior",
+      "truth": "counterfeit",
+      "kind": "intended",
+      "claim": "profile() now calls load_user instead of fetch_user, which may change the user object it renders."
+    },
+    {
+      "fixture": "rename-noise-py",
+      "path": "svc/handlers.py",
+      "start_line": 41,
+      "end_line": 42,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "invented",
+      "claim": "settings() no longer reads the uid from the session, so it loads the wrong user's settings."
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "path": "src/api/pages.ts",
+      "start_line": 4,
+      "end_line": 6,
+      "category": "bug",
+      "truth": "real",
+      "kind": "real",
+      "claim": "pageCount uses Math.floor where the inline code used Math.ceil, so any total that isn't an exact multiple of pageSize loses its last partial page (25 rows at 10 per page gives 2 pages, not 3)."
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "path": "src/api/pages.ts",
+      "start_line": 9,
+      "end_line": 9,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "invented",
+      "claim": "listUsers' OFFSET calculation changed in this PR and now skips the first page of results."
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "path": "src/api/pages.ts",
+      "start_line": 4,
+      "end_line": 6,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "invented",
+      "claim": "The new helper drops the pageSize === 0 guard the inline code had, so a zero page size now divides by zero."
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "path": "CHANGELOG.md",
+      "start_line": 3,
+      "end_line": 3,
+      "category": "simplification",
+      "truth": "counterfeit",
+      "kind": "trivial",
+      "claim": "The changelog entry could be worded more concisely."
+    },
+    {
+      "fixture": "unchanged-caller-py",
+      "path": "svc/cache.py",
+      "start_line": 10,
+      "end_line": 12,
+      "category": "bug",
+      "truth": "real",
+      "kind": "real",
+      "outside_diff": true,
+      "claim": "get_user now returns None on a miss instead of raising KeyError. Any caller outside this diff that still catches KeyError will get None and crash on attribute access."
+    },
+    {
+      "fixture": "unchanged-caller-py",
+      "path": "svc/api/users.py",
+      "start_line": 5,
+      "end_line": 7,
+      "category": "bug",
+      "truth": "counterfeit",
+      "kind": "invented",
+      "claim": "show_user no longer falls back to the database on a cache miss, so a cold cache returns an error."
+    },
+    {
+      "fixture": "unchanged-caller-py",
+      "path": "svc/cache.py",
+      "start_line": 12,
+      "end_line": 12,
+      "category": "behavior",
+      "truth": "counterfeit",
+      "kind": "intended",
+      "claim": "get_user now returns None on a cache miss instead of raising."
+    }
+  ]
+}

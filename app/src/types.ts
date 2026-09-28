@@ -187,6 +187,9 @@ export interface ReviewManifest {
   review_verdict?: ReviewVerdict | null;
   /** What the review read or searched beyond the diff (issue #232). */
   review_context?: ContextRead[];
+  /** Nearby findings Jev judged one problem said twice, or one root cause
+   * (issue #249). Absent without a TypeSafe key or on older caches. */
+  finding_relations?: FindingRelation[];
   /** Fingerprint of the analysis environment that produced this manifest
    * (issue #202). Absent on pre-fingerprint caches; a mismatch with the
    * current environment means "analyzed by an older pipeline/model". */
@@ -540,6 +543,11 @@ export interface Settings {
   provider: string;
   openai_api_key: string;
   gemini_api_key: string;
+  /** TypeSafe API key for Jev, the finding judge (issue #249). */
+  typesafe_api_key?: string;
+  /** Opt-in: send nearby finding pairs to TypeSafe so Jev can merge or
+   * group duplicates (issue #249). Off by default. */
+  jev_group_findings?: boolean;
   openai_base_url: string;
   filter_older: boolean;
   filter_team: boolean;
@@ -733,4 +741,22 @@ export interface PrActivityPayload {
   items: PrActivityItem[];
   truncated: Record<string, number>;
   fetchedAt: string;
+}
+
+/** A highlight, identified the way highlightKey keys it (issue #249). */
+export interface FindingRef {
+  path: string;
+  start_line: number;
+  end_line: number;
+  comment: string;
+}
+
+/** Jev's call on two nearby findings: one problem said twice ("same"), or
+ * one root cause needing different actions ("related"). */
+export interface FindingRelation {
+  a: FindingRef;
+  b: FindingRef;
+  relation: "same" | "related";
+  p_same: number;
+  p_related: number;
 }

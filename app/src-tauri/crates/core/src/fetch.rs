@@ -311,6 +311,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
     let mut failed_passes: Vec<String> = Vec::new();
     let mut change_groups: Vec<ChangeGroup> = Vec::new();
     let mut review_verdict: Option<ReviewVerdict> = None;
+    let mut finding_relations: Vec<crate::types::FindingRelation> = Vec::new();
     let mut review_context: Vec<ContextRead> = Vec::new();
     let mut review_degraded = false;
     // Triage guidance (top risks + contract-first order). Only computed for large
@@ -514,6 +515,23 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         let (highlight_results, verdict) = parse_highlights_strict(highlights_raw)?;
         let highlight_results = validate_highlights(highlight_results, &file_list);
         review_verdict = verdict;
+        // Jev second opinion (issue #249): which nearby findings are one
+        // problem said twice, or one root cause. Opt-in (Settings), best
+        // effort, and time-boxed (≤20s); skipped entirely unless enabled with
+        // a key. It says so on the loading screen while it runs.
+        let jev_key = crate::config::jev_grouping_key(settings);
+        if jev_key.is_some() && !crate::jev::candidate_pairs(&highlight_results).is_empty() {
+            emit_progress(app, 4, "Grouping duplicate findings (Jev)", FetchStatus::Running, None, None);
+            finding_relations = crate::jev::relate_findings(
+                jev_key.as_deref(),
+                &pr_title,
+                &pr_body,
+                &highlight_results,
+                &per_file_diff_map,
+            )
+            .await;
+            emit_progress(app, 4, "Grouping duplicate findings (Jev)", FetchStatus::Done, None, None);
+        }
         if let Some(outcome) = review_side.lock().unwrap().take() {
             review_degraded = outcome.degraded;
             review_context = outcome.reads;
@@ -762,6 +780,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         analysis_fingerprint: Some(crate::fingerprint::analysis_fingerprint(settings)),
         review_verdict,
         review_context,
+        finding_relations,
         files: file_diffs,
     };
 

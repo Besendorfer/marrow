@@ -1,7 +1,7 @@
 // buildFindings (issue #238 phase 3): the merge / dedupe / rank / state rules
 // behind the inbox's single findings list. Run with `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { buildFindings, findingClaim, findingCommentBody, firstSentence, riskKey, selectionIdFor, MERGE_WINDOW } from "./findings";
+import { buildFindings, findingClaim, findingCommentBody, firstSentence, riskKey, selectionIdFor, MERGE_WINDOW, applyRelations, reviewSections, type Finding } from "./findings";
 import { specResolveKey } from "../components/digest";
 import { highlightKey } from "../utils";
 import type { FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
@@ -325,5 +325,62 @@ describe("buildFindings — state", () => {
     const f = buildFindings(base()).findings[0];
     const checked = new Map([[f.key, { lines_hash: "" }]]);
     expect(buildFindings(base(), { checked }).findings[0].state).toBe("open");
+  });
+});
+
+// Jev relations (issue #249): same → merged into the primary; related →
+// grouped right after it. The primary is whichever ranks first.
+describe("applyRelations", () => {
+  const ref = (path: string, s: number, comment: string) => ({ path, start_line: s, end_line: s, comment });
+  const fnd = (r: ReturnType<typeof ref>, rank: Finding["rank"] = "high"): Finding => ({
+    key: highlightKey(r.path, r), kind: "bug", rank, title: r.comment, path: r.path, startLine: r.start_line,
+    linesHash: "h", urgency: "fix", state: "open",
+  });
+  const bug = ref("a.ts", 10, "floor drops the last page");
+  const bug2 = ref("a.ts", 18, "export stops a page early");
+  const gap = ref("a.ts", 10, "no test for a partial page");
+  const other = ref("a.ts", 30, "SQL built by concatenation");
+  const rel = (a: typeof bug, b: typeof bug, relation: "same" | "related", p = 0.9) => ({ a, b, relation, p_same: relation === "same" ? p : 0.1, p_related: relation === "related" ? p : 0.1 });
+
+  test("a same pair folds into the primary; a related one follows it", () => {
+    const list = [fnd(bug), fnd(other), fnd(bug2), fnd(gap, "medium")];
+    const out = applyRelations(list, [rel(bug2, bug, "same"), rel(gap, bug, "related")]);
+    expect(out.map((f) => f.title)).toEqual([bug.comment, gap.comment, other.comment]);
+    expect(out[0].duplicates?.map((d) => d.title)).toEqual([bug2.comment]);
+    expect(out[1].parentKey).toBe(out[0].key);
+    expect(out[2].parentKey).toBeUndefined();
+  });
+
+  test("no relations, or ones naming findings no longer in the list, change nothing", () => {
+    const list = [fnd(bug), fnd(other)];
+    expect(applyRelations(list, undefined)).toBe(list);
+    expect(applyRelations(list, [rel(ref("gone.ts", 1, "x"), bug, "same")])).toBe(list);
+  });
+
+  test("groups stay one level deep: a partner of a child attaches to the root", () => {
+    const list = [fnd(bug), fnd(bug2), fnd(gap, "medium")];
+    const out = applyRelations(list, [rel(bug2, bug, "related", 0.95), rel(gap, bug2, "related", 0.9)]);
+    expect(out.map((f) => [f.title, f.parentKey ? "child" : "root"])).toEqual([
+      [bug.comment, "root"], [bug2.comment, "child"], [gap.comment, "child"],
+    ]);
+    expect(out[2].parentKey).toBe(out[0].key);
+  });
+
+  test("a same call through a child attaches to the root as related, never merged into it", () => {
+    const list = [fnd(bug), fnd(bug2), fnd(gap, "medium")];
+    // bug2 is only related to bug; gap is the "same" as bug2, never judged against bug.
+    const out = applyRelations(list, [rel(bug2, bug, "related", 0.95), rel(gap, bug2, "same", 0.9)]);
+    expect(out[0].duplicates).toBeUndefined();
+    expect(out.map((f) => f.title)).toEqual([bug.comment, bug2.comment, gap.comment]);
+    expect(out[2].parentKey).toBe(out[0].key);
+  });
+
+  test("a grouped finding sits in its primary's section; counts use its own urgency", () => {
+    const parent: Finding = { ...fnd(other, "medium"), urgency: "look" };
+    const child: Finding = { ...fnd(bug), parentKey: parent.key, urgency: "fix" };
+    const s = reviewSections([parent, child]);
+    expect(s.toLook.map((f) => f.key)).toEqual([parent.key, child.key]);
+    expect(s.toFix).toEqual([]);
+    expect([s.openFix, s.openLook]).toEqual([1, 1]);
   });
 });

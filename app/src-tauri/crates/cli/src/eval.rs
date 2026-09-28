@@ -5,7 +5,8 @@
 //! version.
 
 use marrow_core::ai::{extract_json_array, extract_json_object, AiBackend};
-use marrow_core::config::load_settings;
+use marrow_core::config::{load_settings, resolve_jev_api_key};
+use crate::jev_eval::{self, Judged};
 use marrow_core::fetch::{
     finalize_coverage, parse_review_response, run_review_pass, validate_classifications, validate_highlights,
 };
@@ -233,7 +234,25 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
     Ok(snap)
 }
 
-pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), String> {
+fn short(s: &str) -> String {
+    let t: String = s.chars().take(90).collect();
+    if s.chars().count() > 90 { format!("{t}…") } else { t }
+}
+
+
+/// A highlight's corpus label: the first expected region it overlaps (by
+/// importance), else a should-not-flag region, else unlabeled.
+fn label_for(h: &HighlightResult, labels: &FixtureLabels) -> &'static str {
+    if let Some(l) = labels.expected_findings.iter().find(|l| overlaps(h.start_line, h.end_line, l, &h.path)) {
+        return if l.importance == "minor" { "minor" } else { "important" };
+    }
+    if labels.should_not_flag.iter().any(|l| overlaps(h.start_line, h.end_line, l, &h.path)) {
+        return "should_not_flag";
+    }
+    "unlabeled"
+}
+
+pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Result<(), String> {
     let version = fs::read_to_string(corpus.join("VERSION"))
         .map(|v| v.trim().to_string())
         .map_err(|_| format!("{} does not look like a corpus (no VERSION file)", corpus.display()))?;
@@ -267,6 +286,18 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
     }
 
     let settings = load_settings();
+    // Fail before any spend when --jev can't run.
+    let jev_key = if jev {
+        Some(resolve_jev_api_key(&settings).ok_or(
+            "--jev needs a TypeSafe API key: set it in Settings or TYPESAFE_API_KEY",
+        )?)
+    } else {
+        None
+    };
+    let mut judged: Vec<Judged> = Vec::new();
+    // The production relate_findings on each fixture's real review output.
+    let mut relations: Vec<(String, marrow_core::types::FindingRelation)> = Vec::new();
+    let mut candidate_total = 0usize;
     let ai = AiBackend::from_settings(&settings).await?;
     eprintln!(
         "corpus v{version} · {} fixture(s) · model {} · review {}",
@@ -385,6 +416,33 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
                         .map(|h| format!("OUT-OF-DIFF dropped: {} L{}-{} ({})", h.path, h.start_line, h.end_line, h.category))
                         .collect();
                     let validated = validate_highlights(parsed, &file_list);
+                    if let Some(key) = &jev_key {
+                        eprintln!("· {}: asking Jev about {} finding(s)…", score.name, validated.len());
+                        for h in &validated {
+                            let diff = pr.files.iter().find(|f| f.path == h.path).map(|f| f.diff.as_str()).unwrap_or("");
+                            let judgement = marrow_core::jev::judge_finding(key, &pr.title, &pr.body, h, diff).await;
+                            judged.push(Judged {
+                                fixture: score.name.clone(),
+                                path: h.path.clone(),
+                                lines: format!("{}-{}", h.start_line, h.end_line),
+                                category: h.category.clone(),
+                                label: label_for(h, &labels),
+                                judgement,
+                            });
+                            tokio::time::sleep(marrow_core::jev::CALL_SPACING).await;
+                        }
+                        let diffs: std::collections::HashMap<String, String> =
+                            pr.files.iter().map(|f| (f.path.clone(), f.diff.clone())).collect();
+                        let candidates = marrow_core::jev::candidate_pairs(&validated).len();
+                        let stored = marrow_core::jev::relate_findings(Some(key), &pr.title, &pr.body, &validated, &diffs).await;
+                        // relate_findings drops failed or timed-out calls along
+                        // with "different" ones; say how many pairs were asked.
+                        eprintln!("· {}: {candidates} candidate pair(s) → {} relation(s) stored", score.name, stored.len());
+                        candidate_total += candidates;
+                        for r in stored {
+                            relations.push((score.name.clone(), r));
+                        }
+                    }
                     let mut fs = score_findings(&validated, &labels);
                     fs.out_of_diff = out_of_diff.len();
                     fs.detail.extend(out_of_diff);
@@ -452,13 +510,104 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
     let precision = ratio(tp, tp + fp);
     let recall = ratio(tp, tp + fneg);
 
+    let jev_summary = jev.then(|| jev_eval::summarize(&judged));
     if json {
-        let out = render_json_report(&scores, &version, &settings.model, precision, recall);
+        let mut out = render_json_report(&scores, &version, &settings.model, precision, recall);
+        if let Some(s) = &jev_summary {
+            out["jev"] = serde_json::json!({ "summary": s, "judged": judged, "relations": relations });
+        }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         print!("{}", render_text_report(&scores, &version, precision, recall));
+        if let Some(s) = &jev_summary {
+            print!("{}", jev_eval::render_text(s));
+            println!("JEV RELATIONS stored ({} of {} candidate pairs; the rest judged different, or failed):", relations.len(), candidate_total);
+            for (fx, r) in &relations {
+                println!(
+                    "    {fx} {}: {}:{}-{} [{}] ↔ {}:{}-{} · same {:.2} related {:.2}",
+                    r.relation, r.a.path, r.a.start_line, r.a.end_line, short(&r.a.comment), r.b.path, r.b.start_line, r.b.end_line, r.p_same, r.p_related
+                );
+                println!("        b: {}", short(&r.b.comment));
+            }
+        }
     }
     completion_status(&scores)
+}
+
+/// `eval --jev-classify` (issue #249): classify every corpus file with the
+/// LLM pass and with Jev, both through validate_classifications, and score
+/// each against the labels. No findings or coverage passes.
+pub async fn eval_jev_classify(corpus: &Path, json: bool) -> Result<(), String> {
+    use crate::jev_classify::{render_text, summarize, Row};
+    use std::time::Instant;
+    let settings = load_settings();
+    let key = resolve_jev_api_key(&settings).ok_or("--jev-classify needs a TypeSafe API key: set it in Settings or TYPESAFE_API_KEY")?;
+    let fixtures_dir = corpus.join("fixtures");
+    let mut dirs: Vec<PathBuf> = fs::read_dir(&fixtures_dir)
+        .map_err(|e| format!("Failed to read {}: {e}", fixtures_dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    let mut fixtures = Vec::new();
+    for dir in &dirs {
+        let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let pr: FixturePr = read_json(&dir.join("pr.json"))?;
+        let labels: FixtureLabels = read_json(&dir.join("labels.json"))?;
+        validate_labels(&pr, &labels, &name)?;
+        fixtures.push((name, pr, labels));
+    }
+    let ai = AiBackend::from_settings(&settings).await?;
+    eprintln!("{} fixture(s) · LLM {} vs Jev", fixtures.len(), if settings.model.is_empty() { "(claude CLI default)" } else { &settings.model });
+
+    let (mut rows, mut jev_calls, mut llm_passes) = (Vec::new(), Vec::new(), Vec::new());
+    for (name, pr, labels) in &fixtures {
+        let file_list: Vec<String> = pr.files.iter().map(|f| f.path.clone()).collect();
+        let (prompt, _) = build_classification_prompt(&pr.title, &file_list, &assemble_full_diff(&pr.files));
+        let started = Instant::now();
+        let llm = retry_json_pass::<FileClassification, _, _>("classification", name, || ai.invoke(&prompt)).await;
+        llm_passes.push(started.elapsed());
+        let llm = llm.map(|c| validate_classifications(c, &file_list)).unwrap_or_else(|e| {
+            eprintln!("· {name}: LLM {e}");
+            Vec::new()
+        });
+        for f in &pr.files {
+            let label = labels.relevant.contains(&f.path);
+            let llm_c = llm.iter().find(|c| c.path == f.path);
+            let started = Instant::now();
+            let jev = marrow_core::jev::classify_file(&key, &pr.title, &pr.body, &f.path, &file_list, &f.diff).await;
+            jev_calls.push(started.elapsed());
+            let (p_jev, jev_risk, error) = match jev {
+                Ok(j) => {
+                    // Same validation the app applies to the LLM's output.
+                    let v = validate_classifications(vec![j.to_classification(&f.path)], &file_list);
+                    let risk = v.first().map(|c| c.risk_level.clone());
+                    (Some(j.p_relevant), risk, None)
+                }
+                Err(e) => (None, None, Some(e)),
+            };
+            rows.push(Row {
+                source: name.clone(),
+                path: f.path.clone(),
+                label,
+                llm: llm_c.map(|c| c.classification == "RELEVANT"),
+                p_jev,
+                llm_risk: llm_c.map(|c| c.risk_level.clone()),
+                jev_risk,
+                error,
+            });
+            eprint!(".");
+            tokio::time::sleep(marrow_core::jev::CALL_SPACING).await;
+        }
+        eprintln!(" {name}");
+    }
+    let s = summarize(&rows, &jev_calls, &llm_passes);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "summary": s, "rows": rows })).unwrap());
+    } else {
+        print!("{}", render_text(&format!("FILE RELEVANCE · corpus · LLM vs Jev · {} files", rows.len()), &s, &rows));
+    }
+    Ok(())
 }
 
 /// Exit-status contract: the run always completes and emits its full report,
@@ -1354,7 +1503,7 @@ mod tests {
         // a.rs labeled in BOTH lists → validate_labels must reject.
         fs::write(fixture.join("labels.json"), r#"{ "relevant": ["a.rs"], "not_relevant": ["a.rs"] }"#).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let err = rt.block_on(eval(&dir, false, true)).unwrap_err();
+        let err = rt.block_on(eval(&dir, false, true, false)).unwrap_err();
         assert!(err.contains("broken"), "error should name the fixture: {err}");
         assert!(err.contains("exactly one"), "{err}");
         fs::remove_dir_all(&dir).unwrap();

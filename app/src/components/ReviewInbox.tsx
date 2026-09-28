@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, PrCommit, ReviewManifest, Tab } from "../types";
-import { buildFindings, findingClaim, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
+import { buildFindings, findingClaim, reviewSections, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
 import { chooserKeyAction, landingId, listKeyAction, nextAfterAction } from "../review/inboxKeys";
 import { ciStatus } from "../review/finish";
 import { INBOX_ABOUT, INBOX_CHECKS, INBOX_COMMITS } from "../review/navigation";
@@ -123,13 +123,11 @@ export function ReviewInbox(props: ReviewInboxProps) {
     [manifest, tab.dismissedHighlights, tab.checkedFindings, checks, tab.resolvedSpecKeys, threads, viewerLogin],
   );
   // "Fix before merge" leads, then "Worth a look" — list, j/k, and advance
-  // all follow this order.
-  const findings = useMemo(
-    () => [...rankedFindings.filter((f) => f.urgency === "fix"), ...rankedFindings.filter((f) => f.urgency === "look")],
-    [rankedFindings],
-  );
-  const toFix = findings.filter((f) => f.urgency === "fix");
-  const toLook = findings.filter((f) => f.urgency === "look");
+  // all follow this order. A finding grouped under another (Jev, issue #249)
+  // sits in its primary's section, right after it, whatever its own urgency.
+  const { toFix, toLook, openFix, openLook } = useMemo(() => reviewSections(rankedFindings), [rankedFindings]);
+  const findings = useMemo(() => [...toFix, ...toLook], [toFix, toLook]);
+  const sectionOf = (f: Finding) => (toFix.includes(f) ? "fix" : "look");
 
   // Files not already reachable through a finding, grouped by change group in
   // triage order; not-relevant files sit collapsed at the bottom.
@@ -325,8 +323,6 @@ export function ReviewInbox(props: ReviewInboxProps) {
     act("dismiss", f, { state, reason: why });
   }
 
-  const openFix = toFix.filter((f) => f.state === "open").length;
-  const openLook = toLook.filter((f) => f.state === "open").length;
   const summary =
     findings.length === 0
       ? "No findings"
@@ -347,15 +343,24 @@ export function ReviewInbox(props: ReviewInboxProps) {
         data-row
         tabIndex={isSel ? 0 : -1}
         aria-current={isSel ? "true" : undefined}
-        className={`inbox-row inbox-row--finding inbox-row--${f.state}${isSel ? " selected" : ""}`}
+        className={`inbox-row inbox-row--finding inbox-row--${f.state}${f.parentKey ? " inbox-row--child" : ""}${isSel ? " selected" : ""}`}
         onClick={() => props.onSelectFinding(f)}
       >
         <StateMark state={f.state} />
         <span className="inbox-row-main">
           <span className="inbox-row-title">{f.title}</span>
           <span className="inbox-row-meta">
+            {f.parentKey && <span className="inbox-rel" title="Same root cause as the finding above, different action">Related</span>}
+            {f.parentKey && f.urgency !== sectionOf(f) && (
+              <span className="inbox-rel" title="Its own urgency, which the counts above use">{f.urgency === "fix" ? "Fix" : "Look"}</span>
+            )}
             <span className={`inbox-kind inbox-kind--${f.rank}`}>{KIND_LABEL[f.kind]}</span>
             {location(f) && <span className="inbox-loc">{location(f)}</span>}
+            {f.duplicates?.length ? (
+              <span className="inbox-rel" title="The same problem was reported more than once; merged here">
+                +{f.duplicates.length} duplicate{f.duplicates.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
           </span>
         </span>
       </button>
@@ -630,6 +635,20 @@ function FindingCard({ finding: f, onLooksFine, onComment, onReopen, choosing, r
         </dl>
       )}
       {f.kind === "ci" && f.items && <p className="inbox-card-text">Failing: {f.items.join(", ")}</p>}
+      {f.duplicates?.length ? (
+        <div className="inbox-card-also">
+          <span>Also reported as</span>
+          <ul>
+            {f.duplicates.map((d) => (
+              <li key={d.key}>
+                {d.detail ?? d.title}
+                {d.path && <span className="inbox-loc"> {fileName(d.path)}{d.startLine != null ? `:${d.startLine}` : ""}</span>}
+              </li>
+            ))}
+          </ul>
+          <small>Merged by Jev as the same problem. Your verdict here applies to both.</small>
+        </div>
+      ) : null}
 
       {f.state === "checked" || f.state === "dismissed" ? (
         <div className="inbox-card-actions">
