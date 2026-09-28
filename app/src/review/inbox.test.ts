@@ -159,4 +159,11 @@ describe("inbox actions", () => {
     t.inbox.inboxReopen({ ...merged, state: "dismissed", duplicates: [{ ...dup, state: "dismissed" }] });
     expect(t.calls).toEqual(["unmark:risk:a.ts:5:x", "restore:risk:a.ts:5:x", "unmark:hl:dup", "restore:hl:dup"]);
   });
+
+  test("Looks fine on a merged finding clears a duplicate's earlier Not an issue first", () => {
+    const dup: Finding = { ...risk, key: "hl:dup", linesHash: "h2", state: "dismissed" };
+    const t = fakeCtx({ manifest });
+    t.inbox.inboxLooksFine({ ...risk, state: "open", duplicates: [dup] });
+    expect(t.calls).toEqual(["mark:risk:a.ts:5:x", "restore:hl:dup", "mark:hl:dup"]);
+  });
 });

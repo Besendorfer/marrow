@@ -110,8 +110,14 @@ export function createInbox(ctxArg: unknown) {
       return false;
     }
     // A duplicate with no code to anchor a mark to (linesHash "") is skipped,
-    // the same rule as above; it stays open in its own right.
-    for (const x of withDuplicates(f)) if (x.linesHash) ctx.markFindingChecked(x);
+    // the same rule as above; it stays open in its own right. One verdict per
+    // finding: a duplicate already marked Not an issue is restored first, as
+    // Not an issue clears an earlier Looks fine.
+    for (const x of withDuplicates(f)) {
+      if (!x.linesHash) continue;
+      if (x.state === "dismissed") ctx.restoreHighlight(x.key);
+      ctx.markFindingChecked(x);
+    }
     return true;
   }
 
