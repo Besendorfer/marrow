@@ -584,7 +584,8 @@ pub fn relation_from(a: &HighlightResult, b: &HighlightResult, j: &PairJudgement
 }
 
 /// Judge nearby finding pairs. Best effort: no key, or any failed call, just
-/// means fewer relations — the review never waits on or fails because of Jev.
+/// means fewer relations; the review never fails because of Jev, and waits
+/// on it at most PAIR_BUDGET.
 pub async fn relate_findings(
     api_key: Option<&str>,
     pr_title: &str,
@@ -602,7 +603,9 @@ pub async fn relate_findings(
             let judged = tokio::time::timeout(PAIR_TIMEOUT, judge_pair(key, pr_title, pr_body, a, b, &diff)).await;
             judged.ok().and_then(|r| r.ok()).and_then(|jd| relation_from(a, b, &jd))
         })
-        .buffered(PAIR_CONCURRENCY)
+        // Unordered, so a pair that finishes is kept even if an earlier one
+        // is still pending when the budget runs out.
+        .buffer_unordered(PAIR_CONCURRENCY)
         .take_until(tokio::time::sleep(PAIR_BUDGET))
         .filter_map(|r| async move { r })
         .collect()

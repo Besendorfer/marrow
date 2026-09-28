@@ -109,6 +109,8 @@ export function createInbox(ctxArg: unknown) {
       addToast("info", "There's no code here to anchor “Looks fine” to — use Not an issue instead.");
       return false;
     }
+    // A duplicate with no code to anchor a mark to (linesHash "") is skipped,
+    // the same rule as above; it stays open in its own right.
     for (const x of withDuplicates(f)) if (x.linesHash) ctx.markFindingChecked(x);
     return true;
   }
