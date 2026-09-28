@@ -558,11 +558,17 @@ fn finding_ref(h: &HighlightResult) -> FindingRef {
     FindingRef { path: h.path.clone(), start_line: h.start_line, end_line: h.end_line, comment: h.comment.clone() }
 }
 
+/// A merge gives two findings one shared verdict, so it needs a confident
+/// call; a weaker "same" is kept as "related" (grouped, both still acted on
+/// separately). On the eval's real output a 0.62 "same" joined two distinct
+/// bugs on one line; true duplicates in the probe set scored 0.69–1.00.
+pub const SAME_MIN: f64 = 0.8;
+
 /// Keep Jev's "same" and "related" calls as manifest relations.
 pub fn relation_from(a: &HighlightResult, b: &HighlightResult, j: &PairJudgement) -> Option<FindingRelation> {
     let relation = match j.relation.as_str() {
-        "same_issue" => "same",
-        "related" => "related",
+        "same_issue" if j.p_same >= SAME_MIN => "same",
+        "same_issue" | "related" => "related",
         _ => return None,
     };
     Some(FindingRelation { a: finding_ref(a), b: finding_ref(b), relation: relation.to_string(), p_same: j.p_same, p_related: j.p_related })
@@ -737,8 +743,11 @@ mod tests {
     #[test]
     fn only_same_and_related_calls_become_relations() {
         let a = HighlightResult { path: "a.rs".into(), start_line: 1, end_line: 2, comment: "x".into(), ..Default::default() };
-        let j = |rel: &str| PairJudgement { relation: rel.into(), p_same: 0.7, p_related: 0.2, p_different: 0.1, confidence: 0.5 };
+        let j = |rel: &str| PairJudgement { relation: rel.into(), p_same: 0.85, p_related: 0.1, p_different: 0.05, confidence: 0.5 };
         assert_eq!(relation_from(&a, &a, &j("same_issue")).unwrap().relation, "same");
+        // A weak "same" only groups: merging would share one verdict.
+        let weak = PairJudgement { relation: "same_issue".into(), p_same: 0.62, p_related: 0.35, p_different: 0.03, confidence: 0.4 };
+        assert_eq!(relation_from(&a, &a, &weak).unwrap().relation, "related");
         assert_eq!(relation_from(&a, &a, &j("related")).unwrap().relation, "related");
         assert!(relation_from(&a, &a, &j("different")).is_none());
         assert_eq!(relation_from(&a, &a, &j("same_issue")).unwrap().b.comment, "x");
