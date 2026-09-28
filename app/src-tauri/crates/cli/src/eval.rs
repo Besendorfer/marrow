@@ -300,6 +300,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
     let mut judged: Vec<Judged> = Vec::new();
     // The production relate_findings on each fixture's real review output.
     let mut relations: Vec<(String, marrow_core::types::FindingRelation)> = Vec::new();
+    let mut candidate_total = 0usize;
     let ai = AiBackend::from_settings(&settings).await?;
     eprintln!(
         "corpus v{version} · {} fixture(s) · model {} · review {}",
@@ -435,7 +436,13 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
                         }
                         let diffs: std::collections::HashMap<String, String> =
                             pr.files.iter().map(|f| (f.path.clone(), f.diff.clone())).collect();
-                        for r in marrow_core::jev::relate_findings(Some(key), &pr.title, &pr.body, &validated, &diffs).await {
+                        let candidates = marrow_core::jev::candidate_pairs(&validated).len();
+                        let stored = marrow_core::jev::relate_findings(Some(key), &pr.title, &pr.body, &validated, &diffs).await;
+                        // relate_findings drops failed or timed-out calls along
+                        // with "different" ones; say how many pairs were asked.
+                        eprintln!("· {}: {candidates} candidate pair(s) → {} relation(s) stored", score.name, stored.len());
+                        candidate_total += candidates;
+                        for r in stored {
                             relations.push((score.name.clone(), r));
                         }
                     }
@@ -517,7 +524,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
         print!("{}", render_text_report(&scores, &version, precision, recall));
         if let Some(s) = &jev_summary {
             print!("{}", jev_eval::render_text(s));
-            println!("JEV RELATIONS stored ({}):", relations.len());
+            println!("JEV RELATIONS stored ({} of {} candidate pairs; the rest judged different, or failed):", relations.len(), candidate_total);
             for (fx, r) in &relations {
                 println!(
                     "    {fx} {}: {}:{}-{} [{}] ↔ {}:{}-{} · same {:.2} related {:.2}",

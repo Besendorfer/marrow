@@ -182,12 +182,7 @@ pub fn parse_settings(content: &str) -> Settings {
             jev_group_findings = val == "true";
         } else if let Some(val) = line.strip_prefix("typesafe_api_key=") {
             typesafe_api_key = val.to_string();
-        } else if let Some(val) = line.strip_prefix("vercel_ai_gateway_api_key=") {
-            // The #249 draft briefly stored the Jev key under this name; read
-            // it once so the next save writes it as typesafe_api_key.
-            if typesafe_api_key.is_empty() {
-                typesafe_api_key = val.to_string();
-            }
+
         } else if let Some(val) = line.strip_prefix("openai_base_url=") {
             openai_base_url = val.to_string();
         } else if let Some(val) = line.strip_prefix("filter_older=") {
@@ -475,16 +470,6 @@ mod tests {
         assert_eq!(jev_grouping_key(&s).as_deref(), Some("ts"));
         assert!(parse_settings(&serialize_settings(&s)).jev_group_findings);
         assert!(!parse_settings("model=\n").jev_group_findings);
-    }
-
-    #[test]
-    fn a_jev_key_saved_under_the_draft_name_carries_over() {
-        let s = parse_settings("model=\nvercel_ai_gateway_api_key=ts-old\n");
-        assert_eq!(s.typesafe_api_key, "ts-old");
-        let text = serialize_settings(&s);
-        assert!(text.contains("typesafe_api_key=ts-old\n") && !text.contains("vercel_ai_gateway"));
-        // The current name wins if both are present.
-        assert_eq!(parse_settings("typesafe_api_key=new\nvercel_ai_gateway_api_key=old\n").typesafe_api_key, "new");
     }
 
     #[test]
