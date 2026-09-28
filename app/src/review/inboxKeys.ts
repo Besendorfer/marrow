@@ -5,6 +5,9 @@ import type { FindingState } from "./findings";
 
 export type ListKeyAction =
   | { type: "move"; delta: 1 | -1 }
+  | { type: "edge"; to: "first" | "last" }
+  | { type: "diff" }
+  | { type: "finish" }
   | { type: "fine" }
   | { type: "dismiss" }
   | { type: "comment" };
@@ -20,6 +23,15 @@ export function listKeyAction(key: string, finding: { state: FindingState } | nu
     case "k":
     case "ArrowUp":
       return { type: "move", delta: -1 };
+    case "Home":
+      return { type: "edge", to: "first" };
+    case "End":
+      return { type: "edge", to: "last" };
+    // Phase 7: hand the keyboard to the diff (its j/k/n/c keys), or wrap up.
+    case "Enter":
+      return { type: "diff" };
+    case "f":
+      return { type: "finish" };
     case "e":
       // Nothing to mark on an already-handled finding.
       return finding && (finding.state === "open" || finding.state === "commented") ? { type: "fine" } : null;

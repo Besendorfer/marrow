@@ -26,6 +26,14 @@ import { useReviewController } from "./review/useReviewController";
 import { ReviewInbox } from "./components/ReviewInbox";
 import { RequirementsCard } from "./components/RequirementsCard";
 import type { ReviewManifest, Tab } from "./types";
+import { Splitter } from "./components/Splitter";
+import { usePaneWidth, type PaneBounds } from "./hooks/usePaneWidth";
+import type { CSSProperties } from "react";
+
+// Resizable panes (issue #238 phase 7). Module-level so the bounds keep one
+// identity across renders.
+const INBOX_LIST_BOUNDS: PaneBounds = { min: 260, max: 640, initial: 340 };
+const DOCK_BOUNDS: PaneBounds = { min: 300, max: 720, initial: 380 };
 
 /** A tab with a loaded PR — what the review surfaces render. */
 type ReviewTab = Tab & { manifest: ReviewManifest };
@@ -146,6 +154,8 @@ function App() {
     draftReviewBody,
     nextInQueue,
   } = useReviewController();
+  const [inboxListWidth, setInboxListWidth] = usePaneWidth("inbox-list", INBOX_LIST_BOUNDS);
+  const [dockWidth, setDockWidth] = usePaneWidth("dock", DOCK_BOUNDS);
 
   // Element builders shared by the classic lenses and the inbox layout
   // (issue #238) — one place each is wired, so both layouts stay identical.
@@ -274,7 +284,7 @@ function App() {
         onRelaunch={relaunch}
         onDismiss={() => setUpdateStatus({ state: "idle" })}
       />
-      {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} />}
+      {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} inboxMode={inboxLayout} />}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
       <div
         className={`quit-hint${showQuitHint ? " visible" : ""}`}
@@ -309,7 +319,10 @@ function App() {
   }
 
   return (
-    <div className={`app${activeTab?.chat.open || activeTab?.commentsOpen ? " app--right-panel" : ""}`}>
+    <div
+      className={`app${activeTab?.chat.open || activeTab?.commentsOpen ? " app--right-panel" : ""}`}
+      style={{ "--inbox-list-w": `${inboxListWidth}px`, "--dock-w": `${dockWidth}px` } as CSSProperties}
+    >
       <ActivityWidget onOpenPr={(ref) => handleFetchStart(ref, activeTabId ?? undefined)} />
       <Header
         tabs={tabs}
@@ -495,7 +508,9 @@ function App() {
               )}
               renderChecks={() => renderChecksLens(activeTab as ReviewTab, inboxOpenAt)}
               renderCommits={() => renderCommitsLens(activeTab as ReviewTab, true)}
+              listSplitter={<Splitter label="Review list width" width={inboxListWidth} bounds={INBOX_LIST_BOUNDS} onChange={setInboxListWidth} />}
               onSelectCommit={(c) => handleViewCommit(c)}
+              onFinish={openFinish}
             />
           ) : activeTab.lens === "commits" ? (
             renderCommitsLens(activeTab as ReviewTab)
@@ -558,6 +573,9 @@ function App() {
             )}
           </div>
           </>
+          )}
+          {(activeTab.chat.open || activeTab.commentsOpen) && (
+            <Splitter label={activeTab.chat.open ? "Chat panel width" : "Comments panel width"} width={dockWidth} bounds={DOCK_BOUNDS} onChange={setDockWidth} paneOnRight />
           )}
           {activeTab.chat.open && (
             <ChatPanel

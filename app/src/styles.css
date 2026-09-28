@@ -6621,7 +6621,7 @@ mark.search-highlight-current {
 .chat-panel {
   display: flex;
   flex-direction: column;
-  width: 380px;
+  width: var(--dock-w, 380px);
   flex-shrink: 0;
   border-left: 1px solid var(--chip-border);
   background: var(--bg-secondary);
@@ -6632,7 +6632,7 @@ mark.search-highlight-current {
 .comments-panel {
   display: flex;
   flex-direction: column;
-  width: 380px;
+  width: var(--dock-w, 380px);
   flex-shrink: 0;
   border-left: 1px solid var(--chip-border);
   background: var(--bg-secondary);
@@ -7166,7 +7166,7 @@ mark.search-highlight-current {
    are separate classes — both need the offset. */
 .app--right-panel .activity-widget--dock,
 .app--right-panel .activity-widget--pill {
-  right: calc(380px + 24px);
+  right: calc(var(--dock-w, 380px) + 24px);
 }
 .activity-widget--pill {
   transition: right 0.2s ease;
@@ -7364,7 +7364,7 @@ mark.search-highlight-current {
 }
 
 .inbox-list {
-  width: 340px;
+  width: var(--inbox-list-w, 340px);
   flex: none;
   display: flex;
   flex-direction: column;
@@ -7374,8 +7374,19 @@ mark.search-highlight-current {
   outline: none;
 }
 
-.inbox-list:focus-visible {
-  box-shadow: inset 0 0 0 1px var(--accent);
+/* Roving focus (phase 7): the focused row carries the ring, not the list. */
+.inbox-row:focus-visible,
+.inbox-file-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.inbox-detail {
+  outline: none;
+}
+
+.inbox-detail:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .inbox-verdict {
@@ -8248,4 +8259,48 @@ mark.search-highlight-current {
 .finish-next {
   text-align: left;
   white-space: normal;
+}
+
+/* ─── Pane splitter (issue #238 phase 7) ───────────────────────────────────
+   A thin hit area over the pane border; the line shows on hover, focus, and
+   while dragging. Panes it sits between keep their own borders. */
+.splitter {
+  flex: none;
+  width: 6px;
+  margin-inline: -3px;
+  position: relative;
+  z-index: 2;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.splitter::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.splitter:hover::after,
+.splitter:focus-visible::after,
+body.is-resizing .splitter::after {
+  background: var(--accent);
+}
+
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splitter::after { transition: none; }
+}
+
+/* Dialogs take focus on open (issue #238 phase 7); the panel itself needs no ring. */
+[role="dialog"]:focus {
+  outline: none;
 }

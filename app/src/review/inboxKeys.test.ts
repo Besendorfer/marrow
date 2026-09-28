@@ -3,6 +3,13 @@ import { describe, expect, test } from "bun:test";
 import { chooserKeyAction, landingId, listKeyAction, nextAfterAction } from "./inboxKeys";
 
 describe("listKeyAction", () => {
+  test("Home/End jump, Enter hands off to the diff, f opens Finish — with or without a finding", () => {
+    expect(listKeyAction("Home", null)).toEqual({ type: "edge", to: "first" });
+    expect(listKeyAction("End", { state: "open" })).toEqual({ type: "edge", to: "last" });
+    expect(listKeyAction("Enter", null)).toEqual({ type: "diff" });
+    expect(listKeyAction("f", { state: "checked" })).toEqual({ type: "finish" });
+  });
+
   test("j/k and arrows move, with or without a finding selected", () => {
     expect(listKeyAction("j", null)).toEqual({ type: "move", delta: 1 });
     expect(listKeyAction("ArrowDown", { state: "open" })).toEqual({ type: "move", delta: 1 });
@@ -27,7 +34,9 @@ describe("listKeyAction", () => {
 
   test("other keys pass through", () => {
     expect(listKeyAction("n", { state: "open" })).toBeNull();
-    expect(listKeyAction("Enter", { state: "open" })).toBeNull();
+    // The global shortcuts still reach the app from the list.
+    expect(listKeyAction("V", { state: "open" })).toBeNull();
+    expect(listKeyAction("R", null)).toBeNull();
   });
 });
 

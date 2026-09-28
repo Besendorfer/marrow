@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { FinishDone, FinishDraft, PrChecksStatus, ReviewManifest, ReviewRequestItem, ReviewThread, Tab } from "../types";
 import { buildFindings, type Finding } from "../review/findings";
+import { Dialog } from "./Dialog";
 import { attemptSubmit, ciStatus, defaultVerb, filesReviewed, mergeDraft, pendingComments, recapSummary, submitBlocker, type ReviewEvent } from "../review/finish";
 
 const VERBS: { event: ReviewEvent; label: string; hint: string }[] = [
@@ -84,7 +85,6 @@ export function FinishPanel(props: FinishPanelProps) {
   // Draft a body from fresh threads the first time the panel opens for this
   // review — never again on a remount, and never over text you've typed.
   useEffect(() => {
-    panelRef.current?.focus();
     if (draft.drafted) return;
     let live = true;
     props
@@ -124,11 +124,7 @@ export function FinishPanel(props: FinishPanelProps) {
   }
 
   function onKey(e: KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      props.onClose();
-    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !done) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !done) {
       e.preventDefault();
       submit();
     }
@@ -139,17 +135,14 @@ export function FinishPanel(props: FinishPanelProps) {
     tab.myReviewState && !tab.myReviewState.is_re_requested ? ALREADY[tab.myReviewState.status] ?? null : null;
 
   return (
-    <div className="finish-backdrop" onMouseDown={props.onClose}>
-      <div
-        className="finish-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Finish review of #${manifest.pr_number}`}
-        tabIndex={-1}
-        ref={panelRef}
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={onKey}
-      >
+    <Dialog
+      label={`Finish review of #${manifest.pr_number}`}
+      onClose={props.onClose}
+      className="finish-panel"
+      backdropClassName="finish-backdrop"
+      panelRef={panelRef}
+      onKeyDown={onKey}
+    >
         <div className="finish-head">
           <div>
             <div className="finish-eyebrow">Finish review · #{manifest.pr_number}</div>
@@ -266,7 +259,6 @@ export function FinishPanel(props: FinishPanelProps) {
             </section>
           </>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }

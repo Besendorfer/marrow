@@ -3,7 +3,9 @@
 // list — verdict, About/Commits/Checks, ranked findings, then the remaining
 // files — beside a detail pane: the selected finding's card pinned above its
 // diff. The list is the progress and the next step; j/k move through it and
-// e / c / x act on the selected finding while the list has focus.
+// e / c / x act on the selected finding while the list has focus. Only the
+// selected row is in the Tab order (roving focus): Tab leaves the list, Enter
+// hands the keyboard to the diff, Esc there comes back.
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, PrCommit, ReviewManifest, Tab } from "../types";
@@ -65,6 +67,9 @@ export interface ReviewInboxProps {
   renderChecks: () => ReactNode;
   renderCommits: () => ReactNode;
   onSelectCommit: (commit: PrCommit) => void;
+  onFinish: () => void;
+  /** The divider between the list and the detail pane (resizes the list). */
+  listSplitter?: ReactNode;
 }
 
 function fileName(path: string): string {
@@ -95,6 +100,10 @@ export function ReviewInbox(props: ReviewInboxProps) {
   const [choosingKey, setChoosingKey] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  // Set when focus should follow the selection even though it's outside the
+  // list right now (an action taken from the card's buttons).
+  const refocusRef = useRef(false);
 
   useEffect(() => {
     if (tab.commentThreads.status === "idle") onEnsureThreads();
@@ -206,9 +215,17 @@ export function ReviewInbox(props: ReviewInboxProps) {
     setReason("");
   }, [selection]);
 
-  // Keep the selected row in view as j/k move.
+  /** Focus the selected row — the list's one Tab stop. */
+  function focusRow() {
+    listRef.current?.querySelector<HTMLElement>('[data-row][tabindex="0"]')?.focus({ preventScroll: true });
+  }
+
+  // Keep the selected row in view as j/k move, and keep focus on it while the
+  // keyboard is in the list.
   useEffect(() => {
     listRef.current?.querySelector(".inbox-row.selected")?.scrollIntoView({ block: "nearest" });
+    if (refocusRef.current || listRef.current?.contains(document.activeElement)) focusRow();
+    refocusRef.current = false;
   }, [selection]);
 
   /** List position of the selection; a hidden file item sits at its first finding. */
@@ -238,15 +255,20 @@ export function ReviewInbox(props: ReviewInboxProps) {
     } else {
       props.onNotAnIssue(f, resolution);
     }
+    // Card buttons live outside the list; hand focus back so j/k/e/c/x keep
+    // working — now, and again once the advanced-to row renders.
+    refocusRef.current = true;
+    focusRow();
     advance(f);
-    // Card buttons live outside the list; hand focus back so j/k/e/c/x keep working.
-    listRef.current?.focus({ preventScroll: true });
   }
 
   function onListKey(e: KeyboardEvent<HTMLDivElement>) {
     const t = e.target as HTMLElement;
     const typing = t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && (t as HTMLInputElement).type !== "checkbox");
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+    // Enter on a non-row control (a checkbox, the Not relevant toggle) keeps
+    // its own meaning.
+    if (e.key === "Enter" && !t.hasAttribute("data-row")) return;
     const f = selected?.kind === "finding" ? selected.finding : null;
     if (f && choosingKey === f.key) {
       const pick = chooserKeyAction(e.key, REASON_OPTIONS.length);
@@ -269,6 +291,13 @@ export function ReviewInbox(props: ReviewInboxProps) {
       const next = navItems[pos + action.delta];
       if (next && pos + action.delta >= 0) select(next);
       else if (pos < 0 && navItems[0]) select(navItems[0]);
+    } else if (action.type === "edge") {
+      const target = action.to === "first" ? navItems[0] : navItems[navItems.length - 1];
+      if (target) select(target);
+    } else if (action.type === "diff") {
+      detailRef.current?.focus();
+    } else if (action.type === "finish") {
+      props.onFinish();
     } else if (f) {
       if (action.type === "dismiss" && f.kind !== "spec") startChoosing(f);
       else act(action.type, f);
@@ -277,7 +306,16 @@ export function ReviewInbox(props: ReviewInboxProps) {
 
   function startChoosing(f: Finding) {
     setChoosingKey(f.key);
-    listRef.current?.focus({ preventScroll: true });
+    focusRow();
+  }
+
+  /** Esc from the detail pane (not from a field in it) returns to the list. */
+  function onDetailKey(e: KeyboardEvent<HTMLDivElement>) {
+    const t = e.target as HTMLElement;
+    if (e.key !== "Escape" || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+    e.preventDefault();
+    e.stopPropagation();
+    focusRow();
   }
 
   function dismissWith(f: Finding, state: NoteResolutionState) {
@@ -306,6 +344,8 @@ export function ReviewInbox(props: ReviewInboxProps) {
     return (
       <button
         key={f.key}
+        data-row
+        tabIndex={isSel ? 0 : -1}
         aria-current={isSel ? "true" : undefined}
         className={`inbox-row inbox-row--finding inbox-row--${f.state}${isSel ? " selected" : ""}`}
         onClick={() => props.onSelectFinding(f)}
@@ -327,7 +367,7 @@ export function ReviewInbox(props: ReviewInboxProps) {
       <div
         className="inbox-list"
         ref={listRef}
-        tabIndex={0}
+        role="navigation"
         aria-label="Review list"
         onKeyDown={onListKey}
       >
@@ -360,6 +400,7 @@ export function ReviewInbox(props: ReviewInboxProps) {
               return (
                 <button
                   key={c.sha}
+                  tabIndex={-1}
                   aria-current={isSel ? "true" : undefined}
                   className={`inbox-commit${isSel ? " selected" : ""}`}
                   onClick={() => props.onSelectCommit(c)}
@@ -437,10 +478,13 @@ export function ReviewInbox(props: ReviewInboxProps) {
           <span><kbd>e</kbd> looks fine</span>
           <span><kbd>c</kbd> comment</span>
           <span><kbd>x</kbd> not an issue</span>
+          <span><kbd>↵</kbd> to diff · <kbd>esc</kbd> back</span>
+          <span><kbd>f</kbd> finish</span>
         </div>
       </div>
 
-      <div className="inbox-detail">
+      {props.listSplitter}
+      <div className="inbox-detail" ref={detailRef} tabIndex={-1} role="region" aria-label="Review detail" onKeyDown={onDetailKey}>
         {selected?.id === INBOX_ABOUT && <div className="inbox-panel">{props.renderAbout()}</div>}
         {selected?.id === INBOX_COMMITS && <div className="inbox-panel inbox-panel--commits">{props.renderCommits()}</div>}
         {selected?.id === INBOX_CHECKS && <div className="inbox-panel inbox-panel--flush">{props.renderChecks()}</div>}
@@ -485,6 +529,8 @@ function PanelRow({ id, selection, onSelect, title, meta, tone }: {
   const isSel = selection === id;
   return (
     <button
+      data-row
+      tabIndex={isSel ? 0 : -1}
       aria-current={isSel ? "true" : undefined}
       className={`inbox-row inbox-row--panel${isSel ? " selected" : ""}`}
       onClick={() => onSelect(id)}
@@ -536,11 +582,12 @@ function FileRow({ file, viewed, notes, selected, onSelect, onToggleViewed }: {
       <input
         type="checkbox"
         className="inbox-viewed"
+        tabIndex={-1}
         checked={viewed}
         onChange={onToggleViewed}
         aria-label={`Mark ${fileName(file.path)} ${viewed ? "unreviewed" : "reviewed"}`}
       />
-      <button aria-current={selected ? "true" : undefined} className="inbox-file-btn" onClick={onSelect} title={file.path}>
+      <button data-row tabIndex={selected ? 0 : -1} aria-current={selected ? "true" : undefined} className="inbox-file-btn" onClick={onSelect} title={file.path}>
         <span className="inbox-file-name">{fileName(file.path)}</span>
         <span className="inbox-file-stat">
           <span className="inbox-add">+{file.additions}</span> <span className="inbox-del">−{file.deletions}</span>
