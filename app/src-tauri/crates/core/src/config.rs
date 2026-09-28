@@ -85,6 +85,12 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether the floating mini-player may show: the activity master switch is
+/// on and its own auto-show toggle (✕ / ⧉) hasn't turned it off.
+pub fn floating_mini_player_enabled(settings: &Settings) -> bool {
+    settings.show_activity && settings.activity_mini_player
+}
+
 fn default_settings() -> Settings {
     Settings {
         model: String::new(),
@@ -103,6 +109,7 @@ fn default_settings() -> Settings {
         hunk_filter: "all".to_string(),
         activity_per_watch_cap: 50,
         activity_mini_player: true,
+        show_activity: false,
         show_approved_prs: false,
         show_draft_prs: true,
         setup_done: false,
@@ -143,6 +150,7 @@ pub fn parse_settings(content: &str) -> Settings {
     let mut hunk_filter = "all".to_string();
     let mut activity_per_watch_cap = 50u64;
     let mut activity_mini_player = true;
+    let mut show_activity = false;
     let mut show_approved_prs = false;
     let mut show_draft_prs = true;
     let mut setup_done = false;
@@ -186,6 +194,8 @@ pub fn parse_settings(content: &str) -> Settings {
             }
         } else if let Some(val) = line.strip_prefix("activity_mini_player=") {
             activity_mini_player = val == "true";
+        } else if let Some(val) = line.strip_prefix("show_activity=") {
+            show_activity = val == "true";
         } else if let Some(val) = line.strip_prefix("show_approved_prs=") {
             show_approved_prs = val == "true";
         } else if let Some(val) = line.strip_prefix("show_draft_prs=") {
@@ -220,6 +230,7 @@ pub fn parse_settings(content: &str) -> Settings {
         hunk_filter,
         activity_per_watch_cap,
         activity_mini_player,
+        show_activity,
         show_approved_prs,
         show_draft_prs,
         setup_done,
@@ -285,6 +296,7 @@ pub fn serialize_settings(settings: &Settings) -> String {
         "activity_mini_player={}\n",
         settings.activity_mini_player
     ));
+    content.push_str(&format!("show_activity={}\n", settings.show_activity));
     content.push_str(&format!("show_approved_prs={}\n", settings.show_approved_prs));
     content.push_str(&format!("show_draft_prs={}\n", settings.show_draft_prs));
     content.push_str(&format!("setup_done={}\n", settings.setup_done));
@@ -409,6 +421,23 @@ mod tests {
         let mut s = default_settings();
         s.anthropic_api_key = "sk-ant-from-config".to_string();
         assert_eq!(resolve_anthropic_api_key(&s).as_deref(), Some("sk-ant-from-config"));
+    }
+
+    #[test]
+    fn activity_is_hidden_by_default_and_gates_the_floating_window() {
+        // Fresh install and a config from before the setting existed.
+        assert!(!default_settings().show_activity);
+        assert!(!parse_settings("model=\nactivity_mini_player=true\n").show_activity);
+        let mut s = default_settings();
+        // The floating window's own toggle alone doesn't bring it back.
+        assert!(s.activity_mini_player && !floating_mini_player_enabled(&s));
+        s.show_activity = true;
+        assert!(floating_mini_player_enabled(&s));
+        let text = serialize_settings(&s);
+        assert!(text.contains("show_activity=true\n"));
+        assert!(parse_settings(&text).show_activity);
+        s.activity_mini_player = false;
+        assert!(!floating_mini_player_enabled(&s));
     }
 
     #[test]

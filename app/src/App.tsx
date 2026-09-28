@@ -139,6 +139,7 @@ function App() {
     closeTab,
     handleFileDrop,
     inboxLayout,
+    showActivity,
     selectInboxFinding,
     inboxOpenAt,
     selectInboxFile,
@@ -323,7 +324,7 @@ function App() {
       className={`app${activeTab?.chat.open || activeTab?.commentsOpen ? " app--right-panel" : ""}`}
       style={{ "--inbox-list-w": `${inboxListWidth}px`, "--dock-w": `${dockWidth}px` } as CSSProperties}
     >
-      <ActivityWidget onOpenPr={(ref) => handleFetchStart(ref, activeTabId ?? undefined)} />
+      {showActivity && <ActivityWidget onOpenPr={(ref) => handleFetchStart(ref, activeTabId ?? undefined)} />}
       <Header
         tabs={tabs}
         activeTabId={activeTabId}

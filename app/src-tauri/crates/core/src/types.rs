@@ -334,6 +334,11 @@ pub struct Settings {
     /// focus. The widget's ✕ turns this off; the dock's ⧉ toggle turns it on.
     #[serde(default = "default_true")]
     pub activity_mini_player: bool,
+    /// Master switch for the PR activity mini-player: the in-app dock/pill,
+    /// the floating window, and the background polling that feeds them. Off
+    /// by default while the mini-player is being redesigned.
+    #[serde(default)]
+    pub show_activity: bool,
     /// Keep PRs in the activity feed after you've approved them. Off by default:
     /// once you approve a PR, it drops out of the feed.
     #[serde(default)]

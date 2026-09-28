@@ -29,6 +29,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [watches, setWatches] = useState<Watch[]>([]);
   const [perWatchCap, setPerWatchCap] = useState(50);
   const [showApprovedPrs, setShowApprovedPrs] = useState(false);
+  const [showActivity, setShowActivity] = useState(false);
   const [expandAllHunks, setExpandAllHunks] = useState(false);
   const [classicLayout, setClassicLayout] = useState(false);
   const [localRepoRoots, setLocalRepoRoots] = useState("");
@@ -53,6 +54,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setOpenaiBaseUrl(s.openai_base_url || "");
         setPerWatchCap(s.activity_per_watch_cap || 50);
         setShowApprovedPrs(s.show_approved_prs ?? false);
+        setShowActivity(s.show_activity ?? false);
         setExpandAllHunks(s.expand_all_hunks ?? false);
         setClassicLayout(s.classic_layout ?? false);
         setLocalRepoRoots((s.local_repo_roots ?? []).join("\n"));
@@ -96,6 +98,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           openai_base_url: openaiBaseUrl.trim(),
           activity_per_watch_cap: perWatchCap,
           show_approved_prs: showApprovedPrs,
+          show_activity: showActivity,
           expand_all_hunks: expandAllHunks,
           classic_layout: classicLayout,
           local_repo_roots: localRepoRoots
@@ -337,6 +340,22 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
           <div className="settings-divider" />
           <h3 className="settings-section-title">PR Activity Watches</h3>
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={showActivity}
+              onChange={(e) => {
+                setShowActivity(e.target.checked);
+                setSaved(false);
+              }}
+            />
+            Show the activity mini-player
+          </label>
+          <p className="settings-hint">
+            The Activity pill and panel in the app, and the floating window
+            when Marrow is in the background. While it's off, Marrow doesn't
+            check GitHub for activity.
+          </p>
           <p className="settings-hint">
             Saved GitHub searches that feed the activity mini-player — including
             repos/orgs where you aren't a requested reviewer. Use GitHub search

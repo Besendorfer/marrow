@@ -10,6 +10,9 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
+/// How often the idle activity watcher re-reads Settings while the
+/// mini-player is hidden (a config file read, no network).
+const ACTIVITY_OFF_RECHECK_SECS: u64 = 10;
 /// Default/min seconds between activity polls. GitHub's notifications API floor
 /// is 60s; we honor its `X-Poll-Interval` header above this when it asks for more.
 const ACTIVITY_POLL_SECS: u64 = 60;
@@ -158,6 +161,13 @@ pub fn run() {
                 let mut notif_since: Option<String> = None;
                 let mut poll_secs = ACTIVITY_POLL_SECS;
                 loop {
+                    // Activity hidden in Settings: nothing to feed, so don't
+                    // spend GitHub requests. Re-check shortly so turning it
+                    // on starts the feed without a restart.
+                    if !marrow_core::config::load_settings().show_activity {
+                        tokio::time::sleep(std::time::Duration::from_secs(ACTIVITY_OFF_RECHECK_SECS)).await;
+                        continue;
+                    }
                     if let Some((poll_interval, last_modified)) =
                         poll_activity_once(&activity_handle, notif_since.clone()).await
                     {
@@ -217,7 +227,7 @@ pub fn run() {
             // the first show isn't a window creation — creating a webview window
             // activates the app and would yank you back to Marrow on your first
             // Cmd+Tab away. Runs on the main thread (setup), where it's safe.
-            if marrow_core::config::load_settings().activity_mini_player {
+            if marrow_core::config::floating_mini_player_enabled(&marrow_core::config::load_settings()) {
                 let _ = commands::build_activity_window(app.handle());
             }
 
