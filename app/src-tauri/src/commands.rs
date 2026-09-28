@@ -278,8 +278,9 @@ pub(crate) fn build_activity_window(app: &tauri::AppHandle) -> Result<(), String
 /// pre-created at startup, so the lazy build here is only a fallback.
 #[command]
 pub fn set_activity_window_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
-    // Respect the user's opt-out: never auto-show when the feature is disabled.
-    if visible && !load_settings().activity_mini_player {
+    // Respect the user's opt-out: never auto-show when activity is hidden in
+    // Settings or the floating window's own toggle is off.
+    if visible && !marrow_core::config::floating_mini_player_enabled(&load_settings()) {
         return Ok(());
     }
 
