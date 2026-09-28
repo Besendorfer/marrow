@@ -73,9 +73,10 @@ fn fingerprint_of(version: u32, prompts: &[&str], budgets: &[usize], settings: &
     }
     // Jev grouping (issue #249) adds finding_relations to the analysis, so
     // turning it on or off makes cached analyses stale. Mixed in only while
-    // it's active, so everyone else's fingerprints are unchanged; whether a
-    // key exists counts, never the key itself.
-    if crate::config::jev_grouping_key(settings).is_some() {
+    // it's on, so everyone else's fingerprints are unchanged. The setting
+    // alone counts — not whether a key resolves, which could flip with the
+    // TYPESAFE_API_KEY env var between a terminal and a Dock launch.
+    if settings.jev_group_findings {
         h.update(b"jev-group-findings");
         for q in crate::jev::pair_questions().values() {
             h.update(q.instructions.as_bytes());
@@ -114,7 +115,7 @@ mod tests {
     }
 
     #[test]
-    fn jev_grouping_counts_only_while_active_and_never_the_key() {
+    fn jev_grouping_counts_only_while_on_and_never_the_key() {
         let off = analysis_fingerprint(&settings("m1", "", ""));
         let mut s = settings("m1", "", "");
         s.typesafe_api_key = "ts-one".to_string();
@@ -122,8 +123,8 @@ mod tests {
         s.jev_group_findings = true;
         let on = analysis_fingerprint(&s);
         assert_ne!(off, on, "turning grouping on marks analyses stale");
-        s.typesafe_api_key = "ts-two".to_string();
-        assert_eq!(on, analysis_fingerprint(&s), "the key's value never contributes");
+        s.typesafe_api_key = String::new();
+        assert_eq!(on, analysis_fingerprint(&s), "whether or which key is present never contributes");
     }
 
     #[test]

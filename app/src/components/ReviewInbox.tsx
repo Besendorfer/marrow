@@ -361,6 +361,9 @@ export function ReviewInbox(props: ReviewInboxProps) {
           <span className="inbox-row-title">{f.title}</span>
           <span className="inbox-row-meta">
             {f.parentKey && <span className="inbox-rel" title="Same root cause as the finding above, different action">Related</span>}
+            {f.parentKey && f.urgency !== sectionOf(f) && (
+              <span className="inbox-rel" title="Its own urgency, which the counts above use">{f.urgency === "fix" ? "Fix" : "Look"}</span>
+            )}
             <span className={`inbox-kind inbox-kind--${f.rank}`}>{KIND_LABEL[f.kind]}</span>
             {location(f) && <span className="inbox-loc">{location(f)}</span>}
             {f.duplicates?.length ? (

@@ -266,6 +266,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 title, description, and those files' diffs, to TypeSafe. Findings
                 that report the same problem are merged; ones with the same cause
                 are grouped. Needs the key above.
+                {jevGroup && !jevKey.trim() && (
+                  <> No key is saved here, so this only runs if <code>TYPESAFE_API_KEY</code> is set when Marrow starts.</>
+                )}
               </p>
 
               <label className="settings-label" htmlFor="provider">

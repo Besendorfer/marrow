@@ -365,4 +365,13 @@ describe("applyRelations", () => {
     ]);
     expect(out[2].parentKey).toBe(out[0].key);
   });
+
+  test("a same call through a child attaches to the root as related, never merged into it", () => {
+    const list = [fnd(bug), fnd(bug2), fnd(gap, "medium")];
+    // bug2 is only related to bug; gap is the "same" as bug2, never judged against bug.
+    const out = applyRelations(list, [rel(bug2, bug, "related", 0.95), rel(gap, bug2, "same", 0.9)]);
+    expect(out[0].duplicates).toBeUndefined();
+    expect(out.map((f) => f.title)).toEqual([bug.comment, bug2.comment, gap.comment]);
+    expect(out[2].parentKey).toBe(out[0].key);
+  });
 });

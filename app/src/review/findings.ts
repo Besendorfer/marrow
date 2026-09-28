@@ -380,9 +380,10 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
  * ranks first in a pair is the primary. A "same" partner is folded into the
  * primary's `duplicates` and leaves the list; a "related" one stays in the
  * list, right after its primary, with `parentKey` set. One level only: a
- * pair that would nest deeper attaches to the root instead, and a finding
- * that already heads a group isn't pulled under another. Strongest calls
- * are applied first. */
+ * pair that would nest deeper attaches to the root instead — as "related",
+ * never "same", since that finding was never judged against the root and a
+ * merge would hand it the root's verdict. A finding that already heads a
+ * group isn't pulled under another. Strongest calls are applied first. */
 export function applyRelations(findings: Finding[], relations: FindingRelation[] | undefined): Finding[] {
   if (!relations?.length) return findings;
   const index = new Map(findings.map((f, i) => [f.key, i]));
@@ -397,9 +398,14 @@ export function applyRelations(findings: Finding[], relations: FindingRelation[]
     if (ia == null || ib == null || ia === ib) continue;
     let head = ia < ib ? ka : kb;
     const child = ia < ib ? kb : ka;
-    head = parentOf.get(head)?.key ?? head;
+    let relation = r.relation;
+    const via = parentOf.get(head);
+    if (via) {
+      head = via.key;
+      relation = "related";
+    }
     if (head === child || parentOf.has(child) || heads.has(child)) continue;
-    parentOf.set(child, { key: head, relation: r.relation });
+    parentOf.set(child, { key: head, relation });
     heads.add(head);
   }
   if (parentOf.size === 0) return findings;
