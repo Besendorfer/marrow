@@ -32,6 +32,7 @@ function fakeCtx(tab: Partial<Tab>) {
     handleChatOpenFile: (p: string, l?: number) => calls.push(`open:${p}:${l}`),
     setSelectedFile: (f: FileDiff) => calls.push(`select:${f.path}`),
     resolveManifestFile: (files: FileDiff[], p: string) => files.find((f) => f.path === p),
+    setLens: (_id: string, l: string) => calls.push(`lens:${l}`),
   };
   const apply = () => updates.reduce((t, fn) => fn(t), fullTab);
   return { inbox: createInbox(ctx), ctx, calls, apply };
@@ -128,5 +129,20 @@ describe("inbox actions", () => {
     inbox.selectInboxFinding({ ...risk, state: "open" });
     expect(calls).toEqual(["open:a.ts:5"]);
     expect(apply().inboxSelectionPath).toBe("a.ts");
+  });
+
+  test("Commits and Checks rows go through setLens (their fetches key off the lens)", () => {
+    const { inbox, calls } = fakeCtx({ manifest });
+    inbox.selectInboxPanel("commits");
+    inbox.selectInboxPanel("checks");
+    expect(calls).toEqual(["lens:commits", "lens:checks"]);
+  });
+
+  test("leaving Commits for another panel drops the Commits lens", () => {
+    const { inbox, apply } = fakeCtx({ manifest, lens: "commits" });
+    inbox.selectInboxPanel("about");
+    const t = apply();
+    expect(t.inboxSelection).toBe("about");
+    expect(t.lens).toBe("overview");
   });
 });

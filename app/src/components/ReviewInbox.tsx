@@ -1,13 +1,16 @@
 // Inbox review layout (issue #238): the default; Settings → "Use the classic
-// layout" goes back to Overview + Files. One review list — verdict, ranked findings, then the remaining
+// layout" goes back to the Overview/Files/Commits/Checks lenses. One review
+// list — verdict, About/Commits/Checks, ranked findings, then the remaining
 // files — beside a detail pane: the selected finding's card pinned above its
 // diff. The list is the progress and the next step; j/k move through it and
 // e / c / x act on the selected finding while the list has focus.
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, ReviewManifest, Tab } from "../types";
+import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, PrCommit, ReviewManifest, Tab } from "../types";
 import { buildFindings, findingClaim, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
-import { chooserKeyAction, listKeyAction, nextAfterAction } from "../review/inboxKeys";
+import { chooserKeyAction, landingId, listKeyAction, nextAfterAction } from "../review/inboxKeys";
+import { ciStatus } from "../review/finish";
+import { INBOX_ABOUT, INBOX_CHECKS, INBOX_COMMITS } from "../review/navigation";
 
 const KIND_LABEL: Record<FindingKind, string> = {
   ci: "CI",
@@ -33,13 +36,11 @@ const REASON_OPTIONS: { state: NoteResolutionState; label: string }[] = [
   { state: "fixed", label: "Already fixed" },
 ];
 
-export const INBOX_ABOUT = "about";
-
 /** A review-list entry. `hidden` file items back selections of files that
  * already appear through their findings (opened via search, chat, About…),
  * so those selections resolve instead of reading as "nothing selected". */
 type Item =
-  | { id: string; kind: "about" }
+  | { id: string; kind: "panel" }
   | { id: string; kind: "finding"; finding: Finding }
   | { id: string; kind: "file"; file: FileDiff; group: string | null; hidden?: boolean };
 
@@ -62,6 +63,8 @@ export interface ReviewInboxProps {
   renderAbout: () => ReactNode;
   renderSpec: () => ReactNode;
   renderChecks: () => ReactNode;
+  renderCommits: () => ReactNode;
+  onSelectCommit: (commit: PrCommit) => void;
 }
 
 function fileName(path: string): string {
@@ -147,7 +150,9 @@ export function ReviewInbox(props: ReviewInboxProps) {
 
   const allItems: Item[] = useMemo(
     () => [
-      { id: INBOX_ABOUT, kind: "about" as const },
+      { id: INBOX_ABOUT, kind: "panel" as const },
+      { id: INBOX_COMMITS, kind: "panel" as const },
+      { id: INBOX_CHECKS, kind: "panel" as const },
       ...findings.map((f) => ({ id: selectionIdFor(f), kind: "finding" as const, finding: f })),
       ...otherFiles.map(({ file, group }) => ({ id: `file:${file.path}`, kind: "file" as const, file, group })),
       ...notRelevant.map((file) => ({ id: `file:${file.path}`, kind: "file" as const, file, group: null })),
@@ -169,15 +174,20 @@ export function ReviewInbox(props: ReviewInboxProps) {
     else props.onSelectPanel(item.id);
   }
 
-  // Land on the first open finding (else the first finding, else the first
-  // file, else About) whenever nothing valid is selected.
+  // Land somewhere whenever nothing valid is selected (see landingId).
   useEffect(() => {
     if (selected) return;
-    const target =
-      allItems.find((i) => i.kind === "finding" && i.finding.state === "open") ??
-      allItems.find((i) => i.kind === "finding") ??
-      allItems.find((i) => i.kind === "file" && i.file.classification !== "NOT_RELEVANT") ??
-      allItems[0];
+    const id = landingId(
+      allItems.map((i) => ({
+        id: i.id,
+        kind: i.kind,
+        state: i.kind === "finding" ? i.finding.state : undefined,
+        notRelevant: i.kind === "file" && i.file.classification === "NOT_RELEVANT",
+      })),
+      tab.lens,
+      { commits: INBOX_COMMITS, checks: INBOX_CHECKS },
+    );
+    const target = allItems.find((i) => i.id === id);
     if (target) select(target);
     // allItems too: a selection that didn't resolve when it was made (items
     // still settling after a restore or refresh) must get another chance, or
@@ -284,6 +294,7 @@ export function ReviewInbox(props: ReviewInboxProps) {
       ? "No findings"
       : [openFix === 0 ? "Nothing to fix" : `${openFix} to fix`, openLook > 0 ? `${openLook} worth a look` : null].filter(Boolean).join(" · ");
   const verdict = manifest.review_verdict;
+  const ci = ciStatus(checks);
   let lastGroup: string | null | undefined;
 
   function renderFindingRow(f: Finding) {
@@ -332,14 +343,37 @@ export function ReviewInbox(props: ReviewInboxProps) {
           {verdict?.reason && <p>{verdict.reason}</p>}
         </div>
 
-        <button
-          aria-current={selection === INBOX_ABOUT ? "true" : undefined}
-          className={`inbox-row inbox-row--about${selection === INBOX_ABOUT ? " selected" : ""}`}
-          onClick={() => props.onSelectPanel(INBOX_ABOUT)}
-        >
-          <span className="inbox-row-title">About this PR</span>
-          <span className="inbox-row-meta">Summary, description, commits</span>
-        </button>
+        <div className="inbox-panels">
+        <PanelRow id={INBOX_ABOUT} selection={selection} onSelect={props.onSelectPanel} title="About this PR" meta="Summary and description" />
+        <PanelRow
+          id={INBOX_COMMITS}
+          selection={selection}
+          onSelect={props.onSelectPanel}
+          title="Commits"
+          meta={`${manifest.commits.length} commit${manifest.commits.length === 1 ? "" : "s"}`}
+        />
+        {selection === INBOX_COMMITS && manifest.commits.length > 0 && (
+          // Newest first, like GitHub's list; the pane shows the picked one.
+          <div className="inbox-commits" role="group" aria-label="Commits in this PR">
+            {[...manifest.commits].reverse().map((c) => {
+              const isSel = c.sha === tab.selectedCommit?.sha;
+              return (
+                <button
+                  key={c.sha}
+                  aria-current={isSel ? "true" : undefined}
+                  className={`inbox-commit${isSel ? " selected" : ""}`}
+                  onClick={() => props.onSelectCommit(c)}
+                  title={c.message_headline}
+                >
+                  <span className="inbox-commit-msg">{c.message_headline}</span>
+                  <span className="inbox-loc">{c.sha.slice(0, 7)}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <PanelRow id={INBOX_CHECKS} selection={selection} onSelect={props.onSelectPanel} title="Checks" meta={ci.text} tone={ci.tone} />
+        </div>
 
         <FindingSection
           title="Fix before merge"
@@ -407,7 +441,9 @@ export function ReviewInbox(props: ReviewInboxProps) {
       </div>
 
       <div className="inbox-detail">
-        {selected?.kind === "about" && <div className="inbox-panel">{props.renderAbout()}</div>}
+        {selected?.id === INBOX_ABOUT && <div className="inbox-panel">{props.renderAbout()}</div>}
+        {selected?.id === INBOX_COMMITS && <div className="inbox-panel inbox-panel--commits">{props.renderCommits()}</div>}
+        {selected?.id === INBOX_CHECKS && <div className="inbox-panel inbox-panel--flush">{props.renderChecks()}</div>}
         {selected?.kind === "finding" && (
           <>
             <FindingCard
@@ -435,6 +471,27 @@ export function ReviewInbox(props: ReviewInboxProps) {
         {!selected && <div className="no-file-selected">Select an item to review</div>}
       </div>
     </div>
+  );
+}
+
+function PanelRow({ id, selection, onSelect, title, meta, tone }: {
+  id: string;
+  selection: string | null;
+  onSelect: (id: string) => void;
+  title: string;
+  meta: string;
+  tone?: "ok" | "running" | "fail" | "none";
+}) {
+  const isSel = selection === id;
+  return (
+    <button
+      aria-current={isSel ? "true" : undefined}
+      className={`inbox-row inbox-row--panel${isSel ? " selected" : ""}`}
+      onClick={() => onSelect(id)}
+    >
+      <span className="inbox-row-title">{title}</span>
+      <span className={`inbox-row-meta${tone ? ` inbox-tone--${tone}` : ""}`}>{meta}</span>
+    </button>
   );
 }
 

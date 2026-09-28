@@ -1,6 +1,6 @@
 // listKeyAction (issue #238 phase 4): the inbox list's key guards.
 import { describe, expect, test } from "bun:test";
-import { chooserKeyAction, listKeyAction, nextAfterAction } from "./inboxKeys";
+import { chooserKeyAction, landingId, listKeyAction, nextAfterAction } from "./inboxKeys";
 
 describe("listKeyAction", () => {
   test("j/k and arrows move, with or without a finding selected", () => {
@@ -69,5 +69,30 @@ describe("chooserKeyAction", () => {
     expect(chooserKeyAction("4", 3)).toBeNull();
     expect(chooserKeyAction("0", 3)).toBeNull();
     expect(chooserKeyAction("j", 3)).toBeNull();
+  });
+});
+
+describe("landingId", () => {
+  const panels = { commits: "commits", checks: "checks" };
+  const items = [
+    { id: "about", kind: "panel" as const },
+    { id: "commits", kind: "panel" as const },
+    { id: "checks", kind: "panel" as const },
+    { id: "f1", kind: "finding" as const, state: "checked" as const },
+    { id: "f2", kind: "finding" as const, state: "open" as const },
+    { id: "file:a", kind: "file" as const },
+  ];
+
+  test("a session restored into Commits or Checks opens that row", () => {
+    expect(landingId(items, "commits", panels)).toBe("commits");
+    expect(landingId(items, "checks", panels)).toBe("checks");
+  });
+
+  test("otherwise the first open finding, then any finding, then a relevant file, then About", () => {
+    expect(landingId(items, "files", panels)).toBe("f2");
+    expect(landingId(items.filter((i) => i.id !== "f2"), "overview", panels)).toBe("f1");
+    const noFindings = [items[0], items[1], items[2], { id: "file:x", kind: "file" as const, notRelevant: true }, items[5]];
+    expect(landingId(noFindings, "files", panels)).toBe("file:a");
+    expect(landingId(items.slice(0, 3), "files", panels)).toBe("about");
   });
 });

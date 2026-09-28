@@ -6,6 +6,7 @@
 import type { FileDiff, NoteResolution } from "../types";
 import { findingCommentBody, selectionIdFor, type Finding } from "./findings";
 import type { ReviewCtx } from "./ctx";
+import { INBOX_CHECKS, INBOX_COMMITS } from "./navigation";
 
 // `ctxArg` is typed unknown only so ReturnType<typeof create…> (which
 // ReviewCtx is built from) doesn't loop through this parameter's type.
@@ -56,9 +57,21 @@ export function createInbox(ctxArg: unknown) {
     ctx.setSelectedFile(file);
   }
 
-  /** Non-file panels (About, Spec, CI) — just the selection. */
+  /** Non-file panels. Commits and Checks go through setLens — their fetches
+   * (a commit's diff, CI annotations) key off the lens, and it moves the
+   * selection too. The rest (About, Spec, CI) just select, leaving a
+   * Commits/Checks lens behind so those stop acting as if still shown. */
   function selectInboxPanel(key: string) {
-    ctx.updateTab(activeTabId, (t) => ({ ...t, inboxSelection: key, inboxSelectionPath: null }));
+    if (key === INBOX_COMMITS || key === INBOX_CHECKS) {
+      if (activeTabId) ctx.setLens(activeTabId, key);
+      return;
+    }
+    ctx.updateTab(activeTabId, (t) => ({
+      ...t,
+      inboxSelection: key,
+      inboxSelectionPath: null,
+      lens: t.lens === "commits" || t.lens === "checks" ? "overview" : t.lens,
+    }));
   }
 
   /** Spec findings act on their requirements (the per-requirement store the

@@ -56,7 +56,8 @@ interface HeaderProps {
   onOpenPalette: () => void;
   chatOpen?: boolean;
   onToggleChat?: () => void;
-  /** Inbox review layout (issue #238): one Review lens instead of Overview + Files. */
+  /** Inbox review layout (issue #238): no lens switcher — the review list
+   * has About, Commits, and Checks rows. */
   inboxMode?: boolean;
 }
 
@@ -155,7 +156,11 @@ export function Header({
                 {REVIEW_STATUS_SYMBOL.approved} Approved
               </span>
             )}
-            <LensSwitcher lens={lens} onSetLens={onSetLens} filesCount={filesCount} commitsCount={commitsCount} filesProgress={progress} checksState={checksState} inboxMode={inboxMode} />
+            {/* Inbox layout (issue #238): About, Commits, and Checks are rows
+                in the review list, so there's no lens to switch. */}
+            {!inboxMode && (
+              <LensSwitcher lens={lens} onSetLens={onSetLens} filesCount={filesCount} commitsCount={commitsCount} filesProgress={progress} checksState={checksState} />
+            )}
             {onRefresh && (
               <button
                 className={`refresh-button${isRefreshing ? " refreshing" : ""}`}
@@ -228,7 +233,6 @@ function LensSwitcher({
   commitsCount,
   filesProgress,
   checksState,
-  inboxMode,
 }: {
   lens: PrLens;
   onSetLens: (lens: PrLens) => void;
@@ -236,20 +240,10 @@ function LensSwitcher({
   commitsCount: number;
   filesProgress: number;
   checksState: PrChecksStatus | null;
-  /** Inbox layout (issue #238): Overview + Files collapse into one Review lens. */
-  inboxMode?: boolean;
 }) {
   const badge = checksBadge(checksState);
   return (
     <div className="lens-switcher">
-      {inboxMode ? (
-      <button
-        className={`seg-item${lens === "overview" || lens === "files" ? " active" : ""}`}
-        onClick={() => onSetLens(lens === "files" ? "files" : "overview")}
-      >
-        Review
-      </button>
-      ) : (<>
       <button
         className={`seg-item${lens === "overview" ? " active" : ""}`}
         onClick={() => onSetLens("overview")}
@@ -265,7 +259,6 @@ function LensSwitcher({
           <span className="seg-progress-fill" style={{ width: `${filesProgress}%` }} />
         </span>
       </button>
-      </>)}
       <button
         className={`seg-item${lens === "commits" ? " active" : ""}`}
         onClick={() => onSetLens("commits")}

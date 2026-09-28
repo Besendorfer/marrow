@@ -60,3 +60,22 @@ export function chooserKeyAction(key: string, optionCount: number): ChooserKeyAc
   const n = Number(key);
   return Number.isInteger(n) && n >= 1 && n <= optionCount ? { type: "pick", index: n - 1 } : null;
 }
+
+/** Where the list lands when nothing valid is selected: the Commits or
+ * Checks row when the tab is already in that lens (a restored session), else
+ * the first open finding, else the first finding, else the first relevant
+ * file, else the first item (About). */
+export function landingId(
+  items: { id: string; kind: "panel" | "finding" | "file"; state?: FindingState; notRelevant?: boolean }[],
+  lens: string,
+  panels: { commits: string; checks: string },
+): string | null {
+  const lensPanel = lens === "commits" ? panels.commits : lens === "checks" ? panels.checks : null;
+  const target =
+    (lensPanel ? items.find((i) => i.id === lensPanel) : undefined) ??
+    items.find((i) => i.kind === "finding" && i.state === "open") ??
+    items.find((i) => i.kind === "finding") ??
+    items.find((i) => i.kind === "file" && !i.notRelevant) ??
+    items[0];
+  return target?.id ?? null;
+}

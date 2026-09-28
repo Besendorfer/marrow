@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { PrCommit, CommitDiff } from "../types";
 import type { ReviewCtx } from "./ctx";
+import { INBOX_COMMITS } from "./navigation";
 
 // `ctxArg` is typed unknown only so ReturnType<typeof create…> (which
 // ReviewCtx is built from) doesn't loop through this parameter's type.
@@ -79,9 +80,11 @@ export function createCommits(ctxArg: unknown) {
    * — enters/moves commit scope on `tabId` (defaulting to the active tab) and
    * switches it to the Commits lens. Per-tab as of #170: `selectedCommit`
    * lives on the tab so it can't leak onto another tab's canvas; the fetched
-   * diff itself stays a single App-level slot (see loadCommitDiff above). */
+   * diff itself stays a single App-level slot (see loadCommitDiff above).
+   * In the inbox layout (issue #238) it opens the Commits row. */
   function handleViewCommit(commit: PrCommit, tabId: string = activeTabId!) {
-    ctx.updateTab(tabId, (t) => ({ ...t, selectedCommit: commit, lens: "commits" }));
+    const inbox = ctx.inboxLayout ? { inboxSelection: INBOX_COMMITS, inboxSelectionPath: null } : {};
+    ctx.updateTab(tabId, (t) => ({ ...t, selectedCommit: commit, lens: "commits", ...inbox }));
     loadCommitDiff(tabId, commit);
   }
 
