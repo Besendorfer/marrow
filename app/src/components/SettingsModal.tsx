@@ -51,7 +51,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setAnthropicKey(s.anthropic_api_key || "");
         setOpenaiKey(s.openai_api_key || "");
         setGeminiKey(s.gemini_api_key || "");
-        setJevKey(s.vercel_ai_gateway_api_key || "");
+        setJevKey(s.typesafe_api_key || "");
         setProvider(s.provider || "");
         setOpenaiBaseUrl(s.openai_base_url || "");
         setPerWatchCap(s.activity_per_watch_cap || 50);
@@ -96,7 +96,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           anthropic_api_key: anthropicKey.trim(),
           openai_api_key: openaiKey.trim(),
           gemini_api_key: geminiKey.trim(),
-          vercel_ai_gateway_api_key: jevKey.trim(),
+          typesafe_api_key: jevKey.trim(),
           provider: provider.trim(),
           openai_base_url: openaiBaseUrl.trim(),
           activity_per_watch_cap: perWatchCap,
@@ -227,11 +227,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               />
 
               <label className="settings-label" htmlFor="jev-key">
-                Vercel AI Gateway key (Jev)
+                TypeSafe API key (Jev)
               </label>
               <p className="settings-hint">
-                For Jev, a cheap classifier that gives a second opinion on each
-                AI finding (or <code>VERCEL_AI_GATEWAY_API_KEY</code>). Optional.
+                For Jev, TypeSafe's classifier, which gives a second opinion on
+                each AI finding (or <code>TYPESAFE_API_KEY</code>). Optional.
               </p>
               <input
                 id="jev-key"
@@ -242,7 +242,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   setJevKey(e.target.value);
                   setSaved(false);
                 }}
-                placeholder="vck_..."
+                placeholder="TypeSafe API key"
                 spellCheck={false}
                 autoComplete="off"
               />

@@ -309,9 +309,9 @@ pub struct Settings {
     /// Google Gemini API key (used via Gemini's OpenAI-compatible endpoint).
     #[serde(default)]
     pub gemini_api_key: String,
-    /// Vercel AI Gateway key for Jev, the finding judge (issue #249).
+    /// TypeSafe API key for Jev, the finding judge (issue #249).
     #[serde(default)]
-    pub vercel_ai_gateway_api_key: String,
+    pub typesafe_api_key: String,
     /// Base URL for the OpenAI-compatible backend (e.g. OpenRouter or a local
     /// server). Empty = OpenAI's default. Setting it implies an OpenAI-compatible
     /// provider unless overridden.

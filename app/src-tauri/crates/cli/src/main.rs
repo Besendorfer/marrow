@@ -121,7 +121,7 @@ enum Command {
         #[arg(long)]
         single_shot: bool,
         /// Also ask Jev for a second opinion on every finding and score it
-        /// against the labels (issue #249; needs the Vercel AI Gateway key).
+        /// against the labels (issue #249; needs a TypeSafe API key).
         #[arg(long)]
         jev: bool,
     },

@@ -100,7 +100,7 @@ fn default_settings() -> Settings {
         provider: String::new(),
         openai_api_key: String::new(),
         gemini_api_key: String::new(),
-        vercel_ai_gateway_api_key: String::new(),
+        typesafe_api_key: String::new(),
         openai_base_url: String::new(),
         filter_older: true,
         filter_team: true,
@@ -142,7 +142,7 @@ pub fn parse_settings(content: &str) -> Settings {
     let mut provider = String::new();
     let mut openai_api_key = String::new();
     let mut gemini_api_key = String::new();
-    let mut vercel_ai_gateway_api_key = String::new();
+    let mut typesafe_api_key = String::new();
     let mut openai_base_url = String::new();
     let mut filter_older = true;
     let mut filter_team = true;
@@ -176,8 +176,14 @@ pub fn parse_settings(content: &str) -> Settings {
             openai_api_key = val.to_string();
         } else if let Some(val) = line.strip_prefix("gemini_api_key=") {
             gemini_api_key = val.to_string();
+        } else if let Some(val) = line.strip_prefix("typesafe_api_key=") {
+            typesafe_api_key = val.to_string();
         } else if let Some(val) = line.strip_prefix("vercel_ai_gateway_api_key=") {
-            vercel_ai_gateway_api_key = val.to_string();
+            // The #249 draft briefly stored the Jev key under this name; read
+            // it once so the next save writes it as typesafe_api_key.
+            if typesafe_api_key.is_empty() {
+                typesafe_api_key = val.to_string();
+            }
         } else if let Some(val) = line.strip_prefix("openai_base_url=") {
             openai_base_url = val.to_string();
         } else if let Some(val) = line.strip_prefix("filter_older=") {
@@ -225,7 +231,7 @@ pub fn parse_settings(content: &str) -> Settings {
         provider,
         openai_api_key,
         gemini_api_key,
-        vercel_ai_gateway_api_key,
+        typesafe_api_key,
         openai_base_url,
         filter_older,
         filter_team,
@@ -284,8 +290,8 @@ pub fn serialize_settings(settings: &Settings) -> String {
     if !settings.gemini_api_key.is_empty() {
         content.push_str(&format!("gemini_api_key={}\n", settings.gemini_api_key));
     }
-    if !settings.vercel_ai_gateway_api_key.is_empty() {
-        content.push_str(&format!("vercel_ai_gateway_api_key={}\n", settings.vercel_ai_gateway_api_key));
+    if !settings.typesafe_api_key.is_empty() {
+        content.push_str(&format!("typesafe_api_key={}\n", settings.typesafe_api_key));
     }
     if !settings.openai_base_url.is_empty() {
         content.push_str(&format!("openai_base_url={}\n", settings.openai_base_url));
@@ -349,9 +355,9 @@ pub fn resolve_openai_api_key(settings: &Settings) -> Option<String> {
     resolve_secret(&settings.openai_api_key, "OPENAI_API_KEY")
 }
 
-/// Resolve the Vercel AI Gateway key for Jev: config > VERCEL_AI_GATEWAY_API_KEY.
+/// Resolve the TypeSafe API key for Jev: config > TYPESAFE_API_KEY.
 pub fn resolve_jev_api_key(settings: &Settings) -> Option<String> {
-    resolve_secret(&settings.vercel_ai_gateway_api_key, "VERCEL_AI_GATEWAY_API_KEY")
+    resolve_secret(&settings.typesafe_api_key, "TYPESAFE_API_KEY")
 }
 
 /// Resolve the Gemini API key: config > GEMINI_API_KEY.
@@ -439,12 +445,22 @@ mod tests {
     #[test]
     fn jev_key_round_trips_and_is_only_written_when_set() {
         let mut s = default_settings();
-        assert!(!serialize_settings(&s).contains("vercel_ai_gateway_api_key"));
-        s.vercel_ai_gateway_api_key = "vck-from-config".to_string();
+        assert!(!serialize_settings(&s).contains("typesafe_api_key"));
+        s.typesafe_api_key = "ts-from-config".to_string();
         let text = serialize_settings(&s);
-        assert!(text.contains("vercel_ai_gateway_api_key=vck-from-config\n"));
+        assert!(text.contains("typesafe_api_key=ts-from-config\n"));
         let back = parse_settings(&text);
-        assert_eq!(resolve_jev_api_key(&back).as_deref(), Some("vck-from-config"));
+        assert_eq!(resolve_jev_api_key(&back).as_deref(), Some("ts-from-config"));
+    }
+
+    #[test]
+    fn a_jev_key_saved_under_the_draft_name_carries_over() {
+        let s = parse_settings("model=\nvercel_ai_gateway_api_key=ts-old\n");
+        assert_eq!(s.typesafe_api_key, "ts-old");
+        let text = serialize_settings(&s);
+        assert!(text.contains("typesafe_api_key=ts-old\n") && !text.contains("vercel_ai_gateway"));
+        // The current name wins if both are present.
+        assert_eq!(parse_settings("typesafe_api_key=new\nvercel_ai_gateway_api_key=old\n").typesafe_api_key, "new");
     }
 
     #[test]

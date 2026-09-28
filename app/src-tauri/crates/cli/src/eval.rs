@@ -234,7 +234,8 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
     Ok(snap)
 }
 
-/// Spacing between Jev calls: the gateway allows ~30 requests a minute.
+/// Spacing between Jev calls — a conservative ~30 requests a minute, so a
+/// corpus run doesn't lean on TypeSafe's 429 backoff.
 const JEV_CALL_SPACING: std::time::Duration = std::time::Duration::from_millis(2_100);
 
 /// A highlight's corpus label: the first expected region it overlaps (by
@@ -286,7 +287,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
     // Fail before any spend when --jev can't run.
     let jev_key = if jev {
         Some(resolve_jev_api_key(&settings).ok_or(
-            "--jev needs a Vercel AI Gateway key: set it in Settings or VERCEL_AI_GATEWAY_API_KEY",
+            "--jev needs a TypeSafe API key: set it in Settings or TYPESAFE_API_KEY",
         )?)
     } else {
         None

@@ -1,7 +1,7 @@
-//! Jev (`typesafe-ai/jev`) — a cheap, calibrated classifier served through the
-//! Vercel AI Gateway's evaluation-model endpoint (issue #249). It takes a JSON
-//! `state` plus typed questions and returns, per question, a choice with class
-//! probabilities (and a separate confidence). It never writes prose.
+//! Jev — TypeSafe's cheap, calibrated classifier, called through TypeSafe's
+//! own API (`POST https://api.typesafe.ai/v1/systemone`, issue #249). It takes
+//! a JSON `state` plus typed questions and returns, per question, a choice
+//! with class probabilities and a confidence. It never writes prose.
 //!
 //! First job: a second opinion on each AI finding — is the claimed problem
 //! real, and does it block the merge? — measured against the eval corpus
@@ -14,8 +14,9 @@ use std::collections::BTreeMap;
 use crate::net::{backoff_delay, http_client, retryable_response_delay, MAX_ATTEMPTS};
 use crate::types::HighlightResult;
 
-pub const JEV_MODEL: &str = "typesafe-ai/jev";
-const ENDPOINT: &str = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model";
+/// TypeSafe's flagship Jev model.
+pub const JEV_MODEL: &str = "jev-latest";
+const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 /// A judgement is a few hundred tokens; this bounds a hung request.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// Keep the diff in the state bounded — the claim is about a few lines.
@@ -23,7 +24,7 @@ const MAX_DIFF_CHARS: usize = 8_000;
 const MAX_BODY_CHARS: usize = 1_500;
 
 /// One multiple-choice question: `criteria` maps each class label to what it
-/// means. Serializes to the gateway's question shape.
+/// means. Serializes to TypeSafe's `choice` question shape.
 #[derive(Debug, Clone, Serialize)]
 pub struct JevQuestion {
     #[serde(rename = "type")]
@@ -54,13 +55,11 @@ fn valid_unit(v: f64) -> bool {
     v.is_finite() && (0.0..=1.0).contains(&v)
 }
 
-/// Validate a gateway response against the questions asked: every question
+/// Validate a TypeSafe response against the questions asked: every question
 /// answered, classes exactly the criteria labels, probabilities in [0,1]
-/// summing to 1, the choice one of the labels, and a confidence present
-/// (the gateway carries it in `providerMetadata.typesafe.confidence`).
+/// summing to 1, the choice one of the labels, and a confidence in [0,1].
 pub fn parse_response(raw: &Value, questions: &BTreeMap<String, JevQuestion>) -> Result<BTreeMap<String, JevChoice>, String> {
     let answers = raw.get("answers").and_then(Value::as_object).ok_or("Jev response has no answers")?;
-    let confidences = raw.pointer("/providerMetadata/typesafe/confidence").and_then(Value::as_object);
     let mut out = BTreeMap::new();
     for (name, q) in questions {
         let a = answers.get(name).ok_or_else(|| format!("Jev didn't answer `{name}`"))?;
@@ -81,8 +80,8 @@ pub fn parse_response(raw: &Value, questions: &BTreeMap<String, JevQuestion>) ->
         if !q.criteria.contains_key(choice) {
             return Err(format!("`{name}`: choice `{choice}` isn't a label"));
         }
-        let confidence = confidences
-            .and_then(|c| c.get(name))
+        let confidence = a
+            .get("confidence")
             .and_then(Value::as_f64)
             .filter(|c| valid_unit(*c))
             .ok_or_else(|| format!("`{name}`: no confidence in the response"))?;
@@ -91,14 +90,15 @@ pub fn parse_response(raw: &Value, questions: &BTreeMap<String, JevQuestion>) ->
     Ok(out)
 }
 
-/// Ask Jev `questions` about `state`. Retries 429/5xx and transient transport
-/// failures (Jev's gateway limit is ~30 requests/minute).
+/// Ask Jev `questions` about `state`. Retries 429 (rate limited), 5xx
+/// including 529 (overloaded), and transient transport failures, with
+/// backoff — what TypeSafe's docs ask of clients.
 pub async fn evaluate(
     api_key: &str,
     state: &Value,
     questions: &BTreeMap<String, JevQuestion>,
 ) -> Result<BTreeMap<String, JevChoice>, String> {
-    let body = json!({ "state": state, "questions": questions });
+    let body = json!({ "model": JEV_MODEL, "state": state, "questions": questions });
     let mut attempt = 0;
     loop {
         attempt += 1;
@@ -106,10 +106,6 @@ pub async fn evaluate(
             .post(ENDPOINT)
             .timeout(REQUEST_TIMEOUT)
             .bearer_auth(api_key)
-            .header("ai-gateway-auth-method", "api-key")
-            .header("ai-gateway-protocol-version", "0.0.1")
-            .header("ai-evaluation-model-specification-version", "4")
-            .header("ai-model-id", JEV_MODEL)
             .json(&body)
             .send()
             .await;
@@ -244,15 +240,17 @@ pub async fn judge_finding(
 mod tests {
     use super::*;
 
+    // TypeSafe's documented response shape: confidence rides on each answer.
     fn response(defect: (&str, f64), urgency: (&str, [f64; 3])) -> Value {
         json!({
+            "model": "jev-latest",
             "answers": {
-                "defect": { "type": "choice", "choice": defect.0,
+                "defect": { "type": "choice", "choice": defect.0, "confidence": 0.8,
                     "probabilities": { "real": defect.1, "not_real": 1.0 - defect.1 } },
-                "urgency": { "type": "choice", "choice": urgency.0,
+                "urgency": { "type": "choice", "choice": urgency.0, "confidence": 0.6,
                     "probabilities": { "fix_before_merge": urgency.1[0], "worth_a_look": urgency.1[1], "noise": urgency.1[2] } }
             },
-            "providerMetadata": { "typesafe": { "confidence": { "defect": 0.8, "urgency": 0.6 } } }
+            "usage": { "input_tokens": 120, "output_tokens": 4 }
         })
     }
 
@@ -279,9 +277,9 @@ mod tests {
         raw = response(("real", 0.9), ("noise", [0.1, 0.1, 0.8]));
         raw["answers"]["urgency"]["probabilities"].as_object_mut().unwrap().remove("worth_a_look");
         assert!(parse_response(&raw, &q).is_err());
-        // No confidence metadata.
+        // No confidence on an answer.
         raw = response(("real", 0.9), ("noise", [0.1, 0.1, 0.8]));
-        raw["providerMetadata"] = json!({});
+        raw["answers"]["defect"].as_object_mut().unwrap().remove("confidence");
         assert!(parse_response(&raw, &q).unwrap_err().contains("confidence"));
         // An unanswered question.
         raw = response(("real", 0.9), ("noise", [0.1, 0.1, 0.8]));
@@ -309,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn questions_serialize_to_the_gateway_shape() {
+    fn questions_serialize_to_typesafes_shape() {
         let v = serde_json::to_value(finding_questions()).unwrap();
         assert_eq!(v["urgency"]["type"], "choice");
         assert!(v["defect"]["criteria"]["real"].is_string());

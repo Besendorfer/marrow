@@ -103,7 +103,7 @@ pub fn summarize(judged: &[Judged]) -> Summary {
 
 pub fn render_text(s: &Summary) -> String {
     use std::fmt::Write;
-    let mut out = String::from("\nJEV second opinion (typesafe-ai/jev) by corpus label\n");
+    let mut out = String::from("\nJEV second opinion (TypeSafe jev-latest) by corpus label\n");
     let _ = writeln!(out, "{:<16} {:>3} {:>10} {:>5} {:>5} {:>6} {:>8} {:>7}", "label", "n", "P(real)", "fix", "look", "noise", "cleared", "errors");
     for b in s.buckets.iter().filter(|b| b.n > 0) {
         let _ = writeln!(
