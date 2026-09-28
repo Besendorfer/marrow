@@ -60,6 +60,7 @@ export function useReviewController(): ReviewCtx {
     setHunkFilter,
     setExpandAllHunks,
     setInboxLayout,
+    setShowActivity,
     settingsOpen,
     helpOpen,
     setHelpOpen,
@@ -238,6 +239,7 @@ export function useReviewController(): ReviewCtx {
         setHunkFilter(settings.hunk_filter || "all");
         setExpandAllHunks(settings.expand_all_hunks ?? false);
         setInboxLayout(!settings.classic_layout);
+        setShowActivity(settings.show_activity ?? false);
       } catch {
         // Use defaults on failure
       }

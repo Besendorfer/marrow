@@ -551,6 +551,9 @@ export interface Settings {
   hunk_filter: HunkSignificanceFilter;
   activity_per_watch_cap: number;
   activity_mini_player: boolean;
+  /** Master switch for the PR activity mini-player (dock, pill, floating
+   * window, and its polling). Off by default. Absent on older backends. */
+  show_activity?: boolean;
   show_approved_prs: boolean;
   /** Whether the review queue shows draft PRs. On by default (current
    * behavior); the frontend filters draft rows out when this is off. */
