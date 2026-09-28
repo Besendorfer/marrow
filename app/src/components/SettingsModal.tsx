@@ -30,7 +30,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [perWatchCap, setPerWatchCap] = useState(50);
   const [showApprovedPrs, setShowApprovedPrs] = useState(false);
   const [expandAllHunks, setExpandAllHunks] = useState(false);
-  const [inboxLayout, setInboxLayout] = useState(false);
+  const [classicLayout, setClassicLayout] = useState(false);
   const [localRepoRoots, setLocalRepoRoots] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -54,7 +54,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setPerWatchCap(s.activity_per_watch_cap || 50);
         setShowApprovedPrs(s.show_approved_prs ?? false);
         setExpandAllHunks(s.expand_all_hunks ?? false);
-        setInboxLayout(s.inbox_layout ?? false);
+        setClassicLayout(s.classic_layout ?? false);
         setLocalRepoRoots((s.local_repo_roots ?? []).join("\n"));
       });
       invoke<Watch[]>("get_watches").then(setWatches).catch(() => {});
@@ -97,7 +97,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           activity_per_watch_cap: perWatchCap,
           show_approved_prs: showApprovedPrs,
           expand_all_hunks: expandAllHunks,
-          inbox_layout: inboxLayout,
+          classic_layout: classicLayout,
           local_repo_roots: localRepoRoots
             .split("\n")
             .map((r) => r.trim())
@@ -431,18 +431,18 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           <label className="settings-check">
             <input
               type="checkbox"
-              checked={inboxLayout}
+              checked={classicLayout}
               onChange={(e) => {
-                setInboxLayout(e.target.checked);
+                setClassicLayout(e.target.checked);
                 setSaved(false);
               }}
             />
-            Inbox review layout (preview)
+            Use the classic layout (Overview + Files)
           </label>
           <p className="settings-hint">
-            One review list beside the diff: the AI verdict, then every finding
-            ranked, then the remaining files. Replaces the Overview and Files
-            views while it's in preview.
+            Reviews open in one list beside the diff: the AI verdict, then every
+            finding ranked, then the remaining files. Check this to go back to
+            the separate Overview and Files views for now.
           </p>
 
           <div className="settings-divider" />

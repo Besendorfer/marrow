@@ -7352,7 +7352,7 @@ mark.search-highlight-current {
 }
 
 
-/* ─── Inbox review layout (issue #238 phase 4, Settings → preview) ───────────
+/* ─── Inbox review layout (issue #238; the default, classic is opt-out) ──────
    One review list (verdict → ranked findings → files) beside a detail pane
    whose finding card is pinned above the diff. Tokens only; rank colors follow
    the calm system (filled red is critical only, high is outlined amber). */

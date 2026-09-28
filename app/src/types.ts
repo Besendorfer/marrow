@@ -558,8 +558,9 @@ export interface Settings {
    * low-significance hunks (issue #55). Off by default to keep the
    * collapsed-by-default behavior. */
   expand_all_hunks: boolean;
-  /** Inbox review layout preview (issue #238). Absent on older backends. */
-  inbox_layout?: boolean;
+  /** Opt back into the classic Overview + Files layout (issue #238); the
+   * inbox is the default. Absent on older backends. */
+  classic_layout?: boolean;
   /** Directories holding local clones (issue #232): the review reads the
    * PR's repo from a clone found here, read-only, when it has the commits. */
   local_repo_roots?: string[];

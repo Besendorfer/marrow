@@ -356,11 +356,12 @@ pub struct Settings {
     /// collapsed-by-default behavior.
     #[serde(default)]
     pub expand_all_hunks: bool,
-    /// Preview of the inbox review layout (issue #238): one review list —
-    /// verdict, ranked findings, files — beside the diff, replacing the
-    /// Overview/Files lenses. Off by default until it becomes the only layout.
+    /// Opt back into the classic Overview + Files layout (issue #238). The
+    /// inbox review list is the default; this stays until classic is retired.
+    /// A new key rather than a flipped `inbox_layout`, which older builds
+    /// wrote as `false` on every save.
     #[serde(default)]
-    pub inbox_layout: bool,
+    pub classic_layout: bool,
 }
 
 fn default_true() -> bool {
