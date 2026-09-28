@@ -1,0 +1,34 @@
+{
+  "relevant": [
+    "src/logging/logger.ts",
+    "src/auth/permissions.ts",
+    "src/billing/invoices.ts",
+    "src/billing/refunds.ts",
+    "src/docs/share.ts",
+    "src/docs/export.ts",
+    "src/users/invite.ts",
+    "src/users/deactivate.ts",
+    "src/search/reindex.ts"
+  ],
+  "not_relevant": [
+    "CHANGELOG.md"
+  ],
+  "expected_findings": [
+    {
+      "path": "src/auth/permissions.ts",
+      "start_line": 21,
+      "end_line": 21,
+      "importance": "important",
+      "note": "canEdit now allows anyone at least 'commenter'; before, only owner/admin/editor could edit. Commenters gain edit rights. Buried in a 10-file mechanical rename whose body says no behavior change."
+    }
+  ],
+  "should_not_flag": [
+    {
+      "path": "src/billing/invoices.ts",
+      "start_line": 4,
+      "end_line": 4,
+      "note": "Mechanical logger rename \u2014 the stated purpose."
+    }
+  ],
+  "expected_verdict": "fix_first"
+}

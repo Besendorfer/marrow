@@ -299,6 +299,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
         None
     };
     let mut judged: Vec<Judged> = Vec::new();
+    let mut work: Vec<serde_json::Value> = Vec::new();
     // The production relate_findings on each fixture's real review output.
     let mut relations: Vec<(String, marrow_core::types::FindingRelation)> = Vec::new();
     let mut candidate_total = 0usize;
@@ -316,6 +317,10 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
         let full_diff = assemble_full_diff(&pr.files);
 
         let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None, coverage: None, failed: None, failed_pass: None };
+        // How much work this fixture took (model comparison): AI characters
+        // exchanged and wall-clock time.
+        let (sent0, recv0) = marrow_core::ai::traffic::totals();
+        let started = std::time::Instant::now();
 
         let (prompt, _truncated) = build_classification_prompt(&pr.title, &file_list, &full_diff);
         eprintln!("· {}: classifying {} files…", score.name, file_list.len());
@@ -505,6 +510,11 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                 }
             }
         }
+        let (sent1, recv1) = marrow_core::ai::traffic::totals();
+        work.push(serde_json::json!({
+            "fixture": score.name, "chars_sent": sent1 - sent0, "chars_received": recv1 - recv0,
+            "seconds": started.elapsed().as_secs_f64(),
+        }));
         scores.push(score);
     }
 
@@ -517,6 +527,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
     let jev_summary = jev.then(|| jev_eval::summarize(&judged));
     if json {
         let mut out = render_json_report(&scores, &version, &settings.model, precision, recall);
+        out["work"] = serde_json::json!(work);
         if let Some(s) = &jev_summary {
             out["jev"] = serde_json::json!({ "summary": s, "judged": judged, "relations": relations });
         }

@@ -1,0 +1,14 @@
+{
+  "title": "perf(ledger): process a batch of withdrawals concurrently",
+  "body": "Withdrawals in a batch were applied one at a time, so a large batch took several seconds. Run them concurrently with Promise.all; results still come back in request order (new test).",
+  "files": [
+    {
+      "path": "src/ledger/withdraw.ts",
+      "diff": "@@ -1,17 +1,16 @@\n import { ledger } from \"./ledger\";\n import type { Account, Result, Withdrawal } from \"./types\";\n \n-/** Applies a batch of withdrawals to one account, in order. */\n+/** Applies a batch of withdrawals to one account. Results keep request order. */\n export async function processWithdrawals(account: Account, requests: Withdrawal[]): Promise<Result[]> {\n-  const results: Result[] = [];\n-  for (const req of requests) {\n-    const balance = await ledger.balance(account.id);\n-    if (balance < req.amount) {\n-      results.push({ id: req.id, ok: false, reason: \"insufficient funds\" });\n-      continue;\n-    }\n-    await ledger.debit(account.id, req.amount);\n-    results.push({ id: req.id, ok: true });\n-  }\n-  return results;\n+  return Promise.all(\n+    requests.map(async (req): Promise<Result> => {\n+      const balance = await ledger.balance(account.id);\n+      if (balance < req.amount) {\n+        return { id: req.id, ok: false, reason: \"insufficient funds\" };\n+      }\n+      await ledger.debit(account.id, req.amount);\n+      return { id: req.id, ok: true };\n+    }),\n+  );\n }\n"
+    },
+    {
+      "path": "tests/ledger/withdraw.test.ts",
+      "diff": "@@ -4,3 +4,7 @@\n   const results = await processWithdrawals(account(50), [{ id: \"w1\", amount: 80 }]);\n   expect(results).toEqual([{ id: \"w1\", ok: false, reason: \"insufficient funds\" }]);\n });\n+test(\"results keep request order\", async () => {\n+  const results = await processWithdrawals(account(500), [{ id: \"a\", amount: 10 }, { id: \"b\", amount: 20 }]);\n+  expect(results.map((r) => r.id)).toEqual([\"a\", \"b\"]);\n+});\n"
+    }
+  ]
+}

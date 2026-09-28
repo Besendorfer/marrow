@@ -328,6 +328,12 @@ impl AiBackend {
 
     /// Send a prompt to the AI and return the text response.
     pub async fn invoke(&self, prompt: &str) -> Result<String, String> {
+        let out = self.invoke_inner(prompt).await;
+        traffic::record(prompt.len(), out.as_ref().map(|s| s.len()).unwrap_or(0));
+        out
+    }
+
+    async fn invoke_inner(&self, prompt: &str) -> Result<String, String> {
         match self {
             AiBackend::Bedrock { client, model_arn } => {
                 client.invoke_model(model_arn, prompt).await
@@ -347,6 +353,18 @@ impl AiBackend {
     /// message). Each text fragment is passed to `on_delta` as it arrives; the
     /// fully assembled text is also returned.
     pub async fn invoke_chat_stream(
+        &self,
+        system: &str,
+        turns: &[ChatTurn],
+        on: &mut (dyn FnMut(StreamUpdate) + Send),
+    ) -> Result<String, String> {
+        let sent = system.len() + turns.iter().map(|t| t.content.len()).sum::<usize>();
+        let out = self.invoke_chat_stream_inner(system, turns, on).await;
+        traffic::record(sent, out.as_ref().map(|s| s.len()).unwrap_or(0));
+        out
+    }
+
+    async fn invoke_chat_stream_inner(
         &self,
         system: &str,
         turns: &[ChatTurn],
@@ -1183,5 +1201,25 @@ mod sse_tests {
         let (full, done) = drain(b"event: ping\r\ndata: x\r\n\r\n");
         assert_eq!(full, "x");
         assert!(!done);
+    }
+}
+
+/// Characters sent to and received from the AI, process-wide — a rough,
+/// provider-neutral measure of how much work a run did (≈4 chars a token),
+/// read by `marrow eval` to compare models. Not used by the app.
+pub mod traffic {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SENT: AtomicU64 = AtomicU64::new(0);
+    static RECEIVED: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(sent: usize, received: usize) {
+        SENT.fetch_add(sent as u64, Ordering::Relaxed);
+        RECEIVED.fetch_add(received as u64, Ordering::Relaxed);
+    }
+
+    /// (sent, received) characters so far.
+    pub fn totals() -> (u64, u64) {
+        (SENT.load(Ordering::Relaxed), RECEIVED.load(Ordering::Relaxed))
     }
 }

@@ -1,0 +1,10 @@
+{
+  "title": "refactor(invoices): drop the unreachable null path in formatInvoice",
+  "body": "formatInvoice is only called from renderInvoice, which already returns early when the invoice is missing. Drop the redundant null branch and tighten the parameter type so the compiler enforces it; switch the index loop to for-of while here.",
+  "files": [
+    {
+      "path": "src/invoices/render.ts",
+      "diff": "@@ -6,11 +6,11 @@\n   return `<section>${formatInvoice(inv)}</section>`;\n }\n \n-export function formatInvoice(inv: Invoice | null): string {\n-  if (!inv) return \"\";\n+// Only renderInvoice calls this, after its own not-found check, so the\n+// invoice is never null here; the type now says so.\n+export function formatInvoice(inv: Invoice): string {\n   let out = `<h2>Invoice ${inv.number}</h2>`;\n-  for (let i = 0; i < inv.lines.length; i++) {\n-    const line = inv.lines[i];\n+  for (const line of inv.lines) {\n     out += `<p>${line.label}: ${line.amount.toFixed(2)}</p>`;\n   }\n   return out;\n"
+    }
+  ]
+}

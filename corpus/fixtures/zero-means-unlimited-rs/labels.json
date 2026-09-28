@@ -1,0 +1,16 @@
+{
+  "relevant": [
+    "src/config.rs"
+  ],
+  "not_relevant": [],
+  "expected_findings": [
+    {
+      "path": "src/config.rs",
+      "start_line": 12,
+      "end_line": 12,
+      "importance": "important",
+      "note": "Nothing implements '0 = no limit': src/pool/builder.rs passes max_connections straight to Pool::new, and src/pool/mod.rs acquire() returns Exhausted when in_use >= max, so with 0 every acquire fails and every request errors. Two hops outside the diff."
+    }
+  ],
+  "expected_verdict": "fix_first"
+}
