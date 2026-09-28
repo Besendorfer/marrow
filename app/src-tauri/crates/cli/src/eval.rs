@@ -5,7 +5,8 @@
 //! version.
 
 use marrow_core::ai::{extract_json_array, extract_json_object, AiBackend};
-use marrow_core::config::load_settings;
+use marrow_core::config::{load_settings, resolve_jev_api_key};
+use crate::jev_eval::{self, Judged};
 use marrow_core::fetch::{
     finalize_coverage, parse_review_response, run_review_pass, validate_classifications, validate_highlights,
 };
@@ -233,7 +234,22 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
     Ok(snap)
 }
 
-pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), String> {
+/// Spacing between Jev calls: the gateway allows ~30 requests a minute.
+const JEV_CALL_SPACING: std::time::Duration = std::time::Duration::from_millis(2_100);
+
+/// A highlight's corpus label: the first expected region it overlaps (by
+/// importance), else a should-not-flag region, else unlabeled.
+fn label_for(h: &HighlightResult, labels: &FixtureLabels) -> &'static str {
+    if let Some(l) = labels.expected_findings.iter().find(|l| overlaps(h.start_line, h.end_line, l, &h.path)) {
+        return if l.importance == "minor" { "minor" } else { "important" };
+    }
+    if labels.should_not_flag.iter().any(|l| overlaps(h.start_line, h.end_line, l, &h.path)) {
+        return "should_not_flag";
+    }
+    "unlabeled"
+}
+
+pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Result<(), String> {
     let version = fs::read_to_string(corpus.join("VERSION"))
         .map(|v| v.trim().to_string())
         .map_err(|_| format!("{} does not look like a corpus (no VERSION file)", corpus.display()))?;
@@ -267,6 +283,15 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
     }
 
     let settings = load_settings();
+    // Fail before any spend when --jev can't run.
+    let jev_key = if jev {
+        Some(resolve_jev_api_key(&settings).ok_or(
+            "--jev needs a Vercel AI Gateway key: set it in Settings or VERCEL_AI_GATEWAY_API_KEY",
+        )?)
+    } else {
+        None
+    };
+    let mut judged: Vec<Judged> = Vec::new();
     let ai = AiBackend::from_settings(&settings).await?;
     eprintln!(
         "corpus v{version} · {} fixture(s) · model {} · review {}",
@@ -385,6 +410,22 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
                         .map(|h| format!("OUT-OF-DIFF dropped: {} L{}-{} ({})", h.path, h.start_line, h.end_line, h.category))
                         .collect();
                     let validated = validate_highlights(parsed, &file_list);
+                    if let Some(key) = &jev_key {
+                        eprintln!("· {}: asking Jev about {} finding(s)…", score.name, validated.len());
+                        for h in &validated {
+                            let diff = pr.files.iter().find(|f| f.path == h.path).map(|f| f.diff.as_str()).unwrap_or("");
+                            let judgement = marrow_core::jev::judge_finding(key, &pr.title, &pr.body, h, diff).await;
+                            judged.push(Judged {
+                                fixture: score.name.clone(),
+                                path: h.path.clone(),
+                                lines: format!("{}-{}", h.start_line, h.end_line),
+                                category: h.category.clone(),
+                                label: label_for(h, &labels),
+                                judgement,
+                            });
+                            tokio::time::sleep(JEV_CALL_SPACING).await;
+                        }
+                    }
                     let mut fs = score_findings(&validated, &labels);
                     fs.out_of_diff = out_of_diff.len();
                     fs.detail.extend(out_of_diff);
@@ -452,11 +493,18 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool) -> Result<(), St
     let precision = ratio(tp, tp + fp);
     let recall = ratio(tp, tp + fneg);
 
+    let jev_summary = jev.then(|| jev_eval::summarize(&judged));
     if json {
-        let out = render_json_report(&scores, &version, &settings.model, precision, recall);
+        let mut out = render_json_report(&scores, &version, &settings.model, precision, recall);
+        if let Some(s) = &jev_summary {
+            out["jev"] = serde_json::json!({ "summary": s, "judged": judged });
+        }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         print!("{}", render_text_report(&scores, &version, precision, recall));
+        if let Some(s) = &jev_summary {
+            print!("{}", jev_eval::render_text(s));
+        }
     }
     completion_status(&scores)
 }
@@ -1354,7 +1402,7 @@ mod tests {
         // a.rs labeled in BOTH lists → validate_labels must reject.
         fs::write(fixture.join("labels.json"), r#"{ "relevant": ["a.rs"], "not_relevant": ["a.rs"] }"#).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let err = rt.block_on(eval(&dir, false, true)).unwrap_err();
+        let err = rt.block_on(eval(&dir, false, true, false)).unwrap_err();
         assert!(err.contains("broken"), "error should name the fixture: {err}");
         assert!(err.contains("exactly one"), "{err}");
         fs::remove_dir_all(&dir).unwrap();

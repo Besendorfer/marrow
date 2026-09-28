@@ -24,6 +24,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [anthropicKey, setAnthropicKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
+  const [jevKey, setJevKey] = useState("");
   const [provider, setProvider] = useState("");
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
   const [watches, setWatches] = useState<Watch[]>([]);
@@ -49,6 +50,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setAnthropicKey(s.anthropic_api_key || "");
         setOpenaiKey(s.openai_api_key || "");
         setGeminiKey(s.gemini_api_key || "");
+        setJevKey(s.vercel_ai_gateway_api_key || "");
         setProvider(s.provider || "");
         setOpenaiBaseUrl(s.openai_base_url || "");
         setPerWatchCap(s.activity_per_watch_cap || 50);
@@ -92,6 +94,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           anthropic_api_key: anthropicKey.trim(),
           openai_api_key: openaiKey.trim(),
           gemini_api_key: geminiKey.trim(),
+          vercel_ai_gateway_api_key: jevKey.trim(),
           provider: provider.trim(),
           openai_base_url: openaiBaseUrl.trim(),
           activity_per_watch_cap: perWatchCap,
@@ -216,6 +219,27 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   setSaved(false);
                 }}
                 placeholder="AIza..."
+                spellCheck={false}
+                autoComplete="off"
+              />
+
+              <label className="settings-label" htmlFor="jev-key">
+                Vercel AI Gateway key (Jev)
+              </label>
+              <p className="settings-hint">
+                For Jev, a cheap classifier that gives a second opinion on each
+                AI finding (or <code>VERCEL_AI_GATEWAY_API_KEY</code>). Optional.
+              </p>
+              <input
+                id="jev-key"
+                className="settings-input"
+                type="password"
+                value={jevKey}
+                onChange={(e) => {
+                  setJevKey(e.target.value);
+                  setSaved(false);
+                }}
+                placeholder="vck_..."
                 spellCheck={false}
                 autoComplete="off"
               />

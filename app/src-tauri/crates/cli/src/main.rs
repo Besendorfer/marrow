@@ -25,6 +25,7 @@ use marrow_core::github::GithubClient;
 use marrow_core::types::{FetchProgress, FetchStatus, FileDiff, Highlight, ReviewManifest, ReviewThread};
 
 mod eval;
+mod jev_eval;
 mod tui;
 
 /// When to colorize output. `auto` = colorize only when stdout is a terminal.
@@ -119,6 +120,10 @@ enum Command {
         /// agentic review.
         #[arg(long)]
         single_shot: bool,
+        /// Also ask Jev for a second opinion on every finding and score it
+        /// against the labels (issue #249; needs the Vercel AI Gateway key).
+        #[arg(long)]
+        jev: bool,
     },
     /// Mark a review thread resolved
     Resolve {
@@ -215,7 +220,7 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
             confirm(&format!("Reply to a thread on {pr}?"), yes)?;
             reply(&pr, &comment_id, &body).await
         }
-        Command::Eval { corpus, json, single_shot } => eval::eval(&corpus, json, single_shot).await,
+        Command::Eval { corpus, json, single_shot, jev } => eval::eval(&corpus, json, single_shot, jev).await,
         Command::Resolve { thread_id } => {
             confirm(&format!("Resolve thread {thread_id}?"), yes)?;
             set_resolved(&thread_id, true).await

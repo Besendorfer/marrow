@@ -94,6 +94,7 @@ fn default_settings() -> Settings {
         provider: String::new(),
         openai_api_key: String::new(),
         gemini_api_key: String::new(),
+        vercel_ai_gateway_api_key: String::new(),
         openai_base_url: String::new(),
         filter_older: true,
         filter_team: true,
@@ -134,6 +135,7 @@ pub fn parse_settings(content: &str) -> Settings {
     let mut provider = String::new();
     let mut openai_api_key = String::new();
     let mut gemini_api_key = String::new();
+    let mut vercel_ai_gateway_api_key = String::new();
     let mut openai_base_url = String::new();
     let mut filter_older = true;
     let mut filter_team = true;
@@ -166,6 +168,8 @@ pub fn parse_settings(content: &str) -> Settings {
             openai_api_key = val.to_string();
         } else if let Some(val) = line.strip_prefix("gemini_api_key=") {
             gemini_api_key = val.to_string();
+        } else if let Some(val) = line.strip_prefix("vercel_ai_gateway_api_key=") {
+            vercel_ai_gateway_api_key = val.to_string();
         } else if let Some(val) = line.strip_prefix("openai_base_url=") {
             openai_base_url = val.to_string();
         } else if let Some(val) = line.strip_prefix("filter_older=") {
@@ -211,6 +215,7 @@ pub fn parse_settings(content: &str) -> Settings {
         provider,
         openai_api_key,
         gemini_api_key,
+        vercel_ai_gateway_api_key,
         openai_base_url,
         filter_older,
         filter_team,
@@ -267,6 +272,9 @@ pub fn serialize_settings(settings: &Settings) -> String {
     }
     if !settings.gemini_api_key.is_empty() {
         content.push_str(&format!("gemini_api_key={}\n", settings.gemini_api_key));
+    }
+    if !settings.vercel_ai_gateway_api_key.is_empty() {
+        content.push_str(&format!("vercel_ai_gateway_api_key={}\n", settings.vercel_ai_gateway_api_key));
     }
     if !settings.openai_base_url.is_empty() {
         content.push_str(&format!("openai_base_url={}\n", settings.openai_base_url));
@@ -327,6 +335,11 @@ pub fn resolve_anthropic_api_key(settings: &Settings) -> Option<String> {
 /// Resolve the OpenAI (or OpenAI-compatible) API key: config > OPENAI_API_KEY.
 pub fn resolve_openai_api_key(settings: &Settings) -> Option<String> {
     resolve_secret(&settings.openai_api_key, "OPENAI_API_KEY")
+}
+
+/// Resolve the Vercel AI Gateway key for Jev: config > VERCEL_AI_GATEWAY_API_KEY.
+pub fn resolve_jev_api_key(settings: &Settings) -> Option<String> {
+    resolve_secret(&settings.vercel_ai_gateway_api_key, "VERCEL_AI_GATEWAY_API_KEY")
 }
 
 /// Resolve the Gemini API key: config > GEMINI_API_KEY.
@@ -409,6 +422,17 @@ mod tests {
         let mut s = default_settings();
         s.anthropic_api_key = "sk-ant-from-config".to_string();
         assert_eq!(resolve_anthropic_api_key(&s).as_deref(), Some("sk-ant-from-config"));
+    }
+
+    #[test]
+    fn jev_key_round_trips_and_is_only_written_when_set() {
+        let mut s = default_settings();
+        assert!(!serialize_settings(&s).contains("vercel_ai_gateway_api_key"));
+        s.vercel_ai_gateway_api_key = "vck-from-config".to_string();
+        let text = serialize_settings(&s);
+        assert!(text.contains("vercel_ai_gateway_api_key=vck-from-config\n"));
+        let back = parse_settings(&text);
+        assert_eq!(resolve_jev_api_key(&back).as_deref(), Some("vck-from-config"));
     }
 
     #[test]

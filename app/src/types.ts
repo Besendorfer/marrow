@@ -540,6 +540,8 @@ export interface Settings {
   provider: string;
   openai_api_key: string;
   gemini_api_key: string;
+  /** Vercel AI Gateway key for Jev, the finding judge (issue #249). */
+  vercel_ai_gateway_api_key?: string;
   openai_base_url: string;
   filter_older: boolean;
   filter_team: boolean;
