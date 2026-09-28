@@ -252,7 +252,7 @@ fn label_for(h: &HighlightResult, labels: &FixtureLabels) -> &'static str {
     "unlabeled"
 }
 
-pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Result<(), String> {
+pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model: Option<String>) -> Result<(), String> {
     let version = fs::read_to_string(corpus.join("VERSION"))
         .map(|v| v.trim().to_string())
         .map_err(|_| format!("{} does not look like a corpus (no VERSION file)", corpus.display()))?;
@@ -285,7 +285,11 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
         return Err("corpus has no RELEVANT labels — nothing to measure".to_string());
     }
 
-    let settings = load_settings();
+    let mut settings = load_settings();
+    // A per-run model override (model comparison); the config file is untouched.
+    if let Some(m) = model {
+        settings.model = m;
+    }
     // Fail before any spend when --jev can't run.
     let jev_key = if jev {
         Some(resolve_jev_api_key(&settings).ok_or(
@@ -1503,7 +1507,7 @@ mod tests {
         // a.rs labeled in BOTH lists → validate_labels must reject.
         fs::write(fixture.join("labels.json"), r#"{ "relevant": ["a.rs"], "not_relevant": ["a.rs"] }"#).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let err = rt.block_on(eval(&dir, false, true, false)).unwrap_err();
+        let err = rt.block_on(eval(&dir, false, true, false, None)).unwrap_err();
         assert!(err.contains("broken"), "error should name the fixture: {err}");
         assert!(err.contains("exactly one"), "{err}");
         fs::remove_dir_all(&dir).unwrap();

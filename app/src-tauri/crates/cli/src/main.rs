@@ -139,6 +139,11 @@ enum Command {
         /// (same / related / different pairs). No review calls.
         #[arg(long, conflicts_with_all = ["jev", "single_shot"])]
         jev_dedupe: bool,
+        /// Review with this model instead of the configured one, for this
+        /// run only (the config file isn't touched). Compares models on the
+        /// same corpus.
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Compare Jev's file-relevance calls with the LLM's cached ones on real
     /// PRs (dev; sends each file's diff to TypeSafe)
@@ -254,7 +259,7 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
         Command::Eval { corpus, json, jev_dedupe: true, .. } => jev_dedupe::run(&corpus, json).await,
         Command::Eval { corpus, json, jev_classify: true, .. } => eval::eval_jev_classify(&corpus, json).await,
         Command::JevAgree { manifests, repo, limit, json } => jev_classify::agree(&manifests, &repo, limit, json).await,
-        Command::Eval { corpus, json, single_shot, jev, .. } => eval::eval(&corpus, json, single_shot, jev).await,
+        Command::Eval { corpus, json, single_shot, jev, model, .. } => eval::eval(&corpus, json, single_shot, jev, model).await,
         Command::Resolve { thread_id } => {
             confirm(&format!("Resolve thread {thread_id}?"), yes)?;
             set_resolved(&thread_id, true).await
