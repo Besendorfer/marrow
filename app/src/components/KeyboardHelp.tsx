@@ -56,7 +56,7 @@ const SECTIONS: Section[] = [
       { keys: ["v"], label: "Start / extend selection" },
       { keys: ["r"], label: "Reply to thread at cursor" },
       { keys: ["x"], label: "Resolve / reopen thread" },
-      { keys: ["R"], label: "Submit review (approve / changes / comment)" },
+      { keys: ["R"], label: "Finish review: recap, verdict, and submit" },
     ],
   },
   {

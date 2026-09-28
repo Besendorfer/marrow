@@ -7896,3 +7896,287 @@ mark.search-highlight-current {
 .inbox-card-claim--fix {
   color: var(--risk-high);
 }
+
+/* ─── Finish panel (issue #238 phase 5) ──────────────────────────────────────
+   A per-tab slide-over on the review area: recap → your batched comments →
+   verdict + body → submit, then a done state with the next PR. */
+.finish-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: rgba(1, 4, 9, 0.45);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.finish-panel {
+  width: min(480px, 100%);
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-3);
+  outline: none;
+}
+
+.finish-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.finish-eyebrow {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.finish-title {
+  margin: 2px 0 0;
+  font-size: 18px;
+  font-weight: 650;
+  text-wrap: balance;
+}
+
+.finish-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.finish-h {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.finish-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.finish-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.finish-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.finish-line::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--text-muted);
+  transform: translateY(-1px);
+}
+
+.finish-line--ok::before { background: var(--diff-add-text); }
+.finish-line--running::before { background: var(--risk-medium); }
+.finish-line--fail::before { background: var(--risk-critical); }
+
+.finish-muted {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.finish-findings,
+.finish-comments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.finish-findings li + li,
+.finish-comments li + li {
+  border-top: 1px solid var(--chip-border);
+}
+
+.finish-finding,
+.finish-comment {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--bg-primary);
+  border: none;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.finish-finding:hover,
+.finish-comment:hover {
+  background: var(--bg-tertiary);
+}
+
+.finish-finding-title,
+.finish-comment-body {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finish-finding--checked .finish-finding-title,
+.finish-finding--commented .finish-finding-title,
+.finish-finding--dismissed .finish-finding-title {
+  color: var(--text-muted);
+}
+
+.finish-mark {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.finish-mark--checked { color: var(--diff-add-text); }
+.finish-mark--commented { color: var(--accent); }
+
+.finish-urgency {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.finish-urgency--fix { color: var(--risk-high); }
+
+.finish-verbs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+
+.finish-verb {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.finish-verb b { font-size: 13px; }
+.finish-verb span { font-size: 11.5px; color: var(--text-secondary); }
+
+.finish-verb.selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.finish-verb:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.finish-body {
+  width: 100%;
+  min-height: 110px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: 13px/1.5 var(--font-sans);
+}
+
+.finish-body:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.finish-error {
+  font-size: 12.5px;
+  color: var(--diff-remove-text);
+  background: var(--risk-critical-bg);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+}
+
+.finish-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.finish-panel .inbox-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.finish-panel kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 0 4px;
+  margin-left: 2px;
+  border: 1px solid var(--chip-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--chip-bg);
+}
+
+.finish-panel .inbox-btn--primary kbd {
+  color: var(--white);
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.finish-done {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.finish-done p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.finish-next {
+  text-align: left;
+  white-space: normal;
+}

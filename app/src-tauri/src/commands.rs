@@ -1,5 +1,4 @@
 use marrow_core::ai::{AiBackend, ChatRole, ChatTurn};
-use marrow_core::bedrock::{region_from_arn, BedrockClient};
 use marrow_core::chat::{build_chat_system, ChatContext};
 use marrow_core::chat_history::{self, StoredChat};
 use marrow_core::config::{load_settings, resolve_github_token, save_settings_to_disk};
@@ -517,30 +516,12 @@ pub async fn generate_review_body(
     pr_title: String,
     has_unresolved: bool,
 ) -> Result<String, String> {
+    // Through the configured provider (issue #238): this used to call Bedrock
+    // directly, so it silently failed for every other provider.
     let settings = load_settings();
-    let region = region_from_arn(&settings.model)?;
-    let bedrock = BedrockClient::new(&region, &settings.aws_profile).await?;
-
-    let prompt = if has_unresolved {
-        format!(
-            r#"You are a code reviewer writing a brief review summary for a pull request titled "{}".
-
-Here are the unresolved review comment threads (JSON):
-{}
-
-Write a concise 1-3 sentence summary of the changes you're requesting. Focus on the key themes across the comments, not individual details. Write in first person as the reviewer. Do not use markdown. Do not include a greeting or sign-off."#,
-            pr_title, threads_json
-        )
-    } else {
-        format!(
-            r#"You are a code reviewer approving a pull request titled "{}".
-
-Write a short, fun, nerdy LGTM message (1-2 sentences). Be creative — reference sci-fi, programming culture, memes, or geek humor. Vary your style. Do not use markdown. Do not include a greeting or sign-off."#,
-            pr_title
-        )
-    };
-
-    bedrock.invoke_model(&settings.model, &prompt).await
+    let backend = marrow_core::ai::AiBackend::from_settings(&settings).await?;
+    let prompt = marrow_core::prompts::build_review_body_prompt(&pr_title, &threads_json, has_unresolved);
+    Ok(backend.invoke(&prompt).await?.trim().to_string())
 }
 
 #[command]

@@ -179,7 +179,11 @@ export function ReviewInbox(props: ReviewInboxProps) {
       allItems.find((i) => i.kind === "file" && i.file.classification !== "NOT_RELEVANT") ??
       allItems[0];
     if (target) select(target);
-  }, [tab.id, selected == null]); // eslint-disable-line react-hooks/exhaustive-deps
+    // allItems too: a selection that didn't resolve when it was made (items
+    // still settling after a restore or refresh) must get another chance, or
+    // the pane stays on "Select an item" with nothing re-running. No loop —
+    // allItems is memoized and only changes with the underlying data.
+  }, [tab.id, selected == null, allItems]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A not-relevant file selected from elsewhere reveals its section.
   useEffect(() => {

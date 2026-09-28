@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { countFailingChecks } from "../utils";
-import type { ReviewManifest, Tab, CommentThreadsState, MyReviewState, PrLens, PrChecksStatus } from "../types";
+import type { ReviewManifest, Tab, MyReviewState, PrLens, PrChecksStatus } from "../types";
 
 function useClickOutside(
   ref: React.RefObject<HTMLElement | null>,
@@ -20,12 +19,6 @@ function useClickOutside(
     return () => document.removeEventListener("mousedown", handleClick);
   }, [isActive, ref, onClose]);
 }
-
-const REVIEW_VERB: Record<string, string> = {
-  approved: "approved",
-  changes_requested: "requested changes on",
-  commented: "commented on",
-};
 
 const REVIEW_STATUS_SYMBOL: Record<string, string> = {
   approved: "✓",
@@ -54,12 +47,11 @@ interface HeaderProps {
   onToggleHunkSignificance: () => void;
   showAiNotes: boolean;
   onToggleAiNotes: () => void;
-  commentThreads?: CommentThreadsState;
-  onSubmitReview?: (event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) => Promise<void>;
+  /** Open this tab's Finish panel (issue #238 phase 5). */
+  onFinishReview?: () => void;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   myReviewState?: MyReviewState;
-  checksBlocking?: boolean;
   onCheckForUpdates: () => void;
   onOpenPalette: () => void;
   chatOpen?: boolean;
@@ -86,12 +78,10 @@ export function Header({
   onToggleHunkSignificance,
   showAiNotes,
   onToggleAiNotes,
-  commentThreads,
-  onSubmitReview,
+  onFinishReview,
   onRefresh,
   isRefreshing,
   myReviewState,
-  checksBlocking,
   onCheckForUpdates,
   onOpenPalette,
   chatOpen,
@@ -188,7 +178,14 @@ export function Header({
                 Ask AI
               </button>
             )}
-            {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} myReviewState={myReviewState} checksBlocking={checksBlocking} />}
+            {onFinishReview && (
+              <button className="review-submit-toggle" onClick={onFinishReview} title="Recap, verdict, and submit (R)">
+                Finish review
+                {myReviewState && REVIEW_STATUS_SYMBOL[myReviewState.status] && !myReviewState.is_re_requested && (
+                  <span className="review-submit-status-badge">{REVIEW_STATUS_SYMBOL[myReviewState.status]}</span>
+                )}
+              </button>
+            )}
             <ToolbarMenu
               onOpenPalette={onOpenPalette}
               showHunkSignificance={showHunkSignificance}
@@ -386,159 +383,3 @@ function ToolbarMenu({
   );
 }
 
-function ReviewSubmitButton({
-  commentThreads,
-  onSubmitReview,
-  prTitle,
-  prUrl,
-  myReviewState,
-  checksBlocking,
-}: {
-  commentThreads?: CommentThreadsState;
-  onSubmitReview: (event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) => Promise<void>;
-  prTitle: string;
-  prUrl: string;
-  myReviewState?: MyReviewState;
-  checksBlocking?: boolean;
-}) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [body, setBody] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [fetchedThreads, setFetchedThreads] = useState<import("../types").ReviewThread[] | null>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const closeDropdown = useCallback(() => setIsOpen(false), []);
-  useClickOutside(wrapperRef, isOpen, closeDropdown);
-
-  // Use freshly fetched threads if available, otherwise fall back to prop
-  const threads = fetchedThreads ?? (commentThreads?.status === "loaded" ? commentThreads.threads : []);
-  const unresolvedThreads = threads.filter((t) => !t.is_resolved);
-  const unresolvedCount = unresolvedThreads.length;
-
-  // Disable if the user has already submitted a review that hasn't been dismissed or re-requested
-  const hasSubmittedReview = myReviewState != null &&
-    myReviewState.status !== "pending" &&
-    myReviewState.status !== "dismissed" &&
-    !myReviewState.is_re_requested;
-
-  const isDisabled = hasSubmittedReview || !!checksBlocking;
-  const isMerged = myReviewState?.is_merged ?? false;
-
-  const disabledTooltip = checksBlocking
-    ? "CI checks are pending or failing"
-    : hasSubmittedReview
-      ? `You already ${REVIEW_VERB[myReviewState!.status] ?? "reviewed"} this PR`
-      : undefined;
-
-  async function handleOpen() {
-    if (isDisabled) return;
-    const wasOpen = isOpen;
-    setIsOpen((v) => !v);
-    if (wasOpen) return;
-
-    setGenerating(true);
-    try {
-      // Always fetch fresh threads from GitHub to get accurate state
-      const freshThreads = await invoke<import("../types").ReviewThread[]>("fetch_review_comments", { prUrl });
-      setFetchedThreads(freshThreads);
-
-      const unresolved = freshThreads.filter((t) => !t.is_resolved);
-
-      const threadsJson = unresolved.length > 0
-        ? JSON.stringify(unresolved.map((t) => ({
-            path: t.path,
-            line: t.line,
-            comments: t.comments.map((c) => ({ author: c.author.login, body: c.body })),
-          })))
-        : "[]";
-
-      const generated = await invoke<string>("generate_review_body", {
-        threadsJson,
-        prTitle,
-        hasUnresolved: unresolved.length > 0,
-      });
-      setBody(generated);
-    } catch {
-      // Silently fail — user can type manually
-    } finally {
-      setGenerating(false);
-    }
-  }
-
-  async function handleSubmit(event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
-    setSubmitting(true);
-    try {
-      await onSubmitReview(event, body);
-      setBody("");
-      setIsOpen(false);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <div className="review-submit-wrapper" ref={wrapperRef}>
-      <button
-        className={`review-submit-toggle${isDisabled ? " review-submit-disabled" : ""}`}
-        onClick={handleOpen}
-        disabled={isDisabled}
-        title={disabledTooltip}
-      >
-        Finish review
-        {unresolvedCount > 0 && !isDisabled && (
-          <span className="review-submit-badge">{unresolvedCount}</span>
-        )}
-        {hasSubmittedReview && (
-          <span className="review-submit-status-badge">{REVIEW_STATUS_SYMBOL[myReviewState!.status] ?? "●"}</span>
-        )}
-      </button>
-      {isOpen && (
-        <div className="review-submit-dropdown">
-          <textarea
-            className="review-submit-body"
-            value={generating ? "Generating..." : body}
-            onChange={(e) => setBody(e.target.value)}
-            placeholder="Leave a comment with your review (optional)"
-            rows={3}
-            disabled={generating}
-          />
-          {unresolvedCount > 0 && (
-            <div className="review-submit-warning">
-              {unresolvedCount} unresolved {unresolvedCount === 1 ? "thread" : "threads"}
-            </div>
-          )}
-          <div className="review-submit-actions">
-            <button
-              className="review-action-comment"
-              disabled={submitting || generating}
-              onClick={() => handleSubmit("COMMENT")}
-              title="Submit review without explicit approval or change request"
-            >
-              Comment
-            </button>
-            {!isMerged && (
-              <>
-                <button
-                  className="review-action-approve"
-                  disabled={submitting || generating}
-                  onClick={() => handleSubmit("APPROVE")}
-                  title="Approve this pull request"
-                >
-                  Approve
-                </button>
-                <button
-                  className="review-action-request-changes"
-                  disabled={submitting || generating}
-                  onClick={() => handleSubmit("REQUEST_CHANGES")}
-                  title="Request changes on this pull request"
-                >
-                  Request changes
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}

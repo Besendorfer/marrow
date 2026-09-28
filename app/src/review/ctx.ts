@@ -11,6 +11,7 @@ import type { ChatApi } from "./chat";
 import type { CommentsApi } from "./comments";
 import type { CommitsApi } from "./commits";
 import type { InboxApi } from "./inbox";
+import type { FinishApi } from "./finish";
 
 // An interface (not an intersection alias) so the factories can take it as a
 // parameter while it is built from their own return types.
@@ -24,4 +25,5 @@ export interface ReviewCtx extends
   ChatApi,
   CommentsApi,
   CommitsApi,
-  InboxApi {}
+  InboxApi,
+  FinishApi {}

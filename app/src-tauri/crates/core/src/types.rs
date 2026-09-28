@@ -498,6 +498,10 @@ pub struct ReviewComment {
     pub url: String,
     #[serde(default)]
     pub reactions: Vec<ReactionGroup>,
+    /// Part of the viewer's pending (unsubmitted) review. Only the viewer can
+    /// see pending comments; submitting the review publishes them together.
+    #[serde(default)]
+    pub pending: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

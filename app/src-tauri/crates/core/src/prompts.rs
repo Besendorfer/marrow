@@ -704,9 +704,40 @@ pub fn build_highlight_prompt_with(
     (prompt, truncated)
 }
 
+/// The review-body draft for the Finish panel (issue #238): a summary of the
+/// unresolved threads when there are any, else a short approval note.
+pub fn build_review_body_prompt(pr_title: &str, threads_json: &str, has_unresolved: bool) -> String {
+    if has_unresolved {
+        format!(
+            r#"You are a code reviewer writing a brief review summary for a pull request titled "{}".
+
+Here are the unresolved review comment threads (JSON):
+{}
+
+Write a concise 1-3 sentence summary of the changes you're requesting. Focus on the key themes across the comments, not individual details. Write in first person as the reviewer. Do not use markdown. Do not include a greeting or sign-off."#,
+            pr_title, threads_json
+        )
+    } else {
+        format!(
+            r#"You are a code reviewer approving a pull request titled "{}".
+
+Write a short, fun, nerdy LGTM message (1-2 sentences). Be creative — reference sci-fi, programming culture, memes, or geek humor. Vary your style. Do not use markdown. Do not include a greeting or sign-off."#,
+            pr_title
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_body_prompt_follows_unresolved_threads() {
+        let with = build_review_body_prompt("T", r#"[{"path":"a.rs"}]"#, true);
+        assert!(with.contains("unresolved review comment threads") && with.contains(r#""path":"a.rs""#));
+        let without = build_review_body_prompt("T", "[]", false);
+        assert!(without.contains("approving") && !without.contains("unresolved"));
+    }
 
     fn check(name: &str, status: &str, conclusion: Option<&str>) -> CheckRunInfo {
         CheckRunInfo {

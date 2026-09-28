@@ -5,7 +5,7 @@ import { RichText } from "./RichText";
 import { AttentionDigest } from "./AttentionDigest";
 import { RequirementsCard } from "./RequirementsCard";
 import { buildAllClearSummary, buildDigestEntries } from "./digest";
-import { contextRow, countFailingChecks, highlightKey, prRepoOf, timeAgo } from "../utils";
+import { contextRow, highlightKey, prRepoOf, timeAgo, ciChip } from "../utils";
 import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, PrCommit, NoteResolution } from "../types";
 
 interface PrOverviewProps {
@@ -69,16 +69,11 @@ function firstNewNoteFile(manifest: ReviewManifest, newHighlightKeys: Set<string
 
 function CiChip({ checks, onOpenChecks }: { checks: PrChecksStatus; onOpenChecks?: () => void }) {
   // GitHub conclusions arrive uppercase ("FAILURE"); only overall_state is
-  // normalized to lowercase in core. Failing-count logic lives in
-  // countFailingChecks (utils.ts) — the single source of truth also reused by
-  // the header lens badge and the Checks lens (issue #175).
-  const failing = countFailingChecks(checks);
-  const { dot, label } =
-    checks.overall_state === "success"
-      ? { dot: "risk-dot--ok", label: "CI passing" }
-      : failing > 0
-        ? { dot: "risk-dot--critical", label: `${failing} CI ${failing === 1 ? "check" : "checks"} failing` }
-        : { dot: "risk-dot--medium", label: "CI running" };
+  // normalized to lowercase in core — see ciChip (utils.ts), which also
+  // hides the chip when no checks ran.
+  const chip = ciChip(checks);
+  if (!chip) return null;
+  const { dot, label } = chip;
   return (
     <button type="button" className="overview-chip overview-chip--ci" onClick={onOpenChecks}>
       <span className={`risk-dot ${dot}`} /> {label}
