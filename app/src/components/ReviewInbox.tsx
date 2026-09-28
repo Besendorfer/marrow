@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, PrCommit, ReviewManifest, Tab } from "../types";
-import { buildFindings, findingClaim, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
+import { buildFindings, findingClaim, reviewSections, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
 import { chooserKeyAction, landingId, listKeyAction, nextAfterAction } from "../review/inboxKeys";
 import { ciStatus } from "../review/finish";
 import { INBOX_ABOUT, INBOX_CHECKS, INBOX_COMMITS } from "../review/navigation";
@@ -125,16 +125,9 @@ export function ReviewInbox(props: ReviewInboxProps) {
   // "Fix before merge" leads, then "Worth a look" — list, j/k, and advance
   // all follow this order. A finding grouped under another (Jev, issue #249)
   // sits in its primary's section, right after it, whatever its own urgency.
-  const { findings, sectionOf } = useMemo(() => {
-    const byKey = new Map(rankedFindings.map((f) => [f.key, f]));
-    const sectionOf = (f: Finding) => (f.parentKey ? byKey.get(f.parentKey)?.urgency : undefined) ?? f.urgency;
-    return {
-      findings: [...rankedFindings.filter((f) => sectionOf(f) === "fix"), ...rankedFindings.filter((f) => sectionOf(f) === "look")],
-      sectionOf,
-    };
-  }, [rankedFindings]);
-  const toFix = findings.filter((f) => sectionOf(f) === "fix");
-  const toLook = findings.filter((f) => sectionOf(f) === "look");
+  const { toFix, toLook, openFix, openLook } = useMemo(() => reviewSections(rankedFindings), [rankedFindings]);
+  const findings = useMemo(() => [...toFix, ...toLook], [toFix, toLook]);
+  const sectionOf = (f: Finding) => (toFix.includes(f) ? "fix" : "look");
 
   // Files not already reachable through a finding, grouped by change group in
   // triage order; not-relevant files sit collapsed at the bottom.
@@ -330,9 +323,6 @@ export function ReviewInbox(props: ReviewInboxProps) {
     act("dismiss", f, { state, reason: why });
   }
 
-  // Counts go by each finding's own urgency, not the section it's grouped into.
-  const openFix = findings.filter((f) => f.urgency === "fix" && f.state === "open").length;
-  const openLook = findings.filter((f) => f.urgency === "look" && f.state === "open").length;
   const summary =
     findings.length === 0
       ? "No findings"

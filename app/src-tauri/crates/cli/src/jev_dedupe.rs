@@ -156,7 +156,7 @@ pub async fn run(corpus: &Path, json: bool) -> Result<(), String> {
             Err(e) => errors.push(format!("{} pair {i}: {e}", p.fixture)),
         }
         eprint!(".");
-        tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+        tokio::time::sleep(marrow_core::jev::CALL_SPACING).await;
     }
     eprintln!();
     let report = score(&pairs, &results, errors);

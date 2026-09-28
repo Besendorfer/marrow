@@ -209,7 +209,7 @@ pub async fn run(corpus: &Path, json: bool) -> Result<(), String> {
                 Err(e) => errors.push(format!("{} {}:{}-{}: {e}", p.fixture, p.path, p.start_line, p.end_line)),
             }
             eprint!(".");
-            tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+            tokio::time::sleep(marrow_core::jev::CALL_SPACING).await;
         }
         eprintln!(" {name} done");
         reports.push(score_variant(name, &probes, scored, errors));

@@ -376,6 +376,20 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
   };
 }
 
+/** The review list's sections (issue #249): a finding grouped under another
+ * sits in its primary's section, right after it, whatever its own urgency;
+ * the open counts still go by each finding's own urgency. */
+export function reviewSections(findings: Finding[]): { toFix: Finding[]; toLook: Finding[]; openFix: number; openLook: number } {
+  const byKey = new Map(findings.map((f) => [f.key, f]));
+  const sectionOf = (f: Finding) => (f.parentKey ? byKey.get(f.parentKey)?.urgency : undefined) ?? f.urgency;
+  return {
+    toFix: findings.filter((f) => sectionOf(f) === "fix"),
+    toLook: findings.filter((f) => sectionOf(f) === "look"),
+    openFix: findings.filter((f) => f.urgency === "fix" && f.state === "open").length,
+    openLook: findings.filter((f) => f.urgency === "look" && f.state === "open").length,
+  };
+}
+
 /** Apply Jev's pair calls (issue #249) to the ranked list. The finding that
  * ranks first in a pair is the primary. A "same" partner is folded into the
  * primary's `duplicates` and leaves the list; a "related" one stays in the

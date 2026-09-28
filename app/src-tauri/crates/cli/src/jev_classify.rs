@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// Spacing between Jev calls (~30/minute).
-pub const JEV_SPACING: Duration = Duration::from_millis(2_100);
 
 /// One file, classified both ways. `label` is ground truth in the corpus run
 /// and the LLM's cached call in the manifest run.
@@ -172,7 +170,7 @@ pub async fn agree(dir: &Path, repo: &str, limit: usize, json: bool) -> Result<(
                 Err(e) => Row { source: format!("#{pr}"), path: f.path.clone(), label, llm: None, p_jev: None, llm_risk: None, jev_risk: None, error: Some(e) },
             });
             eprint!(".");
-            tokio::time::sleep(JEV_SPACING).await;
+            tokio::time::sleep(marrow_core::jev::CALL_SPACING).await;
         }
     }
     eprintln!();

@@ -1,7 +1,7 @@
 // buildFindings (issue #238 phase 3): the merge / dedupe / rank / state rules
 // behind the inbox's single findings list. Run with `bun test` from app/.
 import { describe, expect, test } from "bun:test";
-import { buildFindings, findingClaim, findingCommentBody, firstSentence, riskKey, selectionIdFor, MERGE_WINDOW, applyRelations, type Finding } from "./findings";
+import { buildFindings, findingClaim, findingCommentBody, firstSentence, riskKey, selectionIdFor, MERGE_WINDOW, applyRelations, reviewSections, type Finding } from "./findings";
 import { specResolveKey } from "../components/digest";
 import { highlightKey } from "../utils";
 import type { FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
@@ -373,5 +373,14 @@ describe("applyRelations", () => {
     expect(out[0].duplicates).toBeUndefined();
     expect(out.map((f) => f.title)).toEqual([bug.comment, bug2.comment, gap.comment]);
     expect(out[2].parentKey).toBe(out[0].key);
+  });
+
+  test("a grouped finding sits in its primary's section; counts use its own urgency", () => {
+    const parent: Finding = { ...fnd(other, "medium"), urgency: "look" };
+    const child: Finding = { ...fnd(bug), parentKey: parent.key, urgency: "fix" };
+    const s = reviewSections([parent, child]);
+    expect(s.toLook.map((f) => f.key)).toEqual([parent.key, child.key]);
+    expect(s.toFix).toEqual([]);
+    expect([s.openFix, s.openLook]).toEqual([1, 1]);
   });
 });

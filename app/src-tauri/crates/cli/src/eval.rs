@@ -239,9 +239,6 @@ fn short(s: &str) -> String {
     if s.chars().count() > 90 { format!("{t}…") } else { t }
 }
 
-/// Spacing between Jev calls — a conservative ~30 requests a minute, so a
-/// corpus run doesn't lean on TypeSafe's 429 backoff.
-const JEV_CALL_SPACING: std::time::Duration = std::time::Duration::from_millis(2_100);
 
 /// A highlight's corpus label: the first expected region it overlaps (by
 /// importance), else a should-not-flag region, else unlabeled.
@@ -432,7 +429,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
                                 label: label_for(h, &labels),
                                 judgement,
                             });
-                            tokio::time::sleep(JEV_CALL_SPACING).await;
+                            tokio::time::sleep(marrow_core::jev::CALL_SPACING).await;
                         }
                         let diffs: std::collections::HashMap<String, String> =
                             pr.files.iter().map(|f| (f.path.clone(), f.diff.clone())).collect();
@@ -541,7 +538,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
 /// LLM pass and with Jev, both through validate_classifications, and score
 /// each against the labels. No findings or coverage passes.
 pub async fn eval_jev_classify(corpus: &Path, json: bool) -> Result<(), String> {
-    use crate::jev_classify::{render_text, summarize, Row, JEV_SPACING};
+    use crate::jev_classify::{render_text, summarize, Row};
     use std::time::Instant;
     let settings = load_settings();
     let key = resolve_jev_api_key(&settings).ok_or("--jev-classify needs a TypeSafe API key: set it in Settings or TYPESAFE_API_KEY")?;
@@ -600,7 +597,7 @@ pub async fn eval_jev_classify(corpus: &Path, json: bool) -> Result<(), String> 
                 error,
             });
             eprint!(".");
-            tokio::time::sleep(JEV_SPACING).await;
+            tokio::time::sleep(marrow_core::jev::CALL_SPACING).await;
         }
         eprintln!(" {name}");
     }

@@ -15,6 +15,10 @@ use crate::net::{backoff_delay, http_client, retryable_response_delay, MAX_ATTEM
 use crate::types::{FindingRef, FindingRelation, HighlightResult};
 use std::collections::HashMap;
 
+/// Spacing between sequential Jev calls in the CLI measurement tools — a
+/// conservative ~30 requests a minute, so a run doesn't lean on 429 backoff.
+pub const CALL_SPACING: std::time::Duration = std::time::Duration::from_millis(2_100);
+
 /// TypeSafe's flagship Jev model.
 pub const JEV_MODEL: &str = "jev-latest";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
