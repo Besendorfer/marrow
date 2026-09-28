@@ -41,14 +41,25 @@ impl JevQuestion {
             criteria: criteria.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         }
     }
+
+    /// A yes/no question (TypeSafe's `noul`); its answer is P(true).
+    pub fn noul(instructions: &str, if_true: &str, if_false: &str) -> Self {
+        JevQuestion {
+            kind: "noul",
+            instructions: instructions.to_string(),
+            criteria: [("true".to_string(), if_true.to_string()), ("false".to_string(), if_false.to_string())].into(),
+        }
+    }
 }
 
-/// Jev's answer to one choice question.
+/// Jev's answer to one question. A yes/no (`noul`) answer is expressed the
+/// same way — choice "true"/"false", probabilities for both — and carries no
+/// confidence (TypeSafe returns only the probability).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct JevChoice {
     pub choice: String,
     pub probabilities: BTreeMap<String, f64>,
-    pub confidence: f64,
+    pub confidence: Option<f64>,
 }
 
 fn valid_unit(v: f64) -> bool {
@@ -63,6 +74,13 @@ pub fn parse_response(raw: &Value, questions: &BTreeMap<String, JevQuestion>) ->
     let mut out = BTreeMap::new();
     for (name, q) in questions {
         let a = answers.get(name).ok_or_else(|| format!("Jev didn't answer `{name}`"))?;
+        if q.kind == "noul" {
+            let p = a.get("noul").and_then(Value::as_f64).filter(|p| valid_unit(*p)).ok_or_else(|| format!("`{name}`: no yes/no probability"))?;
+            let choice = if p >= 0.5 { "true" } else { "false" };
+            let probabilities = [("true".to_string(), p), ("false".to_string(), 1.0 - p)].into();
+            out.insert(name.clone(), JevChoice { choice: choice.to_string(), probabilities, confidence: None });
+            continue;
+        }
         let choice = a.get("choice").and_then(Value::as_str).ok_or_else(|| format!("`{name}`: no choice"))?;
         let probs_raw = a.get("probabilities").and_then(Value::as_object).ok_or_else(|| format!("`{name}`: no probabilities"))?;
         let mut probabilities = BTreeMap::new();
@@ -74,7 +92,8 @@ pub fn parse_response(raw: &Value, questions: &BTreeMap<String, JevQuestion>) ->
             return Err(format!("`{name}`: classes don't match the question's labels"));
         }
         let sum: f64 = probabilities.values().sum();
-        if (sum - 1.0).abs() > 0.01 {
+        // TypeSafe rounds to two decimals, so three classes can sum to 0.99.
+        if (sum - 1.0).abs() > 0.02 {
             return Err(format!("`{name}`: probabilities sum to {sum:.3}"));
         }
         if !q.criteria.contains_key(choice) {
@@ -85,7 +104,7 @@ pub fn parse_response(raw: &Value, questions: &BTreeMap<String, JevQuestion>) ->
             .and_then(Value::as_f64)
             .filter(|c| valid_unit(*c))
             .ok_or_else(|| format!("`{name}`: no confidence in the response"))?;
-        out.insert(name.clone(), JevChoice { choice: choice.to_string(), probabilities, confidence });
+        out.insert(name.clone(), JevChoice { choice: choice.to_string(), probabilities, confidence: Some(confidence) });
     }
     Ok(out)
 }
@@ -168,6 +187,40 @@ pub fn finding_questions() -> BTreeMap<String, JevQuestion> {
     q
 }
 
+pub const Q_INTENDED: &str = "intended";
+
+/// The tuned question set (issue #249, round 2): `defect` asks Jev to check
+/// the claim against the cited lines and to treat a restatement of the PR's
+/// intended change as not real, and a separate yes/no asks whether the
+/// finding just flags the PR's stated intent.
+pub fn finding_questions_v2() -> BTreeMap<String, JevQuestion> {
+    let mut q = finding_questions();
+    q.insert(
+        Q_DEFECT.to_string(),
+        JevQuestion::choice(
+            "An AI code reviewer made the claim in `finding` about lines `finding.lines` of \
+             `finding.file`. Check it against `diff` (a unified diff: `+` lines are new, `-` \
+             lines are removed), the PR description, and any `evidence` (code outside the diff \
+             that the reviewer read). Answer `real` only if the diff or the evidence shows the \
+             problem. A claim that restates a change the PR description says it makes on \
+             purpose, without naming a concrete breakage beyond it, is `not_real`.",
+            &[
+                ("real", "The diff or the evidence shows the claimed problem: wrong behavior, a bug, a missing case, or an unintended change, at the cited lines or in code they affect."),
+                ("not_real", "Neither shows it: the claim misreads the code, cites lines where it doesn't happen, invents something the code doesn't do, restates the PR's intended change, or is a style preference."),
+            ],
+        ),
+    );
+    q.insert(
+        Q_INTENDED.to_string(),
+        JevQuestion::noul(
+            "Is the change this finding flags exactly what the PR description says the PR sets out to do?",
+            "Yes: the finding flags the PR's stated, intended change itself.",
+            "No: it flags something beyond or different from the stated intent.",
+        ),
+    );
+    q
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -180,7 +233,23 @@ fn truncate(s: &str, max: usize) -> String {
 /// What Jev sees for one finding: the PR's title and (trimmed) description,
 /// the finding itself, and the diff of the file it's in.
 pub fn finding_state(pr_title: &str, pr_body: &str, h: &HighlightResult, file_diff: &str) -> Value {
-    json!({
+    finding_state_with_evidence(pr_title, pr_body, h, file_diff, &[])
+}
+
+/// Most of a file's worth of evidence, and a few files at most.
+const MAX_EVIDENCE_CHARS: usize = 4_000;
+const MAX_EVIDENCE_FILES: usize = 4;
+
+/// `finding_state` plus `evidence`: files outside the diff that the review
+/// read (path, content), for claims only knowable from beyond the diff.
+pub fn finding_state_with_evidence(
+    pr_title: &str,
+    pr_body: &str,
+    h: &HighlightResult,
+    file_diff: &str,
+    evidence: &[(String, String)],
+) -> Value {
+    let mut state = json!({
         "pr": { "title": pr_title, "description": truncate(pr_body.trim(), MAX_BODY_CHARS) },
         "finding": {
             "file": h.path,
@@ -192,7 +261,15 @@ pub fn finding_state(pr_title: &str, pr_body: &str, h: &HighlightResult, file_di
             "suggested_fix": h.fix,
         },
         "diff": truncate(file_diff, MAX_DIFF_CHARS),
-    })
+    });
+    if !evidence.is_empty() {
+        state["evidence"] = evidence
+            .iter()
+            .take(MAX_EVIDENCE_FILES)
+            .map(|(path, content)| json!({ "file": path, "content": truncate(content, MAX_EVIDENCE_CHARS) }))
+            .collect();
+    }
+    state
 }
 
 /// Jev's second opinion on one finding.
@@ -215,12 +292,12 @@ pub fn judgement_from(answers: &BTreeMap<String, JevChoice>) -> Result<FindingJu
     let p = |c: &JevChoice, k: &str| c.probabilities.get(k).copied().unwrap_or(0.0);
     Ok(FindingJudgement {
         p_real: p(d, "real"),
-        defect_confidence: d.confidence,
+        defect_confidence: d.confidence.unwrap_or(0.0),
         urgency: u.choice.clone(),
         p_fix: p(u, "fix_before_merge"),
         p_look: p(u, "worth_a_look"),
         p_noise: p(u, "noise"),
-        urgency_confidence: u.confidence,
+        urgency_confidence: u.confidence.unwrap_or(0.0),
     })
 }
 
@@ -304,6 +381,26 @@ mod tests {
         assert_eq!(s["finding"]["claim"], "Off-by-one drops the last item.");
         let diff = s["diff"].as_str().unwrap();
         assert!(diff.chars().count() < MAX_DIFF_CHARS + 20 && diff.ends_with("(truncated)"));
+        assert!(s.get("evidence").is_none());
+        let ev = vec![("svc/jobs/nightly.py".to_string(), "except KeyError:".to_string())];
+        let s = finding_state_with_evidence("t", "b", &h, "d", &ev);
+        assert_eq!(s["evidence"][0]["file"], "svc/jobs/nightly.py");
+    }
+
+    #[test]
+    fn a_yes_no_answer_parses_to_true_false_probabilities() {
+        let q = finding_questions_v2();
+        let mut raw = response(("real", 0.9), ("noise", [0.1, 0.1, 0.8]));
+        raw["answers"]["intended"] = json!({ "type": "noul", "noul": 0.8 });
+        let a = parse_response(&raw, &q).unwrap();
+        assert_eq!(a["intended"].choice, "true");
+        assert!((a["intended"].probabilities["false"] - 0.2).abs() < 1e-9);
+        assert_eq!(a["intended"].confidence, None);
+        raw["answers"]["intended"] = json!({ "type": "noul", "noul": 1.5 });
+        assert!(parse_response(&raw, &q).unwrap_err().contains("yes/no"));
+        let v = serde_json::to_value(&q).unwrap();
+        assert_eq!(v["intended"]["type"], "noul");
+        assert!(v["intended"]["criteria"]["true"].is_string());
     }
 
     #[test]
