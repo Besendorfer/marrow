@@ -1,7 +1,10 @@
 import { useEffect } from "react";
+import { Dialog } from "./Dialog";
 
 interface KeyboardHelpProps {
   onClose: () => void;
+  /** Inbox layout (issue #238): 1 opens About, and the review list has its own keys. */
+  inboxMode?: boolean;
 }
 
 interface Binding {
@@ -16,16 +19,45 @@ interface Section {
 
 // Mirrors the implemented Tier 1 shortcuts in useKeyboardShortcuts.ts. Only list
 // bindings that actually work — don't advertise TUI keys the GUI doesn't honor yet.
-const SECTIONS: Section[] = [
+const CLASSIC_VIEWS: Section = {
+  title: "Views",
+  bindings: [
+    { keys: ["1"], label: "Overview" },
+    { keys: ["2"], label: "Files" },
+    { keys: ["3"], label: "Commits" },
+    { keys: ["4"], label: "Checks" },
+  ],
+};
+
+// The inbox layout (issue #238): the same keys open the matching list rows,
+// and the review list takes these while it has focus.
+const INBOX_SECTIONS: Section[] = [
   {
     title: "Views",
     bindings: [
-      { keys: ["1"], label: "Overview" },
+      { keys: ["1"], label: "About this PR" },
       { keys: ["2"], label: "Files" },
       { keys: ["3"], label: "Commits" },
       { keys: ["4"], label: "Checks" },
     ],
   },
+  {
+    title: "In the review list",
+    bindings: [
+      { keys: ["j", "↓"], label: "Next item" },
+      { keys: ["k", "↑"], label: "Previous item" },
+      { keys: ["Home", "End"], label: "First / last item" },
+      { keys: ["e"], label: "Looks fine" },
+      { keys: ["c"], label: "Comment on the finding" },
+      { keys: ["x"], label: "Not an issue (then 1–3 for why)" },
+      { keys: ["f"], label: "Finish review" },
+      { keys: ["↵"], label: "Move to the diff" },
+      { keys: ["Esc"], label: "Back to the list (from the diff)" },
+    ],
+  },
+];
+
+const SECTIONS: Section[] = [
   {
     title: "Navigation",
     bindings: [
@@ -74,7 +106,8 @@ const SECTIONS: Section[] = [
   },
 ];
 
-export function KeyboardHelp({ onClose }: KeyboardHelpProps) {
+export function KeyboardHelp({ onClose, inboxMode }: KeyboardHelpProps) {
+  const sections = inboxMode ? [...INBOX_SECTIONS, ...SECTIONS] : [CLASSIC_VIEWS, ...SECTIONS];
   // Self-close on ?, q, or Esc — mirrors the TUI's help dismissal. The global
   // shortcut hook suppresses single keys while an overlay is open, so handle it here.
   useEffect(() => {
@@ -89,8 +122,7 @@ export function KeyboardHelp({ onClose }: KeyboardHelpProps) {
   }, [onClose]);
 
   return (
-    <div className="settings-overlay" onClick={onClose}>
-      <div className="kbd-help-modal" onClick={(e) => e.stopPropagation()}>
+    <Dialog label="Keyboard shortcuts" onClose={onClose} className="kbd-help-modal" backdropClassName="settings-overlay">
         <div className="settings-header">
           <h2>Keyboard shortcuts</h2>
           <button className="settings-close" onClick={onClose} aria-label="Close keyboard shortcuts">
@@ -98,7 +130,7 @@ export function KeyboardHelp({ onClose }: KeyboardHelpProps) {
           </button>
         </div>
         <div className="kbd-help-grid">
-          {SECTIONS.map((section) => (
+          {sections.map((section) => (
             <div key={section.title} className="kbd-help-section">
               <h3 className="kbd-help-section-title">{section.title}</h3>
               {section.bindings.map((b) => (
@@ -117,7 +149,6 @@ export function KeyboardHelp({ onClose }: KeyboardHelpProps) {
             </div>
           ))}
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
