@@ -42,6 +42,18 @@ shipped on faith.
     findings are only knowable from outside the diff carry one; without it
     the tools find nothing.
 
+## Jev probes
+
+`jev-probes.json` (issue #249) holds reviewer-style claims about fixture
+diffs, each labeled `real` or `counterfeit`, with a `kind` (real /
+invented / wrong_line / intended / trivial) and `outside_diff` for real
+claims only verifiable from code beyond the diff. Optional per-fixture
+`evidence` lists repo-snapshot files an agentic review would have read.
+`marrow eval --corpus ../../corpus --jev-probe` measures how well Jev's
+P(real) separates them (AUC, accuracy@0.5), with no review calls. Claims
+are hand-written like a reviewer's; don't copy label notes, which speak to
+labelers.
+
 ## Labeling rules
 
 - Labels encode the CLASSIFICATION_PROMPT's *intent*, decided by a human at
