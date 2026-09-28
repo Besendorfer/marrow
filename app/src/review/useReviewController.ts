@@ -741,13 +741,14 @@ export function useReviewController(): ReviewCtx {
     };
   }, []);
 
-  // Re-load dismissed-highlight and resolved-spec state from disk when the
-  // window regains focus, so resolutions made outside the app (e.g. an
+  // Re-load dismissed-highlight and resolved-spec state from disk when you
+  // come back to Marrow, so resolutions made outside the app (e.g. an
   // external/AI tool writing the ~/.config/marrow/dismissed or resolved_specs
-  // files) show up without reopening the PR.
+  // files) show up without reopening the PR. On macOS, switching back to the
+  // app (Cmd+Tab, Dock) gives the webview no focus event, so the backend's
+  // app-active poll emits "app-activated" as well (issue #252).
   useEffect(() => {
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused) return;
+    const reload = () => {
       for (const tab of tabsRef.current) {
         if (!tab.manifest) continue;
         const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
@@ -790,8 +791,15 @@ export function useReviewController(): ReviewCtx {
           })
           .catch(() => {});
       }
+    };
+    const unFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) reload();
     });
-    return () => { unlisten.then((fn) => fn()); };
+    const unActivated = listen("app-activated", reload);
+    return () => {
+      unFocus.then((fn) => fn());
+      unActivated.then((fn) => fn());
+    };
   }, []);
 
   // Persist session state whenever tabs or active tab change (debounced)

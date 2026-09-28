@@ -101,9 +101,121 @@ pub fn save_dismissed(
     Ok(())
 }
 
+/// One change to a PR's dismissed set (issue #252).
+pub enum DismissChange {
+    /// Hide the note; `Some` records how/why, `None` is a plain dismiss
+    /// (clearing any earlier resolution).
+    Dismiss(Option<NoteResolution>),
+    /// Show it again, clearing its resolution.
+    Restore,
+}
+
+/// Serializes read-modify-write updates so two changes can't interleave.
+static UPDATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Apply one change to what's ON DISK and return the merged state. The app
+/// used to save its whole in-memory set, which erased anything written
+/// meanwhile by another writer — `scripts/resolve-highlights.mjs` resolving
+/// notes while the PR was open (issue #252). A per-key update keeps every
+/// other key as it is on disk, and the returned state lets the app pick up
+/// those external changes.
+pub fn update_dismissed(owner: &str, repo: &str, pr_number: u64, key: &str, change: DismissChange) -> Result<DismissedHighlights, String> {
+    update_dismissed_at(&dismissed_path(owner, repo, pr_number), key, change)
+}
+
+fn update_dismissed_at(path: &std::path::Path, key: &str, change: DismissChange) -> Result<DismissedHighlights, String> {
+    let _guard = UPDATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = match fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str::<DismissedHighlights>(&content)
+            // A file we can't parse is someone's data; never overwrite it.
+            .map_err(|e| format!("Dismissed-notes file is unreadable ({e}); not overwriting it"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DismissedHighlights::default(),
+        Err(e) => return Err(format!("Failed to read dismissed state: {e}")),
+    };
+    match change {
+        DismissChange::Dismiss(resolution) => {
+            if !state.keys.iter().any(|k| k == key) {
+                state.keys.push(key.to_string());
+            }
+            match resolution {
+                Some(r) => {
+                    state.resolutions.insert(key.to_string(), r);
+                }
+                None => {
+                    state.resolutions.remove(key);
+                }
+            }
+        }
+        DismissChange::Restore => {
+            state.keys.retain(|k| k != key);
+            state.resolutions.remove(key);
+        }
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("Failed to create state dir: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(&state).map_err(|e| format!("Failed to serialize: {e}"))?;
+    crate::state_io::write_atomic(path, json.as_bytes()).map_err(|e| format!("Failed to write dismissed state: {e}"))?;
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tmp_state_path(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("marrow-dismissed-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("state.json")
+    }
+
+    fn res(state: &str) -> NoteResolution {
+        NoteResolution { state: state.into(), reason: "why".into(), at: "t".into() }
+    }
+
+    #[test]
+    fn an_update_keeps_keys_another_writer_added_meanwhile() {
+        let p = tmp_state_path("merge");
+        // The app dismissed "a"…
+        update_dismissed_at(&p, "a", DismissChange::Dismiss(None)).unwrap();
+        // …then the resolve script wrote "b" and "c" straight to disk…
+        let mut disk: DismissedHighlights = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        disk.keys.extend(["b".to_string(), "c".to_string()]);
+        disk.resolutions.insert("b".into(), res("intentional"));
+        std::fs::write(&p, serde_json::to_string(&disk).unwrap()).unwrap();
+        // …and the app, holding a stale view, dismisses "d".
+        let merged = update_dismissed_at(&p, "d", DismissChange::Dismiss(Some(res("noise")))).unwrap();
+        let mut keys = merged.keys.clone();
+        keys.sort();
+        assert_eq!(keys, ["a", "b", "c", "d"]);
+        assert_eq!(merged.resolutions["b"].state, "intentional");
+        assert_eq!(merged.resolutions["d"].state, "noise");
+    }
+
+    #[test]
+    fn restore_and_plain_dismiss_touch_only_their_key() {
+        let p = tmp_state_path("restore");
+        update_dismissed_at(&p, "a", DismissChange::Dismiss(Some(res("fixed")))).unwrap();
+        update_dismissed_at(&p, "b", DismissChange::Dismiss(Some(res("noise")))).unwrap();
+        let s = update_dismissed_at(&p, "a", DismissChange::Restore).unwrap();
+        assert_eq!(s.keys, ["b"]);
+        assert!(!s.resolutions.contains_key("a"));
+        // A plain re-dismiss clears b's recorded resolution but keeps it hidden.
+        let s = update_dismissed_at(&p, "b", DismissChange::Dismiss(None)).unwrap();
+        assert_eq!(s.keys, ["b"]);
+        assert!(s.resolutions.is_empty());
+        // Dismissing twice doesn't duplicate the key.
+        let s = update_dismissed_at(&p, "b", DismissChange::Dismiss(None)).unwrap();
+        assert_eq!(s.keys, ["b"]);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_never_overwritten() {
+        let p = tmp_state_path("corrupt");
+        std::fs::write(&p, "{ not json").unwrap();
+        assert!(update_dismissed_at(&p, "a", DismissChange::Dismiss(None)).unwrap_err().contains("not overwriting"));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{ not json");
+    }
 
     /// Reference vectors generated from the actual JS `hashString` (app/src/utils.ts):
     ///

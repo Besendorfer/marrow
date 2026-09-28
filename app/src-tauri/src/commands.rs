@@ -600,14 +600,29 @@ pub fn load_dismissed_highlights(
     dismissed_highlights::load_dismissed(&owner, &repo, pr_number)
 }
 
+/// Dismiss one note (issue #252): a per-key update of what's on disk, so a
+/// change made meanwhile by another writer (the resolve script) survives.
+/// Returns the merged state for the app to show.
 #[command]
-pub fn save_dismissed_highlights(
+pub fn dismiss_highlight(
     owner: String,
     repo: String,
     pr_number: u64,
-    state: DismissedHighlights,
-) -> Result<(), String> {
-    dismissed_highlights::save_dismissed(&owner, &repo, pr_number, &state)
+    key: String,
+    resolution: Option<dismissed_highlights::NoteResolution>,
+) -> Result<DismissedHighlights, String> {
+    dismissed_highlights::update_dismissed(&owner, &repo, pr_number, &key, dismissed_highlights::DismissChange::Dismiss(resolution))
+}
+
+/// Restore one note; same per-key merge as `dismiss_highlight`.
+#[command]
+pub fn restore_dismissed_highlight(
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    key: String,
+) -> Result<DismissedHighlights, String> {
+    dismissed_highlights::update_dismissed(&owner, &repo, pr_number, &key, dismissed_highlights::DismissChange::Restore)
 }
 
 #[command]
