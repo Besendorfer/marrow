@@ -25,6 +25,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [openaiKey, setOpenaiKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
   const [jevKey, setJevKey] = useState("");
+  const [jevGroup, setJevGroup] = useState(false);
   const [provider, setProvider] = useState("");
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
   const [watches, setWatches] = useState<Watch[]>([]);
@@ -52,6 +53,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setOpenaiKey(s.openai_api_key || "");
         setGeminiKey(s.gemini_api_key || "");
         setJevKey(s.typesafe_api_key || "");
+        setJevGroup(s.jev_group_findings ?? false);
         setProvider(s.provider || "");
         setOpenaiBaseUrl(s.openai_base_url || "");
         setPerWatchCap(s.activity_per_watch_cap || 50);
@@ -97,6 +99,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           openai_api_key: openaiKey.trim(),
           gemini_api_key: geminiKey.trim(),
           typesafe_api_key: jevKey.trim(),
+          jev_group_findings: jevGroup,
           provider: provider.trim(),
           openai_base_url: openaiBaseUrl.trim(),
           activity_per_watch_cap: perWatchCap,
@@ -246,6 +249,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 spellCheck={false}
                 autoComplete="off"
               />
+
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={jevGroup}
+                  onChange={(e) => {
+                    setJevGroup(e.target.checked);
+                    setSaved(false);
+                  }}
+                />
+                Group duplicate findings with Jev
+              </label>
+              <p className="settings-hint">
+                After each review, sends nearby pairs of findings, with the PR's
+                title, description, and those files' diffs, to TypeSafe. Findings
+                that report the same problem are merged; ones with the same cause
+                are grouped. Needs the key above.
+              </p>
 
               <label className="settings-label" htmlFor="provider">
                 Provider override

@@ -317,6 +317,11 @@ pub struct Settings {
     /// TypeSafe API key for Jev, the finding judge (issue #249).
     #[serde(default)]
     pub typesafe_api_key: String,
+    /// Opt-in: after each review, send nearby pairs of findings (and their
+    /// file's diff) to TypeSafe so Jev can merge or group duplicates. Off by
+    /// default — a key alone never sends review content anywhere.
+    #[serde(default)]
+    pub jev_group_findings: bool,
     /// Base URL for the OpenAI-compatible backend (e.g. OpenRouter or a local
     /// server). Empty = OpenAI's default. Setting it implies an OpenAI-compatible
     /// provider unless overridden.

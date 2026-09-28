@@ -516,10 +516,10 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         let highlight_results = validate_highlights(highlight_results, &file_list);
         review_verdict = verdict;
         // Jev second opinion (issue #249): which nearby findings are one
-        // problem said twice, or one root cause. Best effort, and skipped
-        // entirely without a TypeSafe key.
+        // problem said twice, or one root cause. Opt-in (Settings), best
+        // effort, and time-boxed; skipped entirely unless enabled with a key.
         finding_relations = crate::jev::relate_findings(
-            crate::config::resolve_jev_api_key(settings).as_deref(),
+            crate::config::jev_grouping_key(settings).as_deref(),
             &pr_title,
             &pr_body,
             &highlight_results,

@@ -545,6 +545,9 @@ export interface Settings {
   gemini_api_key: string;
   /** TypeSafe API key for Jev, the finding judge (issue #249). */
   typesafe_api_key?: string;
+  /** Opt-in: send nearby finding pairs to TypeSafe so Jev can merge or
+   * group duplicates (issue #249). Off by default. */
+  jev_group_findings?: boolean;
   openai_base_url: string;
   filter_older: boolean;
   filter_team: boolean;

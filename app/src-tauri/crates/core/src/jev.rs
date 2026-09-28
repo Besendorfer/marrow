@@ -527,6 +527,11 @@ pub const PAIR_WINDOW: u64 = 15;
 /// At most this many pairs are judged per PR, nearest first.
 pub const MAX_PAIRS: usize = 12;
 const PAIR_CONCURRENCY: usize = 4;
+/// The pass is best effort and runs before the review is shown: one slow
+/// call gives up after PAIR_TIMEOUT, and the whole pass after PAIR_BUDGET,
+/// keeping whatever came back in time.
+const PAIR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const PAIR_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Mirrors the frontend's highlightRank: an info note with no actionable
 /// category stays inline in the diff and never becomes a list finding.
@@ -590,9 +595,11 @@ pub async fn relate_findings(
         .map(|(i, j)| async move {
             let (a, b) = (&hs[i], &hs[j]);
             let diff = vec![(a.path.clone(), diffs.get(&a.path).cloned().unwrap_or_default())];
-            judge_pair(key, pr_title, pr_body, a, b, &diff).await.ok().and_then(|jd| relation_from(a, b, &jd))
+            let judged = tokio::time::timeout(PAIR_TIMEOUT, judge_pair(key, pr_title, pr_body, a, b, &diff)).await;
+            judged.ok().and_then(|r| r.ok()).and_then(|jd| relation_from(a, b, &jd))
         })
         .buffered(PAIR_CONCURRENCY)
+        .take_until(tokio::time::sleep(PAIR_BUDGET))
         .filter_map(|r| async move { r })
         .collect()
         .await

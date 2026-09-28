@@ -129,15 +129,15 @@ enum Command {
         jev: bool,
         /// Only measure Jev: run corpus/jev-probes.json (real vs counterfeit
         /// claims) through each question set. No review calls.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["jev", "single_shot", "jev_classify", "jev_dedupe"])]
         jev_probe: bool,
         /// Only measure file relevance: the LLM pass and Jev on every corpus
         /// file, each scored against the labels.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["jev", "single_shot", "jev_dedupe"])]
         jev_classify: bool,
         /// Only measure duplicate-finding detection on corpus/jev-dedupe.json
         /// (same / related / different pairs). No review calls.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["jev", "single_shot"])]
         jev_dedupe: bool,
     },
     /// Compare Jev's file-relevance calls with the LLM's cached ones on real
@@ -992,4 +992,19 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     // Drop a trailing empty line artifact but keep intentional blank paragraphs.
     let _ = std::io::stdout().flush();
     lines
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn eval_measurement_modes_cant_be_combined() {
+        let ok = Cli::try_parse_from(["marrow", "eval", "--corpus", "c", "--jev-dedupe"]);
+        assert!(ok.is_ok());
+        for combo in [["--jev-probe", "--jev-dedupe"], ["--jev-classify", "--jev"], ["--jev-dedupe", "--single-shot"]] {
+            let args = ["marrow", "eval", "--corpus", "c", combo[0], combo[1]];
+            assert!(Cli::try_parse_from(args).is_err(), "{combo:?} should be rejected");
+        }
+    }
 }
