@@ -206,6 +206,23 @@ function App() {
     );
   }
 
+  function renderCommitsLens(tab: ReviewTab, hideRail = false) {
+    return (
+      <CommitsLens
+        commits={tab.manifest.commits}
+        selectedCommit={tab.selectedCommit}
+        diff={commitDiff}
+        loading={commitDiffLoading}
+        error={commitDiffError}
+        commitDiffCache={commitDiffCacheRef.current}
+        repoBaseUrl={repoBaseUrl(tab.manifest.pr_url)}
+        onSelectCommit={(c) => handleViewCommit(c)}
+        onViewCumulativeDiff={() => { if (activeTabId) setLens(activeTabId, "files"); }}
+        hideRail={hideRail}
+      />
+    );
+  }
+
   // Command palette registry — searchable home for every action, with the
   // keyboard hint teaching the direct shortcut. Review commands only appear
   // when a PR is loaded.
@@ -213,7 +230,7 @@ function App() {
   if (activeTab?.manifest) {
     const m = activeTab.manifest;
     paletteCommands.push(
-      { id: "overview", section: "Review", title: "Back to overview", run: () => { if (activeTabId) setLens(activeTabId, "overview"); } },
+      { id: "overview", section: "Review", title: inboxLayout ? "About this PR" : "Back to overview", run: () => { if (activeTabId) setLens(activeTabId, "overview"); } },
       { id: "next-file", section: "Review", title: "Next file", keys: "]", run: () => selectAdjacentFile(1) },
       { id: "prev-file", section: "Review", title: "Previous file", keys: "[", run: () => selectAdjacentFile(-1) },
       { id: "mark-viewed", section: "Review", title: "Mark file reviewed", keys: "V", run: () => { const p = activeTab.selectedFile?.path; if (p) toggleViewed(p); } },
@@ -445,21 +462,7 @@ function App() {
           onOpenChange={setSearchOpen}
         />
         <div className="main-content">
-          {activeTab.lens === "commits" ? (
-            <CommitsLens
-              commits={activeTab.manifest.commits}
-              selectedCommit={activeTab.selectedCommit}
-              diff={commitDiff}
-              loading={commitDiffLoading}
-              error={commitDiffError}
-              commitDiffCache={commitDiffCacheRef.current}
-              repoBaseUrl={repoBaseUrl(activeTab.manifest.pr_url)}
-              onSelectCommit={(c) => handleViewCommit(c)}
-              onViewCumulativeDiff={() => { if (activeTabId) setLens(activeTabId, "files"); }}
-            />
-          ) : activeTab.lens === "checks" ? (
-            renderChecksLens(activeTab as ReviewTab)
-          ) : inboxLayout ? (
+          {inboxLayout ? (
             <ReviewInbox
               tab={activeTab as ReviewTab}
               checks={activeChecks ?? null}
@@ -491,7 +494,13 @@ function App() {
                 />
               )}
               renderChecks={() => renderChecksLens(activeTab as ReviewTab, inboxOpenAt)}
+              renderCommits={() => renderCommitsLens(activeTab as ReviewTab, true)}
+              onSelectCommit={(c) => handleViewCommit(c)}
             />
+          ) : activeTab.lens === "commits" ? (
+            renderCommitsLens(activeTab as ReviewTab)
+          ) : activeTab.lens === "checks" ? (
+            renderChecksLens(activeTab as ReviewTab)
           ) : activeTab.lens === "overview" ? (
             renderOverview(activeTab as ReviewTab)
           ) : (

@@ -20,6 +20,9 @@ interface CommitsLensProps {
   repoBaseUrl: string;
   onSelectCommit: (commit: PrCommit) => void;
   onViewCumulativeDiff: () => void;
+  /** Inbox layout (issue #238): the review list already lists the commits,
+   * so the rail is left out. */
+  hideRail?: boolean;
 }
 
 /** Sum of +/− across a fetched commit diff's files, or null when the diff
@@ -81,6 +84,7 @@ export function CommitsLens({
   repoBaseUrl,
   onSelectCommit,
   onViewCumulativeDiff,
+  hideRail,
 }: CommitsLensProps) {
   // Which file within the selected commit's diff the main pane shows — purely
   // presentational to this lens, so it lives here rather than on Tab or App.
@@ -100,6 +104,7 @@ export function CommitsLens({
 
   return (
     <>
+      {!hideRail && (
       <aside className="commits-lens-rail">
         <div className="commits-lens-rail-head">
           Commits <span className="commits-lens-rail-count">· {commits.length}</span>
@@ -116,6 +121,7 @@ export function CommitsLens({
           ))}
         </div>
       </aside>
+      )}
       {selectedCommit && (
         <CommitView
           commit={selectedCommit}

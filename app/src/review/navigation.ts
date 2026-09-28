@@ -6,6 +6,31 @@ import { invoke } from "@tauri-apps/api/core";
 import type { FileDiff, Tab, SidebarView, PrLens, ChangeGroup } from "../types";
 import type { ReviewCtx } from "./ctx";
 
+/** Inbox layout (issue #238): the review-list rows that open a panel rather
+ * than a finding or a file. Commits and Checks mirror their lenses. */
+export const INBOX_ABOUT = "about";
+export const INBOX_COMMITS = "commits";
+export const INBOX_CHECKS = "checks";
+
+/** Inbox layout: where the review-list selection lands when `tab` switches
+ * to `lens` (keyboard 1–4, the palette, chat actions, links in panels). Files
+ * lands on the file being shown (`file`, else the tab's), keeping a
+ * selection already anchored to it — the same rule as setSelectedFile. */
+export function inboxSelectionForLens(
+  tab: Tab,
+  lens: PrLens,
+  file: FileDiff | null = tab.selectedFile,
+): Pick<Tab, "inboxSelection" | "inboxSelectionPath"> {
+  if (lens === "overview") return { inboxSelection: INBOX_ABOUT, inboxSelectionPath: null };
+  if (lens === "commits") return { inboxSelection: INBOX_COMMITS, inboxSelectionPath: null };
+  if (lens === "checks") return { inboxSelection: INBOX_CHECKS, inboxSelectionPath: null };
+  if (!file) return { inboxSelection: tab.inboxSelection, inboxSelectionPath: tab.inboxSelectionPath };
+  return {
+    inboxSelection: tab.inboxSelectionPath === file.path ? tab.inboxSelection : `file:${file.path}`,
+    inboxSelectionPath: file.path,
+  };
+}
+
 // `ctxArg` is typed unknown only so ReturnType<typeof create…> (which
 // ReviewCtx is built from) doesn't loop through this parameter's type.
 export function createNavigation(ctxArg: unknown) {
@@ -180,15 +205,18 @@ export function createNavigation(ctxArg: unknown) {
    * Entering Files with nothing selected auto-picks the first unviewed file
    * in guided order (falling back to the first file); entering Commits with
    * no commit scoped auto-picks the most recent commit and kicks off its
-   * diff fetch via handleViewCommit. */
+   * diff fetch via handleViewCommit. In the inbox layout the review-list
+   * selection follows (inboxSelectionForLens), so every lens switch opens the
+   * matching inbox row instead. */
   function setLens(tabId: string, lens: PrLens) {
     const tab = tabsRef.current.find((t) => t.id === tabId);
     if (!tab?.manifest) return;
+    const follow = (t: Tab, file?: FileDiff | null) => (ctx.inboxLayout ? inboxSelectionForLens(t, lens, file) : {});
     if (lens === "files" && !tab.selectedFile) {
       const order = guidedOrder(tab);
       const firstPath = nextUnviewed(order, -1, undefined, tab)?.path ?? order[0];
       const first = firstPath ? tab.manifest.files.find((f) => f.path === firstPath) : undefined;
-      ctx.updateTab(tabId, (t) => ({ ...t, lens, selectedFile: first ?? t.selectedFile }));
+      ctx.updateTab(tabId, (t) => ({ ...t, lens, selectedFile: first ?? t.selectedFile, ...follow(t, first ?? t.selectedFile) }));
       return;
     }
     if (lens === "commits" && !tab.selectedCommit) {
@@ -196,7 +224,7 @@ export function createNavigation(ctxArg: unknown) {
       const first = commits[commits.length - 1];
       if (first) { ctx.handleViewCommit(first, tabId); return; }
     }
-    ctx.updateTab(tabId, (t) => ({ ...t, lens }));
+    ctx.updateTab(tabId, (t) => ({ ...t, lens, ...follow(t) }));
   }
 
   // The single low-level "select a file" primitive — every open-file path
