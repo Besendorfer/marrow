@@ -234,6 +234,18 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
     Ok(snap)
 }
 
+/// One fixture's work since `start` — every fixture gets one, including
+/// those whose classification failed, so per-model averages aren't skewed.
+/// Jev time (`--jev`) is excluded; its calls don't go through the AI
+/// backend, so the character counts never include them.
+fn work_entry(name: &str, start: (u64, u64), started: std::time::Instant, jev_time: std::time::Duration) -> serde_json::Value {
+    let (sent, recv) = marrow_core::ai::traffic::totals();
+    serde_json::json!({
+        "fixture": name, "chars_sent": sent - start.0, "chars_received": recv - start.1,
+        "seconds": started.elapsed().saturating_sub(jev_time).as_secs_f64(),
+    })
+}
+
 fn short(s: &str) -> String {
     let t: String = s.chars().take(90).collect();
     if s.chars().count() > 90 { format!("{t}…") } else { t }
@@ -252,7 +264,7 @@ fn label_for(h: &HighlightResult, labels: &FixtureLabels) -> &'static str {
     "unlabeled"
 }
 
-pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Result<(), String> {
+pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model: Option<String>) -> Result<(), String> {
     let version = fs::read_to_string(corpus.join("VERSION"))
         .map(|v| v.trim().to_string())
         .map_err(|_| format!("{} does not look like a corpus (no VERSION file)", corpus.display()))?;
@@ -285,7 +297,11 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
         return Err("corpus has no RELEVANT labels — nothing to measure".to_string());
     }
 
-    let settings = load_settings();
+    let mut settings = load_settings();
+    // A per-run model override (model comparison); the config file is untouched.
+    if let Some(m) = model {
+        settings.model = m;
+    }
     // Fail before any spend when --jev can't run.
     let jev_key = if jev {
         Some(resolve_jev_api_key(&settings).ok_or(
@@ -295,6 +311,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
         None
     };
     let mut judged: Vec<Judged> = Vec::new();
+    let mut work: Vec<serde_json::Value> = Vec::new();
     // The production relate_findings on each fixture's real review output.
     let mut relations: Vec<(String, marrow_core::types::FindingRelation)> = Vec::new();
     let mut candidate_total = 0usize;
@@ -312,6 +329,13 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
         let full_diff = assemble_full_diff(&pr.files);
 
         let mut score = FixtureScore { name, true_pos: 0, false_pos: 0, false_neg: 0, mismatches: Vec::new(), findings: None, coverage: None, failed: None, failed_pass: None };
+        // How much work this fixture took (model comparison): AI characters
+        // exchanged and wall-clock time.
+        let (sent0, recv0) = marrow_core::ai::traffic::totals();
+        let started = std::time::Instant::now();
+        // Time spent on --jev (its calls and their spacing) is left out of
+        // the fixture's seconds, which measure the review model.
+        let mut jev_time = std::time::Duration::ZERO;
 
         let (prompt, _truncated) = build_classification_prompt(&pr.title, &file_list, &full_diff);
         eprintln!("· {}: classifying {} files…", score.name, file_list.len());
@@ -322,6 +346,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
                     eprintln!("· {}: {e}", score.name);
                     score.failed = Some(e);
                     score.failed_pass = Some("classification");
+                    work.push(work_entry(&score.name, (sent0, recv0), started, jev_time));
                     scores.push(score);
                     continue;
                 }
@@ -416,6 +441,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
                         .map(|h| format!("OUT-OF-DIFF dropped: {} L{}-{} ({})", h.path, h.start_line, h.end_line, h.category))
                         .collect();
                     let validated = validate_highlights(parsed, &file_list);
+                    let jev_started = std::time::Instant::now();
                     if let Some(key) = &jev_key {
                         eprintln!("· {}: asking Jev about {} finding(s)…", score.name, validated.len());
                         for h in &validated {
@@ -443,6 +469,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
                             relations.push((score.name.clone(), r));
                         }
                     }
+                    jev_time += jev_started.elapsed();
                     let mut fs = score_findings(&validated, &labels);
                     fs.out_of_diff = out_of_diff.len();
                     fs.detail.extend(out_of_diff);
@@ -501,6 +528,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
                 }
             }
         }
+        work.push(work_entry(&score.name, (sent0, recv0), started, jev_time));
         scores.push(score);
     }
 
@@ -513,6 +541,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
     let jev_summary = jev.then(|| jev_eval::summarize(&judged));
     if json {
         let mut out = render_json_report(&scores, &version, &settings.model, precision, recall);
+        out["work"] = serde_json::json!(work);
         if let Some(s) = &jev_summary {
             out["jev"] = serde_json::json!({ "summary": s, "judged": judged, "relations": relations });
         }
@@ -537,10 +566,13 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
 /// `eval --jev-classify` (issue #249): classify every corpus file with the
 /// LLM pass and with Jev, both through validate_classifications, and score
 /// each against the labels. No findings or coverage passes.
-pub async fn eval_jev_classify(corpus: &Path, json: bool) -> Result<(), String> {
+pub async fn eval_jev_classify(corpus: &Path, json: bool, model: Option<String>) -> Result<(), String> {
     use crate::jev_classify::{render_text, summarize, Row};
     use std::time::Instant;
-    let settings = load_settings();
+    let mut settings = load_settings();
+    if let Some(m) = model {
+        settings.model = m;
+    }
     let key = resolve_jev_api_key(&settings).ok_or("--jev-classify needs a TypeSafe API key: set it in Settings or TYPESAFE_API_KEY")?;
     let fixtures_dir = corpus.join("fixtures");
     let mut dirs: Vec<PathBuf> = fs::read_dir(&fixtures_dir)
@@ -1038,6 +1070,28 @@ fn validate_labels(pr: &FixturePr, labels: &FixtureLabels, name: &str) -> Result
 
 #[cfg(test)]
 mod tests {
+
+    /// Every committed fixture (including corpus v7's hard ones) loads and
+    /// passes the label checks the eval runs before spending on AI calls.
+    #[test]
+    fn every_corpus_fixture_loads_and_validates() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../corpus");
+        let version: u32 = std::fs::read_to_string(dir.join("VERSION")).unwrap().trim().parse().unwrap();
+        assert!(version >= 7, "corpus VERSION {version}");
+        let mut n = 0;
+        for entry in std::fs::read_dir(dir.join("fixtures")).unwrap() {
+            let fx = entry.unwrap().path();
+            if !fx.is_dir() {
+                continue;
+            }
+            let name = fx.file_name().unwrap().to_string_lossy().into_owned();
+            let pr: FixturePr = read_json(&fx.join("pr.json")).unwrap();
+            let labels: FixtureLabels = read_json(&fx.join("labels.json")).unwrap();
+            validate_labels(&pr, &labels, &name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            n += 1;
+        }
+        assert!(n >= 14, "expected v6's 9 fixtures plus v7's 5, found {n}");
+    }
     use super::*;
 
     #[test]
@@ -1503,7 +1557,7 @@ mod tests {
         // a.rs labeled in BOTH lists → validate_labels must reject.
         fs::write(fixture.join("labels.json"), r#"{ "relevant": ["a.rs"], "not_relevant": ["a.rs"] }"#).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let err = rt.block_on(eval(&dir, false, true, false)).unwrap_err();
+        let err = rt.block_on(eval(&dir, false, true, false, None)).unwrap_err();
         assert!(err.contains("broken"), "error should name the fixture: {err}");
         assert!(err.contains("exactly one"), "{err}");
         fs::remove_dir_all(&dir).unwrap();

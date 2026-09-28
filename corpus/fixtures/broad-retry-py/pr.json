@@ -1,0 +1,10 @@
+{
+  "title": "fix(retry): retry on any exception, not just TransientError",
+  "body": "Transient failures show up as a variety of exception types (timeouts, 502s that surface as ValueError from the JSON parser), so narrowing retries to TransientError missed real transient cases. Retry on any exception instead.",
+  "files": [
+    {
+      "path": "svc/retry.py",
+      "diff": "@@ -1,18 +1,19 @@\n import time\n from functools import wraps\n \n-from svc.errors import TransientError\n \n \n def retry(times=3, delay=0.5):\n-    \"\"\"Retry a call that failed with a transient error.\"\"\"\n+    \"\"\"Retry a call that failed. Transient failures surface as many exception\n+    types (timeouts, 502s raised as ValueError by the JSON parser), so retry\n+    on any exception.\"\"\"\n     def deco(fn):\n         @wraps(fn)\n         def wrapper(*args, **kwargs):\n             for attempt in range(times):\n                 try:\n                     return fn(*args, **kwargs)\n-                except TransientError:\n+                except Exception:\n                     if attempt == times - 1:\n                         raise\n                     time.sleep(delay * (attempt + 1))\n"
+    }
+  ]
+}

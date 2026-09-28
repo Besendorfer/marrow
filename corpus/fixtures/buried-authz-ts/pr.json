@@ -1,0 +1,46 @@
+{
+  "title": "refactor: rename log() to logEvent() and tidy permission helpers",
+  "body": "Mechanical rename of the logging helper across services (`log` \u2192 `logEvent`, so it stops shadowing debug helpers), plus a small tidy of the permission helpers so they share one role ordering. No behavior change intended.",
+  "files": [
+    {
+      "path": "src/logging/logger.ts",
+      "diff": "@@ -1,3 +1,3 @@\n-export function log(event: string, fields: Record<string, unknown> = {}): void {\n+export function logEvent(event: string, fields: Record<string, unknown> = {}): void {\n   console.log(JSON.stringify({ event, ...fields, at: new Date().toISOString() }));\n }\n"
+    },
+    {
+      "path": "src/auth/permissions.ts",
+      "diff": "@@ -1,21 +1,26 @@\n-import { log } from \"../logging/logger\";\n+import { logEvent } from \"../logging/logger\";\n import type { Doc, User } from \"../types\";\n \n export type Role = \"owner\" | \"admin\" | \"editor\" | \"commenter\" | \"viewer\";\n \n-const EDIT_ROLES: Role[] = [\"owner\", \"admin\", \"editor\"];\n+// Lowest to highest; a role can do everything the roles before it can.\n+const RANK: Role[] = [\"viewer\", \"commenter\", \"editor\", \"admin\", \"owner\"];\n \n export function roleOf(user: User, doc: Doc): Role {\n   if (doc.ownerId === user.id) return \"owner\";\n   return doc.members[user.id] ?? \"viewer\";\n }\n \n+function atLeast(role: Role, min: Role): boolean {\n+  return RANK.indexOf(role) >= RANK.indexOf(min);\n+}\n+\n export function canEdit(user: User, doc: Doc): boolean {\n   const role = roleOf(user, doc);\n-  log(\"perm.check\", { user: user.id, doc: doc.id, role });\n-  return EDIT_ROLES.includes(role);\n+  logEvent(\"perm.check\", { user: user.id, doc: doc.id, role });\n+  return atLeast(role, \"commenter\");\n }\n \n export function canComment(user: User, doc: Doc): boolean {\n-  return roleOf(user, doc) !== \"viewer\";\n+  return atLeast(roleOf(user, doc), \"commenter\");\n }\n"
+    },
+    {
+      "path": "src/billing/invoices.ts",
+      "diff": "@@ -1,6 +1,6 @@\n-import { log } from \"../logging/logger\";\n+import { logEvent } from \"../logging/logger\";\n \n export async function sendInvoice(id: string) {\n-  log(\"invoice.send\", { id });\n+  logEvent(\"invoice.send\", { id });\n   await mailer.send(id);\n }\n"
+    },
+    {
+      "path": "src/billing/refunds.ts",
+      "diff": "@@ -1,6 +1,6 @@\n-import { log } from \"../logging/logger\";\n+import { logEvent } from \"../logging/logger\";\n \n export async function issueRefund(id: string) {\n-  log(\"refund.issue\", { id });\n+  logEvent(\"refund.issue\", { id });\n   await payments.refund(id);\n }\n"
+    },
+    {
+      "path": "src/docs/share.ts",
+      "diff": "@@ -1,6 +1,6 @@\n-import { log } from \"../logging/logger\";\n+import { logEvent } from \"../logging/logger\";\n \n export async function shareDoc(id: string) {\n-  log(\"doc.share\", { id });\n+  logEvent(\"doc.share\", { id });\n   await links.create(id);\n }\n"
+    },
+    {
+      "path": "src/docs/export.ts",
+      "diff": "@@ -1,6 +1,6 @@\n-import { log } from \"../logging/logger\";\n+import { logEvent } from \"../logging/logger\";\n \n export async function exportDoc(id: string) {\n-  log(\"doc.export\", { id });\n+  logEvent(\"doc.export\", { id });\n   await exporter.run(id);\n }\n"
+    },
+    {
+      "path": "src/users/invite.ts",
+      "diff": "@@ -1,6 +1,6 @@\n-import { log } from \"../logging/logger\";\n+import { logEvent } from \"../logging/logger\";\n \n export async function inviteUser(id: string) {\n-  log(\"user.invite\", { id });\n+  logEvent(\"user.invite\", { id });\n   await invites.send(id);\n }\n"
+    },
+    {
+      "path": "src/users/deactivate.ts",
+      "diff": "@@ -1,6 +1,6 @@\n-import { log } from \"../logging/logger\";\n+import { logEvent } from \"../logging/logger\";\n \n export async function deactivateUser(id: string) {\n-  log(\"user.deactivate\", { id });\n+  logEvent(\"user.deactivate\", { id });\n   await users.deactivate(id);\n }\n"
+    },
+    {
+      "path": "src/search/reindex.ts",
+      "diff": "@@ -1,6 +1,6 @@\n-import { log } from \"../logging/logger\";\n+import { logEvent } from \"../logging/logger\";\n \n export async function reindexDoc(id: string) {\n-  log(\"search.reindex\", { id });\n+  logEvent(\"search.reindex\", { id });\n   await search.reindex(id);\n }\n"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "diff": "@@ -1,3 +1,4 @@\n # Changelog\n \n+- Internal: rename log() to logEvent().\n - 2.3.0: faster exports.\n"
+    }
+  ]
+}

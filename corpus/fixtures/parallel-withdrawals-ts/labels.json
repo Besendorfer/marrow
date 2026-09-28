@@ -1,0 +1,18 @@
+{
+  "relevant": [
+    "src/ledger/withdraw.ts"
+  ],
+  "not_relevant": [
+    "tests/ledger/withdraw.test.ts"
+  ],
+  "expected_findings": [
+    {
+      "path": "src/ledger/withdraw.ts",
+      "start_line": 8,
+      "end_line": 12,
+      "importance": "important",
+      "note": "Concurrent read-then-debit: every request reads the balance before any debit lands, so a batch whose total exceeds the balance is fully approved and the account overdraws. Sequential order was load-bearing."
+    }
+  ],
+  "expected_verdict": "fix_first"
+}

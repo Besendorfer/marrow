@@ -328,6 +328,12 @@ impl AiBackend {
 
     /// Send a prompt to the AI and return the text response.
     pub async fn invoke(&self, prompt: &str) -> Result<String, String> {
+        let out = self.invoke_inner(prompt).await;
+        traffic::record(prompt.chars().count(), out.as_ref().map(|s| s.chars().count()).unwrap_or(0));
+        out
+    }
+
+    async fn invoke_inner(&self, prompt: &str) -> Result<String, String> {
         match self {
             AiBackend::Bedrock { client, model_arn } => {
                 client.invoke_model(model_arn, prompt).await
@@ -347,6 +353,20 @@ impl AiBackend {
     /// message). Each text fragment is passed to `on_delta` as it arrives; the
     /// fully assembled text is also returned.
     pub async fn invoke_chat_stream(
+        &self,
+        system: &str,
+        turns: &[ChatTurn],
+        on: &mut (dyn FnMut(StreamUpdate) + Send),
+    ) -> Result<String, String> {
+        let sent = system.chars().count() + turns.iter().map(|t| t.content.chars().count()).sum::<usize>();
+        let out = self.invoke_chat_stream_inner(system, turns, on).await;
+        // A call that fails records its prompt as sent and nothing received,
+        // even if part of a response had streamed.
+        traffic::record(sent, out.as_ref().map(|s| s.chars().count()).unwrap_or(0));
+        out
+    }
+
+    async fn invoke_chat_stream_inner(
         &self,
         system: &str,
         turns: &[ChatTurn],
@@ -1183,5 +1203,38 @@ mod sse_tests {
         let (full, done) = drain(b"event: ping\r\ndata: x\r\n\r\n");
         assert_eq!(full, "x");
         assert!(!done);
+    }
+}
+
+/// Characters sent to and received from the AI, process-wide — a rough,
+/// provider-neutral measure of how much work a run did (≈4 chars a token),
+/// read by `marrow eval` to compare models. Not used by the app.
+pub mod traffic {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SENT: AtomicU64 = AtomicU64::new(0);
+    static RECEIVED: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(sent: usize, received: usize) {
+        SENT.fetch_add(sent as u64, Ordering::Relaxed);
+        RECEIVED.fetch_add(received as u64, Ordering::Relaxed);
+    }
+
+    /// (sent, received) characters so far.
+    pub fn totals() -> (u64, u64) {
+        (SENT.load(Ordering::Relaxed), RECEIVED.load(Ordering::Relaxed))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn records_accumulate() {
+            let (s0, r0) = super::totals();
+            super::record(12, 3);
+            super::record(8, 2);
+            let (s1, r1) = super::totals();
+            // Other tests may record concurrently; ours are at least counted.
+            assert!(s1 - s0 >= 20 && r1 - r0 >= 5);
+        }
     }
 }

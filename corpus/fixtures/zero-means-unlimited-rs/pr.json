@@ -1,0 +1,10 @@
+{
+  "title": "feat(config): don't cap pool connections by default",
+  "body": "Bursty workloads were getting throttled by the default cap of 10 connections. Default `max_connections` to 0, meaning no limit; deployments that want a cap can still set one in pool.toml.",
+  "files": [
+    {
+      "path": "src/config.rs",
+      "diff": "@@ -1,6 +1,7 @@\n /// Connection pool settings, loaded from `pool.toml`.\n #[derive(Debug, Clone)]\n pub struct PoolConfig {\n+    /// Upper bound on open connections; 0 means no limit.\n     pub max_connections: usize,\n     pub idle_timeout_secs: u64,\n }\n@@ -8,7 +9,7 @@\n impl Default for PoolConfig {\n     fn default() -> Self {\n         PoolConfig {\n-            max_connections: 10,\n+            max_connections: 0,\n             idle_timeout_secs: 300,\n         }\n     }\n"
+    }
+  ]
+}
