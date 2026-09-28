@@ -234,6 +234,16 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
     Ok(snap)
 }
 
+/// One fixture's work since `start` — every fixture gets one, including
+/// those whose classification failed, so per-model averages aren't skewed.
+fn work_entry(name: &str, start: (u64, u64), started: std::time::Instant) -> serde_json::Value {
+    let (sent, recv) = marrow_core::ai::traffic::totals();
+    serde_json::json!({
+        "fixture": name, "chars_sent": sent - start.0, "chars_received": recv - start.1,
+        "seconds": started.elapsed().as_secs_f64(),
+    })
+}
+
 fn short(s: &str) -> String {
     let t: String = s.chars().take(90).collect();
     if s.chars().count() > 90 { format!("{t}…") } else { t }
@@ -331,6 +341,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                     eprintln!("· {}: {e}", score.name);
                     score.failed = Some(e);
                     score.failed_pass = Some("classification");
+                    work.push(work_entry(&score.name, (sent0, recv0), started));
                     scores.push(score);
                     continue;
                 }
@@ -510,11 +521,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                 }
             }
         }
-        let (sent1, recv1) = marrow_core::ai::traffic::totals();
-        work.push(serde_json::json!({
-            "fixture": score.name, "chars_sent": sent1 - sent0, "chars_received": recv1 - recv0,
-            "seconds": started.elapsed().as_secs_f64(),
-        }));
+        work.push(work_entry(&score.name, (sent0, recv0), started));
         scores.push(score);
     }
 
@@ -1053,6 +1060,28 @@ fn validate_labels(pr: &FixturePr, labels: &FixtureLabels, name: &str) -> Result
 
 #[cfg(test)]
 mod tests {
+
+    /// Every committed fixture (including corpus v7's hard ones) loads and
+    /// passes the label checks the eval runs before spending on AI calls.
+    #[test]
+    fn every_corpus_fixture_loads_and_validates() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../corpus");
+        let version = std::fs::read_to_string(dir.join("VERSION")).unwrap();
+        assert_eq!(version.trim(), "7");
+        let mut n = 0;
+        for entry in std::fs::read_dir(dir.join("fixtures")).unwrap() {
+            let fx = entry.unwrap().path();
+            if !fx.is_dir() {
+                continue;
+            }
+            let name = fx.file_name().unwrap().to_string_lossy().into_owned();
+            let pr: FixturePr = read_json(&fx.join("pr.json")).unwrap();
+            let labels: FixtureLabels = read_json(&fx.join("labels.json")).unwrap();
+            validate_labels(&pr, &labels, &name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            n += 1;
+        }
+        assert!(n >= 14, "expected v6's 9 fixtures plus v7's 5, found {n}");
+    }
     use super::*;
 
     #[test]

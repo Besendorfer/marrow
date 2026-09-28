@@ -329,7 +329,7 @@ impl AiBackend {
     /// Send a prompt to the AI and return the text response.
     pub async fn invoke(&self, prompt: &str) -> Result<String, String> {
         let out = self.invoke_inner(prompt).await;
-        traffic::record(prompt.len(), out.as_ref().map(|s| s.len()).unwrap_or(0));
+        traffic::record(prompt.chars().count(), out.as_ref().map(|s| s.chars().count()).unwrap_or(0));
         out
     }
 
@@ -358,9 +358,11 @@ impl AiBackend {
         turns: &[ChatTurn],
         on: &mut (dyn FnMut(StreamUpdate) + Send),
     ) -> Result<String, String> {
-        let sent = system.len() + turns.iter().map(|t| t.content.len()).sum::<usize>();
+        let sent = system.chars().count() + turns.iter().map(|t| t.content.chars().count()).sum::<usize>();
         let out = self.invoke_chat_stream_inner(system, turns, on).await;
-        traffic::record(sent, out.as_ref().map(|s| s.len()).unwrap_or(0));
+        // A call that fails records its prompt as sent and nothing received,
+        // even if part of a response had streamed.
+        traffic::record(sent, out.as_ref().map(|s| s.chars().count()).unwrap_or(0));
         out
     }
 
@@ -1221,5 +1223,18 @@ pub mod traffic {
     /// (sent, received) characters so far.
     pub fn totals() -> (u64, u64) {
         (SENT.load(Ordering::Relaxed), RECEIVED.load(Ordering::Relaxed))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn records_accumulate() {
+            let (s0, r0) = super::totals();
+            super::record(12, 3);
+            super::record(8, 2);
+            let (s1, r1) = super::totals();
+            // Other tests may record concurrently; ours are at least counted.
+            assert!(s1 - s0 >= 20 && r1 - r0 >= 5);
+        }
     }
 }
