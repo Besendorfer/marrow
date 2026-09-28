@@ -237,7 +237,7 @@ export function useReviewController(): ReviewCtx {
         setShowAiNotes(settings.show_ai_notes ?? true);
         setHunkFilter(settings.hunk_filter || "all");
         setExpandAllHunks(settings.expand_all_hunks ?? false);
-        setInboxLayout(settings.inbox_layout ?? false);
+        setInboxLayout(!settings.classic_layout);
       } catch {
         // Use defaults on failure
       }

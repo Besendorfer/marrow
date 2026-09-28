@@ -1,5 +1,5 @@
-// Inbox review layout (issue #238 phase 4, behind Settings → "Inbox review
-// layout"). One review list — verdict, ranked findings, then the remaining
+// Inbox review layout (issue #238): the default; Settings → "Use the classic
+// layout" goes back to Overview + Files. One review list — verdict, ranked findings, then the remaining
 // files — beside a detail pane: the selected finding's card pinned above its
 // diff. The list is the progress and the next step; j/k move through it and
 // e / c / x act on the selected finding while the list has focus.

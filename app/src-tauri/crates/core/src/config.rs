@@ -107,7 +107,7 @@ fn default_settings() -> Settings {
         show_draft_prs: true,
         setup_done: false,
         expand_all_hunks: false,
-        inbox_layout: false,
+        classic_layout: false,
         local_repo_roots: Vec::new(),
     }
 }
@@ -147,7 +147,7 @@ pub fn parse_settings(content: &str) -> Settings {
     let mut show_draft_prs = true;
     let mut setup_done = false;
     let mut expand_all_hunks = false;
-    let mut inbox_layout = false;
+    let mut classic_layout = false;
     // One `local_repo_root=` line per directory (paths may contain commas).
     let mut local_repo_roots: Vec<String> = Vec::new();
 
@@ -194,8 +194,8 @@ pub fn parse_settings(content: &str) -> Settings {
             setup_done = val == "true";
         } else if let Some(val) = line.strip_prefix("expand_all_hunks=") {
             expand_all_hunks = val == "true";
-        } else if let Some(val) = line.strip_prefix("inbox_layout=") {
-            inbox_layout = val == "true";
+        } else if let Some(val) = line.strip_prefix("classic_layout=") {
+            classic_layout = val == "true";
         } else if let Some(val) = line.strip_prefix("local_repo_root=") {
             if !val.trim().is_empty() {
                 local_repo_roots.push(val.trim().to_string());
@@ -224,7 +224,7 @@ pub fn parse_settings(content: &str) -> Settings {
         show_draft_prs,
         setup_done,
         expand_all_hunks,
-        inbox_layout,
+        classic_layout,
         local_repo_roots,
     }
 }
@@ -289,7 +289,7 @@ pub fn serialize_settings(settings: &Settings) -> String {
     content.push_str(&format!("show_draft_prs={}\n", settings.show_draft_prs));
     content.push_str(&format!("setup_done={}\n", settings.setup_done));
     content.push_str(&format!("expand_all_hunks={}\n", settings.expand_all_hunks));
-    content.push_str(&format!("inbox_layout={}\n", settings.inbox_layout));
+    content.push_str(&format!("classic_layout={}\n", settings.classic_layout));
     for root in settings.local_repo_roots.iter().map(|r| r.trim()).filter(|r| !r.is_empty() && !r.contains('\n')) {
         content.push_str(&format!("local_repo_root={}\n", root));
     }
@@ -412,21 +412,23 @@ mod tests {
     }
 
     #[test]
-    fn inbox_layout_is_off_by_default() {
-        // Fresh install, and an existing config written before the setting existed.
-        assert!(!default_settings().inbox_layout);
-        assert!(!parse_settings("model=\nview_mode=split\n").inbox_layout);
+    fn inbox_is_the_default_layout() {
+        // Fresh install, a config written before the setting existed, and one
+        // from a preview build that saved `inbox_layout=false` on every save.
+        assert!(!default_settings().classic_layout);
+        assert!(!parse_settings("model=\nview_mode=split\n").classic_layout);
+        assert!(!parse_settings("model=\ninbox_layout=false\n").classic_layout);
     }
 
     #[test]
-    fn inbox_layout_round_trips_through_the_config_format() {
+    fn classic_layout_round_trips_through_the_config_format() {
         let mut s = default_settings();
-        s.inbox_layout = true;
+        s.classic_layout = true;
         let text = serialize_settings(&s);
-        assert!(text.contains("inbox_layout=true\n"));
-        assert!(parse_settings(&text).inbox_layout);
-        s.inbox_layout = false;
-        assert!(!parse_settings(&serialize_settings(&s)).inbox_layout);
+        assert!(text.contains("classic_layout=true\n"));
+        assert!(parse_settings(&text).classic_layout);
+        s.classic_layout = false;
+        assert!(!parse_settings(&serialize_settings(&s)).classic_layout);
     }
 
     #[test]

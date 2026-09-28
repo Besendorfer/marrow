@@ -19,7 +19,7 @@ export function useReviewState() {
   const [showAiNotes, setShowAiNotes] = useState(true);
   const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
   const [expandAllHunks, setExpandAllHunks] = useState(false);
-  const [inboxLayout, setInboxLayout] = useState(false);
+  const [inboxLayout, setInboxLayout] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -92,7 +92,7 @@ export function useReviewState() {
     invoke<Settings>("get_settings").then((s) => {
       settingsRef.current = s;
       setExpandAllHunks(s.expand_all_hunks ?? false);
-      setInboxLayout(s.inbox_layout ?? false);
+      setInboxLayout(!s.classic_layout);
     }).catch(() => {});
     refreshFingerprint();
   }, [refreshFingerprint]);
