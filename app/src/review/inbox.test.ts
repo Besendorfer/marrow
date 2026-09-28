@@ -145,4 +145,18 @@ describe("inbox actions", () => {
     expect(t.inboxSelection).toBe("about");
     expect(t.lens).toBe("overview");
   });
+
+  test("a verdict on a merged finding applies to its duplicates too (issue #249)", () => {
+    const dup: Finding = { ...risk, key: "hl:dup", linesHash: "h2", state: "open" };
+    const merged: Finding = { ...risk, state: "open", duplicates: [dup] };
+    let t = fakeCtx({ manifest });
+    t.inbox.inboxLooksFine(merged);
+    expect(t.calls).toEqual(["mark:risk:a.ts:5:x", "mark:hl:dup"]);
+    t = fakeCtx({ manifest });
+    t.inbox.inboxNotAnIssue(merged, null);
+    expect(t.calls).toEqual(["unmark:risk:a.ts:5:x", "dismiss:risk:a.ts:5:x", "unmark:hl:dup", "dismiss:hl:dup"]);
+    t = fakeCtx({ manifest });
+    t.inbox.inboxReopen({ ...merged, state: "dismissed", duplicates: [{ ...dup, state: "dismissed" }] });
+    expect(t.calls).toEqual(["unmark:risk:a.ts:5:x", "restore:risk:a.ts:5:x", "unmark:hl:dup", "restore:hl:dup"]);
+  });
 });

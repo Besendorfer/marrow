@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 use crate::net::{backoff_delay, http_client, retryable_response_delay, MAX_ATTEMPTS};
-use crate::types::HighlightResult;
+use crate::types::{FindingRef, FindingRelation, HighlightResult};
+use std::collections::HashMap;
 
 /// TypeSafe's flagship Jev model.
 pub const JEV_MODEL: &str = "jev-latest";
@@ -521,6 +522,76 @@ pub async fn judge_pair(
     pair_judgement_from(&answers)
 }
 
+/// Findings closer than this (in lines, same file) are candidate duplicates.
+pub const PAIR_WINDOW: u64 = 15;
+/// At most this many pairs are judged per PR, nearest first.
+pub const MAX_PAIRS: usize = 12;
+const PAIR_CONCURRENCY: usize = 4;
+
+/// Mirrors the frontend's highlightRank: an info note with no actionable
+/// category stays inline in the diff and never becomes a list finding.
+fn is_list_finding(h: &HighlightResult) -> bool {
+    h.severity != "info" || (!h.category.is_empty() && h.category != "observation")
+}
+
+/// Pairs of list findings in the same file within PAIR_WINDOW lines of each
+/// other, nearest first, capped at MAX_PAIRS.
+pub fn candidate_pairs(hs: &[HighlightResult]) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    for i in 0..hs.len() {
+        for j in (i + 1)..hs.len() {
+            let (a, b) = (&hs[i], &hs[j]);
+            if a.path != b.path || !is_list_finding(a) || !is_list_finding(b) {
+                continue;
+            }
+            let gap = a.start_line.max(b.start_line).saturating_sub(a.end_line.min(b.end_line));
+            if gap <= PAIR_WINDOW {
+                pairs.push((gap, i, j));
+            }
+        }
+    }
+    pairs.sort();
+    pairs.into_iter().take(MAX_PAIRS).map(|(_, i, j)| (i, j)).collect()
+}
+
+fn finding_ref(h: &HighlightResult) -> FindingRef {
+    FindingRef { path: h.path.clone(), start_line: h.start_line, end_line: h.end_line, comment: h.comment.clone() }
+}
+
+/// Keep Jev's "same" and "related" calls as manifest relations.
+pub fn relation_from(a: &HighlightResult, b: &HighlightResult, j: &PairJudgement) -> Option<FindingRelation> {
+    let relation = match j.relation.as_str() {
+        "same_issue" => "same",
+        "related" => "related",
+        _ => return None,
+    };
+    Some(FindingRelation { a: finding_ref(a), b: finding_ref(b), relation: relation.to_string(), p_same: j.p_same, p_related: j.p_related })
+}
+
+/// Judge nearby finding pairs. Best effort: no key, or any failed call, just
+/// means fewer relations — the review never waits on or fails because of Jev.
+pub async fn relate_findings(
+    api_key: Option<&str>,
+    pr_title: &str,
+    pr_body: &str,
+    hs: &[HighlightResult],
+    diffs: &HashMap<String, String>,
+) -> Vec<FindingRelation> {
+    use futures::stream::{self, StreamExt};
+    let Some(key) = api_key else { return Vec::new() };
+    let pairs = candidate_pairs(hs);
+    stream::iter(pairs)
+        .map(|(i, j)| async move {
+            let (a, b) = (&hs[i], &hs[j]);
+            let diff = vec![(a.path.clone(), diffs.get(&a.path).cloned().unwrap_or_default())];
+            judge_pair(key, pr_title, pr_body, a, b, &diff).await.ok().and_then(|jd| relation_from(a, b, &jd))
+        })
+        .buffered(PAIR_CONCURRENCY)
+        .filter_map(|r| async move { r })
+        .collect()
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,6 +713,42 @@ mod tests {
         assert_eq!(s["finding_b"]["lines"], "1-2");
         assert_eq!(s["diff"].as_array().unwrap().len(), 1);
         assert_eq!(pair_questions()[Q_SAME].criteria.len(), 3);
+    }
+
+    #[test]
+    fn candidate_pairs_are_nearby_list_findings_in_one_file_nearest_first() {
+        let h = |path: &str, s: u64, e: u64, sev: &str, cat: &str| HighlightResult {
+            path: path.into(), start_line: s, end_line: e, severity: sev.into(), category: cat.into(), ..Default::default()
+        };
+        let hs = vec![
+            h("a.rs", 10, 12, "warning", "bug"),
+            h("a.rs", 40, 41, "warning", "bug"),      // 28 lines from #0: too far
+            h("a.rs", 20, 22, "warning", "test_gap"), // 8 from #0, 18 from #1
+            h("b.rs", 10, 12, "warning", "bug"),      // other file
+            h("a.rs", 11, 11, "info", "observation"), // inline-only note
+            h("a.rs", 30, 30, "info", "test_gap"),    // info but actionable: 8 from #2, 10 from #1
+        ];
+        // Gaps: (0,2) 8, (2,5) 8, (1,5) 10; (0,5) and (1,2) are 18, past the window.
+        assert_eq!(candidate_pairs(&hs), vec![(0, 2), (2, 5), (1, 5)]);
+        let many: Vec<_> = (0..10).map(|i| h("c.rs", i, i, "warning", "bug")).collect();
+        assert_eq!(candidate_pairs(&many).len(), MAX_PAIRS);
+    }
+
+    #[test]
+    fn only_same_and_related_calls_become_relations() {
+        let a = HighlightResult { path: "a.rs".into(), start_line: 1, end_line: 2, comment: "x".into(), ..Default::default() };
+        let j = |rel: &str| PairJudgement { relation: rel.into(), p_same: 0.7, p_related: 0.2, p_different: 0.1, confidence: 0.5 };
+        assert_eq!(relation_from(&a, &a, &j("same_issue")).unwrap().relation, "same");
+        assert_eq!(relation_from(&a, &a, &j("related")).unwrap().relation, "related");
+        assert!(relation_from(&a, &a, &j("different")).is_none());
+        assert_eq!(relation_from(&a, &a, &j("same_issue")).unwrap().b.comment, "x");
+    }
+
+    #[test]
+    fn relating_without_a_key_makes_no_calls() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let hs = vec![HighlightResult { path: "a.rs".into(), start_line: 1, end_line: 1, severity: "warning".into(), ..Default::default() }; 2];
+        assert!(rt.block_on(relate_findings(None, "t", "b", &hs, &HashMap::new())).is_empty());
     }
 
     #[test]

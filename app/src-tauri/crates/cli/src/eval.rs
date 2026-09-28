@@ -234,6 +234,11 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
     Ok(snap)
 }
 
+fn short(s: &str) -> String {
+    let t: String = s.chars().take(90).collect();
+    if s.chars().count() > 90 { format!("{t}…") } else { t }
+}
+
 /// Spacing between Jev calls — a conservative ~30 requests a minute, so a
 /// corpus run doesn't lean on TypeSafe's 429 backoff.
 const JEV_CALL_SPACING: std::time::Duration = std::time::Duration::from_millis(2_100);
@@ -293,6 +298,8 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
         None
     };
     let mut judged: Vec<Judged> = Vec::new();
+    // The production relate_findings on each fixture's real review output.
+    let mut relations: Vec<(String, marrow_core::types::FindingRelation)> = Vec::new();
     let ai = AiBackend::from_settings(&settings).await?;
     eprintln!(
         "corpus v{version} · {} fixture(s) · model {} · review {}",
@@ -426,6 +433,11 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
                             });
                             tokio::time::sleep(JEV_CALL_SPACING).await;
                         }
+                        let diffs: std::collections::HashMap<String, String> =
+                            pr.files.iter().map(|f| (f.path.clone(), f.diff.clone())).collect();
+                        for r in marrow_core::jev::relate_findings(Some(key), &pr.title, &pr.body, &validated, &diffs).await {
+                            relations.push((score.name.clone(), r));
+                        }
                     }
                     let mut fs = score_findings(&validated, &labels);
                     fs.out_of_diff = out_of_diff.len();
@@ -498,13 +510,21 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
     if json {
         let mut out = render_json_report(&scores, &version, &settings.model, precision, recall);
         if let Some(s) = &jev_summary {
-            out["jev"] = serde_json::json!({ "summary": s, "judged": judged });
+            out["jev"] = serde_json::json!({ "summary": s, "judged": judged, "relations": relations });
         }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         print!("{}", render_text_report(&scores, &version, precision, recall));
         if let Some(s) = &jev_summary {
             print!("{}", jev_eval::render_text(s));
+            println!("JEV RELATIONS stored ({}):", relations.len());
+            for (fx, r) in &relations {
+                println!(
+                    "    {fx} {}: {}:{}-{} [{}] ↔ {}:{}-{} · same {:.2} related {:.2}",
+                    r.relation, r.a.path, r.a.start_line, r.a.end_line, short(&r.a.comment), r.b.path, r.b.start_line, r.b.end_line, r.p_same, r.p_related
+                );
+                println!("        b: {}", short(&r.b.comment));
+            }
         }
     }
     completion_status(&scores)

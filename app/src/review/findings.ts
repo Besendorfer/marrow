@@ -10,7 +10,7 @@
 
 import { hashString, highlightKey, isFailingCheck } from "../utils";
 import { specResolveKey } from "../components/digest";
-import type { CheckedFindingEntry, FileDiff, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
+import type { CheckedFindingEntry, FileDiff, FindingRelation, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
 
 /** What produced a finding. Highlight categories map 1:1; `note` is a
  * highlight from a manifest cached before categories existed. */
@@ -68,6 +68,12 @@ export interface Finding {
    * while this still matches (see isChecked). "" = nothing to anchor on. */
   linesHash: string;
   state: FindingState;
+  /** Jev (issue #249): the key of the finding this one is grouped under —
+   * one root cause, a different action (e.g. the test for a bug). */
+  parentKey?: string;
+  /** Jev: the same problem reported again, merged into this finding. Each
+   * keeps its own key, so a verdict on this finding is applied to them too. */
+  duplicates?: Finding[];
 }
 
 export interface FindingsInput {
@@ -353,8 +359,7 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
     if (n > 1) f.key = `${f.key}#${n}`;
   }
 
-  return {
-    findings: findings.map((f) => ({
+  const stated: Finding[] = findings.map((f) => ({
       ...f,
       urgency: urgencyOf(f.kind, f.rank),
       state: dismissed?.has(f.key)
@@ -363,8 +368,55 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
           ? "checked"
           : isCommented(f, threads, viewerLogin)
             ? "commented"
-            : "open",
-    })),
+            : ("open" as const),
+    }));
+  return {
+    findings: applyRelations(stated, manifest.finding_relations),
     infoCountByPath,
   };
 }
+
+/** Apply Jev's pair calls (issue #249) to the ranked list. The finding that
+ * ranks first in a pair is the primary. A "same" partner is folded into the
+ * primary's `duplicates` and leaves the list; a "related" one stays in the
+ * list, right after its primary, with `parentKey` set. One level only: a
+ * pair that would nest deeper attaches to the root instead, and a finding
+ * that already heads a group isn't pulled under another. Strongest calls
+ * are applied first. */
+export function applyRelations(findings: Finding[], relations: FindingRelation[] | undefined): Finding[] {
+  if (!relations?.length) return findings;
+  const index = new Map(findings.map((f, i) => [f.key, i]));
+  const parentOf = new Map<string, { key: string; relation: "same" | "related" }>();
+  const heads = new Set<string>();
+  const strength = (r: FindingRelation) => Math.max(r.p_same, r.p_related);
+  for (const r of [...relations].sort((x, y) => strength(y) - strength(x))) {
+    const ka = highlightKey(r.a.path, r.a);
+    const kb = highlightKey(r.b.path, r.b);
+    const ia = index.get(ka);
+    const ib = index.get(kb);
+    if (ia == null || ib == null || ia === ib) continue;
+    let head = ia < ib ? ka : kb;
+    const child = ia < ib ? kb : ka;
+    head = parentOf.get(head)?.key ?? head;
+    if (head === child || parentOf.has(child) || heads.has(child)) continue;
+    parentOf.set(child, { key: head, relation: r.relation });
+    heads.add(head);
+  }
+  if (parentOf.size === 0) return findings;
+  const dups = new Map<string, Finding[]>();
+  const kids = new Map<string, Finding[]>();
+  for (const f of findings) {
+    const p = parentOf.get(f.key);
+    if (!p) continue;
+    const bucket = p.relation === "same" ? dups : kids;
+    bucket.set(p.key, [...(bucket.get(p.key) ?? []), p.relation === "same" ? f : { ...f, parentKey: p.key }]);
+  }
+  const out: Finding[] = [];
+  for (const f of findings) {
+    if (parentOf.has(f.key)) continue;
+    out.push(dups.has(f.key) ? { ...f, duplicates: dups.get(f.key) } : f);
+    out.push(...(kids.get(f.key) ?? []));
+  }
+  return out;
+}
+

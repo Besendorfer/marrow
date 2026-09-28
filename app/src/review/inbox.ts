@@ -91,6 +91,13 @@ export function createInbox(ctxArg: unknown) {
     ctx.saveResolvedSpecs(tab, nextKeys, nextResolutions);
   }
 
+  /** A finding plus any duplicates Jev merged into it (issue #249): one
+   * problem, so one verdict — each keeps its own key in the stores, which is
+   * what the diff's inline notes read. */
+  function withDuplicates(f: Finding): Finding[] {
+    return [f, ...(f.duplicates ?? [])];
+  }
+
   /** Returns whether a mark was made (the list advances only then). */
   function inboxLooksFine(f: Finding): boolean {
     if (f.kind === "spec") {
@@ -102,7 +109,7 @@ export function createInbox(ctxArg: unknown) {
       addToast("info", "There's no code here to anchor “Looks fine” to — use Not an issue instead.");
       return false;
     }
-    ctx.markFindingChecked(f);
+    for (const x of withDuplicates(f)) if (x.linesHash) ctx.markFindingChecked(x);
     return true;
   }
 
@@ -112,14 +119,18 @@ export function createInbox(ctxArg: unknown) {
     if (f.kind === "spec") return addressSpecItems(f.itemKeys ?? []);
     // Changing your mind from Looks fine: one verdict per finding, so the
     // earlier mark goes (else Reopen would surface it as a second state).
-    ctx.unmarkFindingChecked(f.key);
-    ctx.resolveHighlight(f.key, resolution);
+    for (const x of withDuplicates(f)) {
+      ctx.unmarkFindingChecked(x.key);
+      ctx.resolveHighlight(x.key, resolution);
+    }
   }
 
   /** Undo a Looks fine / Not an issue — both stores, so nothing stale resurfaces. */
   function inboxReopen(f: Finding) {
-    ctx.unmarkFindingChecked(f.key);
-    if (f.state === "dismissed") ctx.restoreHighlight(f.key);
+    for (const x of withDuplicates(f)) {
+      ctx.unmarkFindingChecked(x.key);
+      if (x.state === "dismissed") ctx.restoreHighlight(x.key);
+    }
   }
 
   /** "Comment": open the inline composer on the finding's lines, prefilled.
