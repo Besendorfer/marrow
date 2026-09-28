@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { FileDiff, NoteResolution, NoteResolutionState, PrChecksStatus, PrCommit, ReviewManifest, Tab } from "../types";
 import { buildFindings, findingClaim, selectionIdFor, type Finding, type FindingKind } from "../review/findings";
-import { chooserKeyAction, listKeyAction, nextAfterAction } from "../review/inboxKeys";
+import { chooserKeyAction, landingId, listKeyAction, nextAfterAction } from "../review/inboxKeys";
 import { ciStatus } from "../review/finish";
 import { INBOX_ABOUT, INBOX_CHECKS, INBOX_COMMITS } from "../review/navigation";
 
@@ -174,18 +174,20 @@ export function ReviewInbox(props: ReviewInboxProps) {
     else props.onSelectPanel(item.id);
   }
 
-  // Land on the first open finding (else the first finding, else the first
-  // file, else About) whenever nothing valid is selected — or on Commits /
-  // Checks when the tab is already in that lens (a restored session).
+  // Land somewhere whenever nothing valid is selected (see landingId).
   useEffect(() => {
     if (selected) return;
-    const lensPanel = tab.lens === "commits" ? INBOX_COMMITS : tab.lens === "checks" ? INBOX_CHECKS : null;
-    const target =
-      (lensPanel ? allItems.find((i) => i.id === lensPanel) : undefined) ??
-      allItems.find((i) => i.kind === "finding" && i.finding.state === "open") ??
-      allItems.find((i) => i.kind === "finding") ??
-      allItems.find((i) => i.kind === "file" && i.file.classification !== "NOT_RELEVANT") ??
-      allItems[0];
+    const id = landingId(
+      allItems.map((i) => ({
+        id: i.id,
+        kind: i.kind,
+        state: i.kind === "finding" ? i.finding.state : undefined,
+        notRelevant: i.kind === "file" && i.file.classification === "NOT_RELEVANT",
+      })),
+      tab.lens,
+      { commits: INBOX_COMMITS, checks: INBOX_CHECKS },
+    );
+    const target = allItems.find((i) => i.id === id);
     if (target) select(target);
     // allItems too: a selection that didn't resolve when it was made (items
     // still settling after a restore or refresh) must get another chance, or
