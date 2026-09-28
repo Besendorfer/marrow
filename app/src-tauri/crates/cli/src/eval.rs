@@ -510,6 +510,82 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool) -> Re
     completion_status(&scores)
 }
 
+/// `eval --jev-classify` (issue #249): classify every corpus file with the
+/// LLM pass and with Jev, both through validate_classifications, and score
+/// each against the labels. No findings or coverage passes.
+pub async fn eval_jev_classify(corpus: &Path, json: bool) -> Result<(), String> {
+    use crate::jev_classify::{render_text, summarize, Row, JEV_SPACING};
+    use std::time::Instant;
+    let settings = load_settings();
+    let key = resolve_jev_api_key(&settings).ok_or("--jev-classify needs a TypeSafe API key: set it in Settings or TYPESAFE_API_KEY")?;
+    let fixtures_dir = corpus.join("fixtures");
+    let mut dirs: Vec<PathBuf> = fs::read_dir(&fixtures_dir)
+        .map_err(|e| format!("Failed to read {}: {e}", fixtures_dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    let mut fixtures = Vec::new();
+    for dir in &dirs {
+        let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let pr: FixturePr = read_json(&dir.join("pr.json"))?;
+        let labels: FixtureLabels = read_json(&dir.join("labels.json"))?;
+        validate_labels(&pr, &labels, &name)?;
+        fixtures.push((name, pr, labels));
+    }
+    let ai = AiBackend::from_settings(&settings).await?;
+    eprintln!("{} fixture(s) · LLM {} vs Jev", fixtures.len(), if settings.model.is_empty() { "(claude CLI default)" } else { &settings.model });
+
+    let (mut rows, mut jev_calls, mut llm_passes) = (Vec::new(), Vec::new(), Vec::new());
+    for (name, pr, labels) in &fixtures {
+        let file_list: Vec<String> = pr.files.iter().map(|f| f.path.clone()).collect();
+        let (prompt, _) = build_classification_prompt(&pr.title, &file_list, &assemble_full_diff(&pr.files));
+        let started = Instant::now();
+        let llm = retry_json_pass::<FileClassification, _, _>("classification", name, || ai.invoke(&prompt)).await;
+        llm_passes.push(started.elapsed());
+        let llm = llm.map(|c| validate_classifications(c, &file_list)).unwrap_or_else(|e| {
+            eprintln!("· {name}: LLM {e}");
+            Vec::new()
+        });
+        for f in &pr.files {
+            let label = labels.relevant.contains(&f.path);
+            let llm_c = llm.iter().find(|c| c.path == f.path);
+            let started = Instant::now();
+            let jev = marrow_core::jev::classify_file(&key, &pr.title, &pr.body, &f.path, &file_list, &f.diff).await;
+            jev_calls.push(started.elapsed());
+            let (p_jev, jev_risk, error) = match jev {
+                Ok(j) => {
+                    // Same validation the app applies to the LLM's output.
+                    let v = validate_classifications(vec![j.to_classification(&f.path)], &file_list);
+                    let risk = v.first().map(|c| c.risk_level.clone());
+                    (Some(j.p_relevant), risk, None)
+                }
+                Err(e) => (None, None, Some(e)),
+            };
+            rows.push(Row {
+                source: name.clone(),
+                path: f.path.clone(),
+                label,
+                llm: llm_c.map(|c| c.classification == "RELEVANT"),
+                p_jev,
+                llm_risk: llm_c.map(|c| c.risk_level.clone()),
+                jev_risk,
+                error,
+            });
+            eprint!(".");
+            tokio::time::sleep(JEV_SPACING).await;
+        }
+        eprintln!(" {name}");
+    }
+    let s = summarize(&rows, &jev_calls, &llm_passes);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "summary": s, "rows": rows })).unwrap());
+    } else {
+        print!("{}", render_text(&format!("FILE RELEVANCE · corpus · LLM vs Jev · {} files", rows.len()), &s, &rows));
+    }
+    Ok(())
+}
+
 /// Exit-status contract: the run always completes and emits its full report,
 /// but any fixture with a failed pass makes the process exit nonzero so CI
 /// can detect it without parsing output (grep-style: results AND status).

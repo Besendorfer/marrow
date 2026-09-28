@@ -27,6 +27,7 @@ use marrow_core::types::{FetchProgress, FetchStatus, FileDiff, Highlight, Review
 mod eval;
 mod jev_eval;
 mod jev_probe;
+mod jev_classify;
 mod tui;
 
 /// When to colorize output. `auto` = colorize only when stdout is a terminal.
@@ -129,6 +130,25 @@ enum Command {
         /// claims) through each question set. No review calls.
         #[arg(long)]
         jev_probe: bool,
+        /// Only measure file relevance: the LLM pass and Jev on every corpus
+        /// file, each scored against the labels.
+        #[arg(long)]
+        jev_classify: bool,
+    },
+    /// Compare Jev's file-relevance calls with the LLM's cached ones on real
+    /// PRs (dev; sends each file's diff to TypeSafe)
+    JevAgree {
+        /// Manifest cache directory (e.g. ~/.config/marrow/manifests)
+        #[arg(long)]
+        manifests: std::path::PathBuf,
+        /// Only PRs from this repository (owner/name) — whose code may be sent
+        #[arg(long)]
+        repo: String,
+        /// Stop after this many files
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
     },
     /// Mark a review thread resolved
     Resolve {
@@ -226,6 +246,8 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
             reply(&pr, &comment_id, &body).await
         }
         Command::Eval { corpus, json, jev_probe: true, .. } => jev_probe::run(&corpus, json).await,
+        Command::Eval { corpus, json, jev_classify: true, .. } => eval::eval_jev_classify(&corpus, json).await,
+        Command::JevAgree { manifests, repo, limit, json } => jev_classify::agree(&manifests, &repo, limit, json).await,
         Command::Eval { corpus, json, single_shot, jev, .. } => eval::eval(&corpus, json, single_shot, jev).await,
         Command::Resolve { thread_id } => {
             confirm(&format!("Resolve thread {thread_id}?"), yes)?;

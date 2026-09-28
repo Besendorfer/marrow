@@ -313,6 +313,136 @@ pub async fn judge_finding(
     judgement_from(&answers)
 }
 
+// ── File relevance (issue #249, second use) ─────────────────────────────
+
+pub const Q_RELEVANT: &str = "relevant";
+pub const Q_RISK: &str = "risk";
+pub const Q_CATEGORY: &str = "category";
+
+/// The rules half of the LLM's CLASSIFICATION_PROMPT (everything before its
+/// output-format section), so Jev and the LLM classify by the same text.
+pub fn classification_rules() -> &'static str {
+    let p = crate::prompts::CLASSIFICATION_PROMPT;
+    p.split("Respond with ONLY").next().unwrap_or(p).trim()
+}
+
+/// Three questions per file, one call: everything the app reads from a
+/// classification (relevance, risk level, category).
+pub fn file_questions() -> BTreeMap<String, JevQuestion> {
+    let mut q = BTreeMap::new();
+    q.insert(
+        Q_RELEVANT.to_string(),
+        JevQuestion::choice(
+            &format!(
+                "Classify the changed file in `file` (its diff is `diff`; `pr` describes the pull request and \
+                 `other_files` lists the rest of its changed files) by these rules:\n\n{}",
+                classification_rules()
+            ),
+            &[
+                ("relevant", "RELEVANT under the rules: business logic, infrastructure, API, schema, auth, runtime config, or a shared library with logic."),
+                ("not_relevant", "NOT_RELEVANT under the rules: tests, docs, presentational UI, tooling/build config, lockfiles, pure re-export barrels, assets, or generated files."),
+            ],
+        ),
+    );
+    q.insert(
+        Q_RISK.to_string(),
+        JevQuestion::choice(
+            "How much could this file's change hurt if it's wrong? (Tests, docs, and other not-relevant files are low.)",
+            &[
+                ("critical", "Security-sensitive: auth, payment/billing, data deletion, database migrations, IAM/permissions."),
+                ("high", "Core business logic, API contract changes, infrastructure, or shared libraries many callers use."),
+                ("medium", "Standard feature code, service implementations, non-critical handlers."),
+                ("low", "Minor refactors, logging, comments, config tweaks, test helpers, or not-relevant files."),
+            ],
+        ),
+    );
+    q.insert(
+        Q_CATEGORY.to_string(),
+        JevQuestion::choice(
+            "What kind of code is this file?",
+            &[
+                ("business_logic", "Business logic: services, handlers, models, validation, domain rules."),
+                ("infrastructure", "Infrastructure: IaC, CI/CD, deployment, runtime configuration."),
+                ("domain_types", "Domain types: type definitions, schemas, DTOs."),
+                ("other", "Anything else."),
+            ],
+        ),
+    );
+    q
+}
+
+/// What Jev sees for one file.
+pub fn file_state(pr_title: &str, pr_body: &str, path: &str, all_paths: &[String], diff: &str) -> Value {
+    let others: Vec<&String> = all_paths.iter().filter(|p| p.as_str() != path).take(50).collect();
+    json!({
+        "pr": { "title": pr_title, "description": truncate(pr_body.trim(), MAX_BODY_CHARS) },
+        "file": path,
+        "other_files": others,
+        "diff": truncate(diff, MAX_DIFF_CHARS),
+    })
+}
+
+/// Jev's classification of one file.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FileJudgement {
+    pub p_relevant: f64,
+    pub relevance_confidence: f64,
+    pub risk: String,
+    pub category: String,
+}
+
+impl FileJudgement {
+    pub fn relevant(&self) -> bool {
+        self.p_relevant >= 0.5
+    }
+
+    /// In the LLM pass's shape, so it can go through validate_classifications
+    /// and everything downstream unchanged.
+    pub fn to_classification(&self, path: &str) -> crate::types::FileClassification {
+        let relevant = self.relevant();
+        crate::types::FileClassification {
+            path: path.to_string(),
+            classification: if relevant { "RELEVANT" } else { "NOT_RELEVANT" }.to_string(),
+            category: if !relevant {
+                "N/A".to_string()
+            } else {
+                match self.category.as_str() {
+                    "business_logic" => "Business Logic",
+                    "infrastructure" => "Infrastructure",
+                    "domain_types" => "Domain Types",
+                    _ => "Other",
+                }
+                .to_string()
+            },
+            risk_level: if relevant { self.risk.clone() } else { "low".to_string() },
+            reason: format!("Jev: P(relevant) {:.2}", self.p_relevant),
+        }
+    }
+}
+
+pub fn file_judgement_from(answers: &BTreeMap<String, JevChoice>) -> Result<FileJudgement, String> {
+    let r = answers.get(Q_RELEVANT).ok_or("no relevance answer")?;
+    Ok(FileJudgement {
+        p_relevant: r.probabilities.get("relevant").copied().unwrap_or(0.0),
+        relevance_confidence: r.confidence.unwrap_or(0.0),
+        risk: answers.get(Q_RISK).map(|c| c.choice.clone()).unwrap_or_else(|| "low".to_string()),
+        category: answers.get(Q_CATEGORY).map(|c| c.choice.clone()).unwrap_or_else(|| "other".to_string()),
+    })
+}
+
+pub async fn classify_file(
+    api_key: &str,
+    pr_title: &str,
+    pr_body: &str,
+    path: &str,
+    all_paths: &[String],
+    diff: &str,
+) -> Result<FileJudgement, String> {
+    let questions = file_questions();
+    let answers = evaluate(api_key, &file_state(pr_title, pr_body, path, all_paths, diff), &questions).await?;
+    file_judgement_from(&answers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +531,29 @@ mod tests {
         let v = serde_json::to_value(&q).unwrap();
         assert_eq!(v["intended"]["type"], "noul");
         assert!(v["intended"]["criteria"]["true"].is_string());
+    }
+
+    #[test]
+    fn file_questions_carry_the_llm_rules_without_its_output_format() {
+        let rules = classification_rules();
+        assert!(rules.contains("Test files are ALWAYS NOT_RELEVANT"));
+        assert!(!rules.contains("Respond with ONLY"));
+        let q = file_questions();
+        assert!(q[Q_RELEVANT].instructions.contains(rules));
+        assert_eq!(q[Q_RISK].criteria.len(), 4);
+    }
+
+    #[test]
+    fn a_file_judgement_maps_onto_the_llm_classification_shape() {
+        let mut j = FileJudgement { p_relevant: 0.8, relevance_confidence: 0.7, risk: "high".into(), category: "business_logic".into() };
+        let c = j.to_classification("src/a.rs");
+        assert_eq!((c.classification.as_str(), c.category.as_str(), c.risk_level.as_str()), ("RELEVANT", "Business Logic", "high"));
+        j.p_relevant = 0.2;
+        let c = j.to_classification("src/a.rs");
+        // Not-relevant files are always N/A and low, as the LLM pass is told.
+        assert_eq!((c.classification.as_str(), c.category.as_str(), c.risk_level.as_str()), ("NOT_RELEVANT", "N/A", "low"));
+        let s = file_state("t", "b", "a.rs", &["a.rs".into(), "b.rs".into()], "d");
+        assert_eq!(s["other_files"], json!(["b.rs"]));
     }
 
     #[test]
