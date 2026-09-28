@@ -78,10 +78,21 @@ fn fingerprint_of(version: u32, prompts: &[&str], budgets: &[usize], settings: &
     // TYPESAFE_API_KEY env var between a terminal and a Dock launch.
     if settings.jev_group_findings {
         h.update(b"jev-group-findings");
+        // Everything that decides which relations get stored: the question
+        // (instructions and each label's meaning) and the pass's thresholds.
         for q in crate::jev::pair_questions().values() {
             h.update(q.instructions.as_bytes());
             h.update([0]);
+            for (label, meaning) in &q.criteria {
+                h.update(label.as_bytes());
+                h.update([0]);
+                h.update(meaning.as_bytes());
+                h.update([0]);
+            }
         }
+        h.update(crate::jev::SAME_MIN.to_le_bytes());
+        h.update(crate::jev::PAIR_WINDOW.to_le_bytes());
+        h.update((crate::jev::MAX_PAIRS as u64).to_le_bytes());
     }
     format!("{:x}", h.finalize())
 }
