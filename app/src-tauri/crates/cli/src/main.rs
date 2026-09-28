@@ -28,6 +28,7 @@ mod eval;
 mod jev_eval;
 mod jev_probe;
 mod jev_classify;
+mod jev_dedupe;
 mod tui;
 
 /// When to colorize output. `auto` = colorize only when stdout is a terminal.
@@ -134,6 +135,10 @@ enum Command {
         /// file, each scored against the labels.
         #[arg(long)]
         jev_classify: bool,
+        /// Only measure duplicate-finding detection on corpus/jev-dedupe.json
+        /// (same / related / different pairs). No review calls.
+        #[arg(long)]
+        jev_dedupe: bool,
     },
     /// Compare Jev's file-relevance calls with the LLM's cached ones on real
     /// PRs (dev; sends each file's diff to TypeSafe)
@@ -246,6 +251,7 @@ async fn run(command: Command, yes: bool) -> Result<(), String> {
             reply(&pr, &comment_id, &body).await
         }
         Command::Eval { corpus, json, jev_probe: true, .. } => jev_probe::run(&corpus, json).await,
+        Command::Eval { corpus, json, jev_dedupe: true, .. } => jev_dedupe::run(&corpus, json).await,
         Command::Eval { corpus, json, jev_classify: true, .. } => eval::eval_jev_classify(&corpus, json).await,
         Command::JevAgree { manifests, repo, limit, json } => jev_classify::agree(&manifests, &repo, limit, json).await,
         Command::Eval { corpus, json, single_shot, jev, .. } => eval::eval(&corpus, json, single_shot, jev).await,

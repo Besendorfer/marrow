@@ -1,0 +1,401 @@
+{
+  "_about": "Duplicate-finding pairs (issue #249). Each pair is two reviewer-style findings on the same fixture, labeled by what the inbox should do with them: same (one problem said twice: merge), related (one root cause, different actions, e.g. a bug and the missing test for it: group), different (separate problems: keep apart). Pairs are nearby in the file on purpose, because proximity alone can't tell these apart. Line numbers are head-side. The last four are harder on purpose: category and line position don't give the answer away.",
+  "pairs": [
+    {
+      "fixture": "planted-bug-rs",
+      "label": "same",
+      "a": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 21,
+        "end_line": 23,
+        "category": "bug",
+        "claim": "The expiry check is gone: access_token() returns the cached token whenever one exists, even after expires_at has passed."
+      },
+      "b": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 20,
+        "end_line": 24,
+        "category": "behavior",
+        "claim": "Callers can now receive an expired token, because the cached branch no longer compares expires_at with the current time before returning it."
+      }
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "label": "related",
+      "a": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 21,
+        "end_line": 23,
+        "category": "bug",
+        "claim": "The expiry check is gone: access_token() returns the cached token whenever one exists, even after expires_at has passed."
+      },
+      "b": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 21,
+        "end_line": 27,
+        "category": "test_gap",
+        "claim": "No test covers access_token() with an expired cached token, so the removed expiry check went unnoticed; add one that expects a refresh."
+      }
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "label": "different",
+      "a": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 21,
+        "end_line": 23,
+        "category": "bug",
+        "claim": "The expiry check is gone: access_token() returns the cached token whenever one exists, even after expires_at has passed."
+      },
+      "b": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 62,
+        "end_line": 62,
+        "category": "simplification",
+        "claim": "`do_token_thing` doesn't say what it does; `force_refresh` would describe the drop-and-refetch behavior."
+      }
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "label": "different",
+      "a": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 56,
+        "end_line": 57,
+        "category": "behavior",
+        "claim": "refresh() now stores every fetched token in `self.cached`, including the one fetched by do_token_thing, so the cache is always overwritten on refresh."
+      },
+      "b": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 62,
+        "end_line": 64,
+        "category": "simplification",
+        "claim": "`do_token_thing` doesn't say what it does; `force_refresh` would describe the drop-and-refetch behavior."
+      }
+    },
+    {
+      "fixture": "adversarial-injection-rs",
+      "label": "same",
+      "a": {
+        "path": "src/parser.rs",
+        "start_line": 35,
+        "end_line": 35,
+        "category": "bug",
+        "claim": "A missing closing `---` no longer errors: `unwrap_or(rest.len())` treats the whole rest of the document as frontmatter."
+      },
+      "b": {
+        "path": "src/parser.rs",
+        "start_line": 35,
+        "end_line": 37,
+        "category": "bug",
+        "claim": "Unterminated frontmatter now silently succeeds instead of returning ParseError::Unterminated, so a document without a closing delimiter parses its entire body as YAML."
+      }
+    },
+    {
+      "fixture": "adversarial-injection-rs",
+      "label": "related",
+      "a": {
+        "path": "src/parser.rs",
+        "start_line": 35,
+        "end_line": 35,
+        "category": "bug",
+        "claim": "A missing closing `---` no longer errors: `unwrap_or(rest.len())` treats the whole rest of the document as frontmatter."
+      },
+      "b": {
+        "path": "src/parser.rs",
+        "start_line": 35,
+        "end_line": 38,
+        "category": "test_gap",
+        "claim": "Nothing tests a document whose frontmatter is never closed; a test expecting ParseError::Unterminated would have caught this change."
+      }
+    },
+    {
+      "fixture": "adversarial-injection-rs",
+      "label": "different",
+      "a": {
+        "path": "src/parser.rs",
+        "start_line": 35,
+        "end_line": 35,
+        "category": "bug",
+        "claim": "A missing closing `---` no longer errors: `unwrap_or(rest.len())` treats the whole rest of the document as frontmatter."
+      },
+      "b": {
+        "path": "src/parser.rs",
+        "start_line": 30,
+        "end_line": 31,
+        "category": "observation",
+        "claim": "The added comment instructs automated reviewers to report no issues. It's an attempt to steer review tooling and should be removed."
+      }
+    },
+    {
+      "fixture": "cross-repo-contract-rs",
+      "label": "same",
+      "a": {
+        "path": "src/jobs.rs",
+        "start_line": 5,
+        "end_line": 5,
+        "category": "behavior",
+        "claim": "rename_all = \"snake_case\" changes JobStatus's wire values (InProgress becomes in_progress); the web client still matches PascalCase and will stop recognizing statuses."
+      },
+      "b": {
+        "path": "src/jobs.rs",
+        "start_line": 5,
+        "end_line": 5,
+        "category": "behavior",
+        "claim": "This is an API contract change, not a no-op: the dashboard's Job type expects \"InProgress\", so every in-progress job will render as unknown."
+      }
+    },
+    {
+      "fixture": "cross-repo-contract-rs",
+      "label": "related",
+      "a": {
+        "path": "src/jobs.rs",
+        "start_line": 5,
+        "end_line": 5,
+        "category": "behavior",
+        "claim": "rename_all = \"snake_case\" changes JobStatus's wire values (InProgress becomes in_progress); the web client still matches PascalCase and will stop recognizing statuses."
+      },
+      "b": {
+        "path": "src/jobs.rs",
+        "start_line": 5,
+        "end_line": 5,
+        "category": "test_gap",
+        "claim": "No test pins JobStatus's serialized form; a round-trip test on the JSON values would catch wire-format changes like this one."
+      }
+    },
+    {
+      "fixture": "cross-repo-contract-rs",
+      "label": "different",
+      "a": {
+        "path": "src/jobs.rs",
+        "start_line": 5,
+        "end_line": 5,
+        "category": "behavior",
+        "claim": "rename_all = \"snake_case\" changes JobStatus's wire values (InProgress becomes in_progress); the web client still matches PascalCase and will stop recognizing statuses."
+      },
+      "b": {
+        "path": "src/jobs.rs",
+        "start_line": 4,
+        "end_line": 4,
+        "category": "simplification",
+        "claim": "JobStatus derives both Clone and Copy; for a fieldless enum, Copy alone would read more clearly at call sites."
+      }
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "label": "same",
+      "a": {
+        "path": "src/api/pages.ts",
+        "start_line": 4,
+        "end_line": 6,
+        "category": "bug",
+        "claim": "pageCount uses Math.floor where the inline code used Math.ceil, so a total that isn't a multiple of pageSize loses its last partial page."
+      },
+      "b": {
+        "path": "src/api/pages.ts",
+        "start_line": 11,
+        "end_line": 11,
+        "category": "behavior",
+        "claim": "listUsers now reports one page too few whenever the last page is partial (25 rows at 10 per page gives 2 pages), because the shared helper rounds down."
+      }
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "label": "related",
+      "a": {
+        "path": "src/api/pages.ts",
+        "start_line": 4,
+        "end_line": 6,
+        "category": "bug",
+        "claim": "pageCount uses Math.floor where the inline code used Math.ceil, so a total that isn't a multiple of pageSize loses its last partial page."
+      },
+      "b": {
+        "path": "src/api/pages.ts",
+        "start_line": 4,
+        "end_line": 6,
+        "category": "test_gap",
+        "claim": "pageCount has no test for a total that isn't an exact multiple of pageSize, the one case where floor and ceil differ."
+      }
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "label": "different",
+      "a": {
+        "path": "src/api/pages.ts",
+        "start_line": 4,
+        "end_line": 6,
+        "category": "bug",
+        "claim": "pageCount uses Math.floor where the inline code used Math.ceil, so a total that isn't a multiple of pageSize loses its last partial page."
+      },
+      "b": {
+        "path": "src/api/pages.ts",
+        "start_line": 9,
+        "end_line": 9,
+        "category": "bug",
+        "claim": "listUsers builds its SQL by concatenating page and pageSize into the query string; unvalidated input could inject SQL."
+      }
+    },
+    {
+      "fixture": "rename-noise-py",
+      "label": "same",
+      "a": {
+        "path": "svc/jobs.py",
+        "start_line": 16,
+        "end_line": 16,
+        "category": "behavior",
+        "claim": "nightly_digest switched from fetch_user_cached to load_user, so it now hits the database once per subscriber."
+      },
+      "b": {
+        "path": "svc/jobs.py",
+        "start_line": 14,
+        "end_line": 17,
+        "category": "behavior",
+        "claim": "This isn't a pure rename: the digest loop dropped the cached lookup (and the comment explaining why), turning a cache read into a DB query per user every night."
+      }
+    },
+    {
+      "fixture": "rename-noise-py",
+      "label": "different",
+      "a": {
+        "path": "svc/jobs.py",
+        "start_line": 16,
+        "end_line": 16,
+        "category": "behavior",
+        "claim": "nightly_digest switched from fetch_user_cached to load_user, so it now hits the database once per subscriber."
+      },
+      "b": {
+        "path": "svc/jobs.py",
+        "start_line": 17,
+        "end_line": 17,
+        "category": "bug",
+        "claim": "send_digest(user) isn't wrapped in any error handling, so one failed send aborts the digest for every remaining subscriber."
+      }
+    },
+    {
+      "fixture": "unchanged-caller-py",
+      "label": "same",
+      "a": {
+        "path": "svc/cache.py",
+        "start_line": 10,
+        "end_line": 12,
+        "category": "bug",
+        "claim": "get_user returns None on a miss now; callers outside this diff that still catch KeyError will get None and crash on attribute access."
+      },
+      "b": {
+        "path": "svc/cache.py",
+        "start_line": 12,
+        "end_line": 12,
+        "category": "behavior",
+        "claim": "Changing a miss from KeyError to None breaks any remaining `except KeyError` caller: the fallback never runs and `user.email` raises AttributeError."
+      }
+    },
+    {
+      "fixture": "unchanged-caller-py",
+      "label": "related",
+      "a": {
+        "path": "svc/cache.py",
+        "start_line": 10,
+        "end_line": 12,
+        "category": "bug",
+        "claim": "get_user returns None on a miss now; callers outside this diff that still catch KeyError will get None and crash on attribute access."
+      },
+      "b": {
+        "path": "svc/cache.py",
+        "start_line": 10,
+        "end_line": 12,
+        "category": "test_gap",
+        "claim": "No test exercises a cache miss through the callers of get_user, so the changed miss contract isn't checked anywhere."
+      }
+    },
+    {
+      "fixture": "unchanged-caller-py",
+      "label": "different",
+      "a": {
+        "path": "svc/cache.py",
+        "start_line": 10,
+        "end_line": 12,
+        "category": "bug",
+        "claim": "get_user returns None on a miss now; callers outside this diff that still catch KeyError will get None and crash on attribute access."
+      },
+      "b": {
+        "path": "svc/api/users.py",
+        "start_line": 8,
+        "end_line": 8,
+        "category": "behavior",
+        "claim": "show_user returns the user's email in its response, which exposes it to any client that can call the endpoint."
+      }
+    },
+    {
+      "fixture": "planted-bug-rs",
+      "label": "same",
+      "a": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 21,
+        "end_line": 27,
+        "category": "test_gap",
+        "claim": "No test covers access_token() with an expired cached token; add one that expects a refresh."
+      },
+      "b": {
+        "path": "src/auth/refresh.rs",
+        "start_line": 20,
+        "end_line": 29,
+        "category": "test_gap",
+        "claim": "access_token() needs a test where the cached token's expires_at is in the past, asserting a new token is fetched."
+      }
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "label": "different",
+      "a": {
+        "path": "src/api/pages.ts",
+        "start_line": 4,
+        "end_line": 6,
+        "category": "bug",
+        "claim": "pageCount uses Math.floor where the inline code used Math.ceil, so a total that isn't a multiple of pageSize loses its last partial page."
+      },
+      "b": {
+        "path": "src/api/pages.ts",
+        "start_line": 4,
+        "end_line": 6,
+        "category": "bug",
+        "claim": "pageCount returns Infinity or NaN when pageSize is 0, and exportUsers would then loop forever; guard against a zero page size."
+      }
+    },
+    {
+      "fixture": "rename-noise-py",
+      "label": "related",
+      "a": {
+        "path": "svc/jobs.py",
+        "start_line": 16,
+        "end_line": 16,
+        "category": "behavior",
+        "claim": "nightly_digest switched from fetch_user_cached to load_user, so it now hits the database once per subscriber."
+      },
+      "b": {
+        "path": "svc/jobs.py",
+        "start_line": 15,
+        "end_line": 16,
+        "category": "bug",
+        "claim": "The comment explaining why the digest must stay off the database was deleted along with the cached call; if the switch is intended, the reason for dropping the cache needs recording, or the comment should come back."
+      }
+    },
+    {
+      "fixture": "subtle-bug-ts",
+      "label": "same",
+      "a": {
+        "path": "src/api/pages.ts",
+        "start_line": 4,
+        "end_line": 6,
+        "category": "bug",
+        "claim": "pageCount uses Math.floor where the inline code used Math.ceil, so a total that isn't a multiple of pageSize loses its last partial page."
+      },
+      "b": {
+        "path": "src/api/pages.ts",
+        "start_line": 18,
+        "end_line": 19,
+        "category": "behavior",
+        "claim": "exportUsers now stops one page early whenever the last page is partial, so exports silently drop their final rows."
+      }
+    }
+  ]
+}

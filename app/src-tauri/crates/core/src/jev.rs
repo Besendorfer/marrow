@@ -443,6 +443,84 @@ pub async fn classify_file(
     file_judgement_from(&answers)
 }
 
+// ── Duplicate findings (issue #249, third use) ──────────────────────────
+
+pub const Q_SAME: &str = "same";
+
+/// Is finding `b` the same problem as finding `a`, the same root cause with
+/// a different action, or a separate problem?
+pub fn pair_questions() -> BTreeMap<String, JevQuestion> {
+    let mut q = BTreeMap::new();
+    q.insert(
+        Q_SAME.to_string(),
+        JevQuestion::choice(
+            "An AI code reviewer reported `finding_a` and `finding_b` on this pull request (`diff` holds \
+             the diffs of the files they're in). Decide how they relate, judging by the underlying \
+             problem each describes, not by wording, category, or exact lines.",
+            &[
+                ("same_issue", "Both describe one problem, fixed by one change: the same defect or behavior change, said twice."),
+                ("related", "One root cause, different actions: e.g. a bug and the missing test for that bug, or a defect and its consequence elsewhere that needs its own change."),
+                ("different", "Separate problems that each need their own fix, even if they're near each other."),
+            ],
+        ),
+    );
+    q
+}
+
+fn finding_json(h: &HighlightResult) -> Value {
+    json!({
+        "file": h.path,
+        "lines": format!("{}-{}", h.start_line, h.end_line),
+        "category": h.category,
+        "claim": h.comment,
+    })
+}
+
+/// What Jev sees for a pair: the PR, both findings, and the diff of each
+/// file involved (once if they share a file).
+pub fn pair_state(pr_title: &str, pr_body: &str, a: &HighlightResult, b: &HighlightResult, diffs: &[(String, String)]) -> Value {
+    let per_file = MAX_DIFF_CHARS / diffs.len().max(1);
+    json!({
+        "pr": { "title": pr_title, "description": truncate(pr_body.trim(), MAX_BODY_CHARS) },
+        "finding_a": finding_json(a),
+        "finding_b": finding_json(b),
+        "diff": diffs.iter().map(|(p, d)| json!({ "file": p, "diff": truncate(d, per_file) })).collect::<Vec<_>>(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PairJudgement {
+    pub relation: String,
+    pub p_same: f64,
+    pub p_related: f64,
+    pub p_different: f64,
+    pub confidence: f64,
+}
+
+pub fn pair_judgement_from(answers: &BTreeMap<String, JevChoice>) -> Result<PairJudgement, String> {
+    let c = answers.get(Q_SAME).ok_or("no pair answer")?;
+    let p = |k: &str| c.probabilities.get(k).copied().unwrap_or(0.0);
+    Ok(PairJudgement {
+        relation: c.choice.clone(),
+        p_same: p("same_issue"),
+        p_related: p("related"),
+        p_different: p("different"),
+        confidence: c.confidence.unwrap_or(0.0),
+    })
+}
+
+pub async fn judge_pair(
+    api_key: &str,
+    pr_title: &str,
+    pr_body: &str,
+    a: &HighlightResult,
+    b: &HighlightResult,
+    diffs: &[(String, String)],
+) -> Result<PairJudgement, String> {
+    let answers = evaluate(api_key, &pair_state(pr_title, pr_body, a, b, diffs), &pair_questions()).await?;
+    pair_judgement_from(&answers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,6 +632,16 @@ mod tests {
         assert_eq!((c.classification.as_str(), c.category.as_str(), c.risk_level.as_str()), ("NOT_RELEVANT", "N/A", "low"));
         let s = file_state("t", "b", "a.rs", &["a.rs".into(), "b.rs".into()], "d");
         assert_eq!(s["other_files"], json!(["b.rs"]));
+    }
+
+    #[test]
+    fn a_pair_state_shows_both_findings_and_each_file_once() {
+        let h = |path: &str, c: &str| HighlightResult { path: path.into(), start_line: 1, end_line: 2, comment: c.into(), category: "bug".into(), ..Default::default() };
+        let s = pair_state("t", "b", &h("a.rs", "x"), &h("a.rs", "y"), &[("a.rs".into(), "d".into())]);
+        assert_eq!(s["finding_a"]["claim"], "x");
+        assert_eq!(s["finding_b"]["lines"], "1-2");
+        assert_eq!(s["diff"].as_array().unwrap().len(), 1);
+        assert_eq!(pair_questions()[Q_SAME].criteria.len(), 3);
     }
 
     #[test]

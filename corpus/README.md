@@ -54,6 +54,12 @@ P(real) separates them (AUC, accuracy@0.5), with no review calls. Claims
 are hand-written like a reviewer's; don't copy label notes, which speak to
 labelers.
 
+`jev-dedupe.json` (issue #249) holds pairs of findings on one fixture,
+labeled `same` (one problem said twice: merge), `related` (one root cause,
+different actions, e.g. a bug and its missing test: group) or `different`.
+`marrow eval --corpus ../../corpus --jev-dedupe` scores Jev's call on each
+pair; merging two `different` findings is the costly error.
+
 ## Labeling rules
 
 - Labels encode the CLASSIFICATION_PROMPT's *intent*, decided by a human at
