@@ -18,6 +18,12 @@ import type { ReviewCtx } from "./ctx";
 const dismissalQueue = new Map<string, Promise<void>>();
 const dismissalPending = new Map<string, number>();
 
+/** Whether a tab still has dismissal writes in flight — their results carry
+ * the fresh on-disk state, so a reload from disk would only race them. */
+export function hasPendingDismissals(tabId: string): boolean {
+  return (dismissalPending.get(tabId) ?? 0) > 0;
+}
+
 export function createProgress(ctxArg: unknown) {
   const ctx = ctxArg as ReviewCtx;
   const { tabs, setTabs, activeTabId, addToast, tabsRef } = ctx;
@@ -91,7 +97,10 @@ export function createProgress(ctxArg: unknown) {
       return true;
     };
     const prev = dismissalQueue.get(tabId) ?? Promise.resolve();
+    // catch first: one earlier write's failure must not block the writes
+    // queued after it (they'd skip straight to the error toast).
     const next = prev
+      .catch(() => {})
       .then(() => invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> }>(command, { owner, repo, prNumber: number, ...args }))
       .then(
         (saved) => {
@@ -106,7 +115,10 @@ export function createProgress(ctxArg: unknown) {
           settle();
           addToast("error", "Couldn't save — this dismissal may not persist");
         },
-      );
+      )
+      // Applying the result failed (a render error): the write itself landed
+      // and the next reload shows it. Never leave the link rejected.
+      .catch(() => {});
     dismissalQueue.set(tabId, next);
   }
 
@@ -382,7 +394,6 @@ export function createProgress(ctxArg: unknown) {
     reconcileViewedFiles,
     loadPersistedViewedState,
     loadDismissedHighlights,
-
     resolveHighlight,
     restoreHighlight,
     loadResolvedSpecs,

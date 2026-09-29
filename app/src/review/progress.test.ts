@@ -45,13 +45,18 @@ function fakeCtx() {
     activeTabId: "t1",
     tabsRef,
     addToast: () => {},
+    throwNextUpdate: false,
     updateTab: (_id: string, fn: (t: any) => any) => {
+      if (ctx.throwNextUpdate) {
+        ctx.throwNextUpdate = false;
+        throw new Error("render failed");
+      }
       tab = fn(tab);
       tabsRef.current = [tab];
       history.push(new Set(tab.dismissedHighlights));
     },
   } as any;
-  return { progress: createProgress(ctx), tab: () => tab };
+  return { progress: createProgress(ctx), tab: () => tab, ctx };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 80));
@@ -84,5 +89,17 @@ describe("dismissal persistence", () => {
     await settle();
     expect(disk.keys.sort()).toEqual(["b", "x"]);
     expect([...tab().dismissedHighlights].sort()).toEqual(["b", "x"]);
+  });
+
+  test("a write whose result can't be applied doesn't jam the writes after it", async () => {
+    const { progress, ctx } = fakeCtx();
+    progress.resolveHighlight("f1", null);
+    // The optimistic update is done; make applying f1's result throw.
+    ctx.throwNextUpdate = true;
+    await settle();
+    progress.resolveHighlight("f2", null);
+    await settle();
+    expect(calls.slice(-2)).toEqual(["dismiss_highlight:f1", "dismiss_highlight:f2"]);
+    expect(disk.keys).toContain("f2");
   });
 });
