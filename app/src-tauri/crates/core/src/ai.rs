@@ -363,7 +363,9 @@ impl AiBackend {
         on: &mut (dyn FnMut(StreamUpdate) + Send),
     ) -> Result<String, String> {
         let sent = system.chars().count() + turns.iter().map(|t| t.content.chars().count()).sum::<usize>();
+        let guard = crate::usage::CallGuard::start();
         let out = self.invoke_chat_stream_inner(system, turns, on).await;
+        guard.finish();
         // A call that fails records its prompt as sent and nothing received,
         // even if part of a response had streamed.
         traffic::record(sent, out.as_ref().map(|s| s.chars().count()).unwrap_or(0));

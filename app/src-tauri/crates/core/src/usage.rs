@@ -36,6 +36,11 @@ pub struct AiUsage {
     /// usage, so the costs above leave them out and the UI says so.
     #[serde(default)]
     pub failed_calls: u32,
+    /// Calls Marrow cut short (the agentic review stops a stream at each tool
+    /// request). Billed for what streamed, but no usage arrives; left out of
+    /// the costs like failed calls, and the UI says so.
+    #[serde(default)]
+    pub interrupted_calls: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
@@ -117,27 +122,16 @@ impl AiUsage {
     /// Add another scope's usage (a later AI call on the same analysis, e.g.
     /// re-running requirements coverage) and recompute the derived costs.
     pub fn merged(self, other: AiUsage) -> AiUsage {
-        if self.connection != other.connection || self.model != other.model {
-            // Different providers or models can't be priced together; keep
-            // the counts but blank every cost rather than mislabel one.
-            return AiUsage {
-                calls: self.calls + other.calls,
-                failed_calls: self.failed_calls + other.failed_calls,
-                calls_with_usage: 0,
-                reported_cost_usd: None,
-                list_cost_usd: None,
-                api_estimate_usd: None,
-                ..self
-            };
-        }
+        let same_pricing = self.connection == other.connection && self.model == other.model;
         let reported = match (self.reported_cost_usd, other.reported_cost_usd) {
             (Some(a), Some(b)) => Some(a + b),
             _ => None,
         };
-        AiUsage {
+        let sum = AiUsage {
             calls: self.calls + other.calls,
             calls_with_usage: self.calls_with_usage + other.calls_with_usage,
             failed_calls: self.failed_calls + other.failed_calls,
+            interrupted_calls: self.interrupted_calls + other.interrupted_calls,
             input_tokens: self.input_tokens + other.input_tokens,
             output_tokens: self.output_tokens + other.output_tokens,
             cache_read_tokens: self.cache_read_tokens + other.cache_read_tokens,
@@ -148,8 +142,13 @@ impl AiUsage {
             list_cost_usd: None,
             api_estimate_usd: None,
             ..self
+        };
+        if !same_pricing {
+            // Different providers or models can't be priced together; keep
+            // every count but blank every cost rather than mislabel one.
+            return AiUsage { reported_cost_usd: None, ..sum };
         }
-        .finalize()
+        sum.finalize()
     }
 
     /// Fill in the derived costs once the scope is done.
@@ -211,6 +210,35 @@ pub fn record_call(chars_in: usize, chars_out: usize) {
     });
 }
 
+/// Marks one call in flight. `finish` it when the call returns; dropped
+/// unfinished — the caller abandoned the call mid-stream — it counts as an
+/// interrupted call (see `AiUsage::interrupted_calls`).
+pub struct CallGuard {
+    done: bool,
+}
+
+impl CallGuard {
+    pub fn start() -> CallGuard {
+        CallGuard { done: false }
+    }
+
+    pub fn finish(mut self) {
+        self.done = true;
+    }
+}
+
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = METER.try_with(|m| {
+                if let Ok(mut u) = m.lock() {
+                    u.interrupted_calls += 1;
+                }
+            });
+        }
+    }
+}
+
 /// Count a failed call (no usage to record; see `AiUsage::failed_calls`).
 pub fn record_failed_call() {
     let _ = METER.try_with(|m| {
@@ -261,6 +289,40 @@ mod tests {
         assert!(price_for("claude-sonnet-5-5").is_none());
         assert!(price_for("claude-sonnet-5.1").is_none());
         assert!(price_for("claude-haiku-4-50").is_none());
+    }
+
+    #[test]
+    fn a_call_abandoned_mid_stream_counts_as_interrupted() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (_, u) = rt.block_on(metered("claude-cli", "claude-opus-5-5", async {
+            let finished = CallGuard::start();
+            record_call(10, 5);
+            record_usage(CallUsage { input_tokens: 100, ..Default::default() });
+            finished.finish();
+            // What `run_agent` does at a tool request: race the stream and
+            // drop it when the other branch wins.
+            tokio::select! {
+                biased;
+                _ = async {
+                    let _g = CallGuard::start();
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                } => unreachable!(),
+                _ = async {} => {}
+            }
+        }));
+        assert_eq!((u.calls, u.calls_with_usage, u.interrupted_calls, u.failed_calls), (1, 1, 1, 0));
+        // The finished call is still priced; the UI notes the interrupted one.
+        assert!(u.list_cost_usd.is_some());
+    }
+
+    #[test]
+    fn a_mismatched_merge_keeps_every_count() {
+        let a = AiUsage { connection: "claude-cli".into(), model: "m".into(), calls: 2, calls_with_usage: 2, input_tokens: 10, content_chars_in: 40, ..Default::default() };
+        let b = AiUsage { connection: "anthropic-api".into(), model: "m".into(), calls: 1, calls_with_usage: 1, input_tokens: 5, interrupted_calls: 1, content_chars_in: 20, ..Default::default() };
+        let u = a.merged(b);
+        assert_eq!((u.calls, u.input_tokens, u.content_chars_in, u.interrupted_calls), (3, 15, 60, 1));
+        assert_eq!((u.reported_cost_usd, u.list_cost_usd, u.api_estimate_usd), (None, None, None));
+        assert_eq!(u.connection, "claude-cli");
     }
 
     #[test]

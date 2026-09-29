@@ -772,6 +772,8 @@ export interface AiUsage {
   calls_with_usage: number;
   /** Calls that failed; a provider may bill them, but they report no usage. */
   failed_calls?: number;
+  /** Calls Marrow cut short at a tool request; billed, but no usage arrives. */
+  interrupted_calls?: number;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;

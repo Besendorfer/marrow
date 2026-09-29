@@ -35,6 +35,11 @@ describe("describeCost", () => {
     expect(money(1.2345)).toBe("$1.23");
   });
 
+  test("calls cut short at a tool request are called out too", () => {
+    const c = describeCost({ ...base, calls: 3, reported_cost_usd: 0.5, interrupted_calls: 2 });
+    expect(c.text).toBe("$0.50 · 3 AI calls via the Claude CLI · 2 cut-short calls not included");
+  });
+
   test("failed calls are called out rather than silently left out", () => {
     const c = describeCost({ ...base, calls: 4, reported_cost_usd: 0.5, failed_calls: 1 });
     expect(c.text).toBe("$0.50 · 4 AI calls via the Claude CLI · 1 failed call not included");
