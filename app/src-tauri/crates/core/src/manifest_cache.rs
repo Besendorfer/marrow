@@ -226,6 +226,7 @@ mod tests {
             review_verdict: None,
             review_context: Vec::new(),
             finding_relations: Vec::new(),
+            ai_usage: None,
             files: Vec::new(),
         }
     }

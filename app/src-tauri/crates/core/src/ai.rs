@@ -330,6 +330,10 @@ impl AiBackend {
     pub async fn invoke(&self, prompt: &str) -> Result<String, String> {
         let out = self.invoke_inner(prompt).await;
         traffic::record(prompt.chars().count(), out.as_ref().map(|s| s.chars().count()).unwrap_or(0));
+        match &out {
+            Ok(text) => crate::usage::record_call(prompt.chars().count(), text.chars().count()),
+            Err(_) => crate::usage::record_failed_call(),
+        }
         out
     }
 
@@ -359,10 +363,16 @@ impl AiBackend {
         on: &mut (dyn FnMut(StreamUpdate) + Send),
     ) -> Result<String, String> {
         let sent = system.chars().count() + turns.iter().map(|t| t.content.chars().count()).sum::<usize>();
+        let guard = crate::usage::CallGuard::start();
         let out = self.invoke_chat_stream_inner(system, turns, on).await;
+        guard.finish();
         // A call that fails records its prompt as sent and nothing received,
         // even if part of a response had streamed.
         traffic::record(sent, out.as_ref().map(|s| s.chars().count()).unwrap_or(0));
+        match &out {
+            Ok(text) => crate::usage::record_call(sent, text.chars().count()),
+            Err(_) => crate::usage::record_failed_call(),
+        }
         out
     }
 
@@ -493,7 +503,11 @@ async fn stream_anthropic(
         ));
     }
 
-    consume_sse(
+    // Usage arrives in pieces: input/cache counts on message_start, the
+    // output count on message_delta (issue #253).
+    let mut usage = crate::usage::CallUsage::default();
+    let mut saw_usage = false;
+    let out = consume_sse(
         resp,
         |data| {
             let json: serde_json::Value = serde_json::from_str(data).ok()?;
@@ -501,11 +515,42 @@ async fn stream_anthropic(
             if json["type"] == "content_block_delta" {
                 return json["delta"]["text"].as_str().map(str::to_string);
             }
+            saw_usage |= anthropic_stream_usage(&json, &mut usage);
             None
         },
         on,
     )
-    .await
+    .await;
+    if out.is_ok() && saw_usage {
+        crate::usage::record_usage(usage);
+    }
+    out
+}
+
+/// Fold one Anthropic stream event's usage into `usage`: input and cache
+/// counts arrive on `message_start`, the final output count on
+/// `message_delta`. Returns whether the event carried usage.
+fn anthropic_stream_usage(json: &serde_json::Value, usage: &mut crate::usage::CallUsage) -> bool {
+    match json["type"].as_str() {
+        Some("message_start") => match crate::usage::usage_from_json(&json["message"]["usage"], None) {
+            Some(u) => {
+                usage.input_tokens = u.input_tokens;
+                usage.cache_read_tokens = u.cache_read_tokens;
+                usage.cache_write_tokens = u.cache_write_tokens;
+                usage.output_tokens = u.output_tokens;
+                true
+            }
+            None => false,
+        },
+        Some("message_delta") => match json["usage"]["output_tokens"].as_u64() {
+            Some(n) => {
+                usage.output_tokens = n;
+                true
+            }
+            None => false,
+        },
+        _ => false,
+    }
 }
 
 /// Stream from an OpenAI-compatible Chat Completions endpoint (`stream: true`).
@@ -649,6 +694,7 @@ async fn stream_claude_cli(
     let mut need_separator = false;
     let mut last_text_at: Option<std::time::Instant> = None;
     let mut cli_error: Option<String> = None;
+    let mut cli_usage: Option<crate::usage::CallUsage> = None;
     if let Some(stdout) = child.stdout.take() {
         let mut reader = tokio::io::BufReader::new(stdout);
         let mut line = String::new();
@@ -695,6 +741,9 @@ async fn stream_claude_cli(
                 Some(CliEvent::Error(msg)) => {
                     cli_error = Some(msg);
                 }
+                Some(CliEvent::Usage(u)) => {
+                    cli_usage = Some(u);
+                }
                 None => {}
             }
         }
@@ -724,6 +773,9 @@ async fn stream_claude_cli(
     }
     if full.trim().is_empty() {
         return Err("claude CLI returned an empty response".to_string());
+    }
+    if let Some(u) = cli_usage {
+        crate::usage::record_usage(u);
     }
     Ok(full)
 }
@@ -756,6 +808,8 @@ enum CliEvent {
     /// The CLI reported a failure (e.g. bad model, auth). The message is for the
     /// user — the CLI emits this on stdout as JSON, not stderr.
     Error(String),
+    /// The run finished: its token usage and the cost the CLI reports (#253).
+    Usage(crate::usage::CallUsage),
 }
 
 /// Parse one NDJSON line into a [`CliEvent`], or None for lines we don't surface
@@ -781,6 +835,8 @@ fn cli_event(line: &str) -> Option<CliEvent> {
         "result" if json["is_error"] == true => Some(CliEvent::Error(
             json["result"].as_str().unwrap_or("the CLI reported an error").to_string(),
         )),
+        // A successful result carries the run's usage and reported cost.
+        "result" => crate::usage::usage_from_json(&json["usage"], json["total_cost_usd"].as_f64()).map(CliEvent::Usage),
         // An assistant turn can carry a top-level `error` code with a text block.
         "assistant" if json["error"].is_string() => Some(CliEvent::Error(
             json["message"]["content"][0]["text"]
@@ -841,8 +897,15 @@ async fn invoke_anthropic(api_key: &str, model: &str, prompt: &str) -> Result<St
         ));
     }
 
+    anthropic_json_result(&text)
+}
+
+/// The text of a non-streaming Messages API response. Like `cli_json_result`,
+/// usage is recorded only for an accepted answer: an empty one fails the call,
+/// and failed calls count separately.
+fn anthropic_json_result(text: &str) -> Result<String, String> {
     let json: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("Anthropic API returned invalid JSON: {e}"))?;
+        serde_json::from_str(text).map_err(|e| format!("Anthropic API returned invalid JSON: {e}"))?;
     // `content` is an array of blocks; concatenate the text blocks.
     let out: String = json["content"]
         .as_array()
@@ -853,6 +916,9 @@ async fn invoke_anthropic(api_key: &str, model: &str, prompt: &str) -> Result<St
     if out.trim().is_empty() {
         let snippet: String = text.chars().take(500).collect();
         return Err(format!("Anthropic API returned no text content. Raw: {snippet}"));
+    }
+    if let Some(u) = crate::usage::usage_from_json(&json["usage"], None) {
+        crate::usage::record_usage(u);
     }
     Ok(out)
 }
@@ -952,7 +1018,9 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
     if !model.is_empty() {
         args.extend(["--model", model]);
     }
-    args.push("--print");
+    // JSON output adds the run's token usage and reported cost (#253); the
+    // answer is its `result` field. Plain text still parses as a fallback.
+    args.extend(["--print", "--output-format", "json"]);
     let mut child = Command::new(resolve_claude_binary())
         .args(&args)
         .env("CLAUDECODE", "") // prevent recursive Claude Code invocation
@@ -998,11 +1066,39 @@ async fn invoke_claude_cli(model: &str, prompt: &str) -> Result<String, String> 
         ));
     }
 
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let text = cli_json_result(&raw)?;
     if text.trim().is_empty() {
         return Err("claude CLI returned empty response".to_string());
     }
 
+    Ok(text)
+}
+
+/// The answer from `claude --print --output-format json`, recording its usage
+/// and reported cost. Output that isn't the JSON envelope (an older CLI) is
+/// the answer itself.
+fn cli_json_result(raw: &str) -> Result<String, String> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
+        return Ok(raw.to_string());
+    };
+    if json["type"] != "result" {
+        return Ok(raw.to_string());
+    }
+    if json["is_error"] == true {
+        return Err(format!(
+            "claude CLI error: {}",
+            json["result"].as_str().unwrap_or("the CLI reported an error")
+        ));
+    }
+    let text = json["result"].as_str().unwrap_or_default().to_string();
+    // Record usage only for an answer that's accepted: an empty one fails the
+    // call, and failed calls count separately.
+    if !text.trim().is_empty() {
+        if let Some(u) = crate::usage::usage_from_json(&json["usage"], json["total_cost_usd"].as_f64()) {
+            crate::usage::record_usage(u);
+        }
+    }
     Ok(text)
 }
 
@@ -1062,6 +1158,72 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_stream_usage_combines_start_and_delta_events() {
+        let mut u = crate::usage::CallUsage::default();
+        let start = serde_json::json!({"type":"message_start","message":{"usage":{"input_tokens":1200,"output_tokens":1,"cache_read_input_tokens":300,"cache_creation_input_tokens":50}}});
+        let text = serde_json::json!({"type":"content_block_delta","delta":{"text":"hi"}});
+        let delta = serde_json::json!({"type":"message_delta","usage":{"output_tokens":480}});
+        assert!(anthropic_stream_usage(&start, &mut u));
+        assert!(!anthropic_stream_usage(&text, &mut u));
+        assert!(anthropic_stream_usage(&delta, &mut u));
+        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens), (1200, 480, 300, 50));
+    }
+
+    #[test]
+    fn a_successful_cli_result_carries_usage_and_reported_cost() {
+        let result = r#"{"type":"result","is_error":false,"result":"Hi","total_cost_usd":0.12,"usage":{"input_tokens":2,"output_tokens":40,"cache_read_input_tokens":10135,"cache_creation_input_tokens":14650}}"#;
+        let Some(CliEvent::Usage(u)) = cli_event(result) else { panic!("expected usage") };
+        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens), (2, 40, 10135, 14650));
+        assert_eq!(u.reported_cost_usd, Some(0.12));
+    }
+
+    #[test]
+    fn cli_json_output_yields_the_answer_or_falls_back_to_text() {
+        let ok = r#"{"type":"result","is_error":false,"result":"[1,2]","total_cost_usd":0.05,"usage":{"input_tokens":1,"output_tokens":2}}"#;
+        assert_eq!(cli_json_result(ok).unwrap(), "[1,2]");
+        let err = r#"{"type":"result","is_error":true,"result":"model not found"}"#;
+        assert!(cli_json_result(err).unwrap_err().contains("model not found"));
+        // An older CLI (or plain text) is the answer as-is.
+        assert_eq!(cli_json_result("[1,2]\n").unwrap(), "[1,2]\n");
+        assert_eq!(cli_json_result(r#"{"verdict":"ship"}"#).unwrap(), r#"{"verdict":"ship"}"#);
+    }
+
+    #[test]
+    fn anthropic_usage_is_metered_only_for_an_accepted_answer() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let ok = r#"{"content":[{"type":"text","text":"[1,2]"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5}}"#;
+        let empty = r#"{"content":[],"usage":{"input_tokens":100,"output_tokens":0}}"#;
+        let (_, u) = rt.block_on(crate::usage::metered("anthropic-api", "claude-haiku-4-5", async {
+            // What `invoke` does around each call.
+            assert_eq!(anthropic_json_result(ok).unwrap(), "[1,2]");
+            crate::usage::record_call(10, 5);
+            assert!(anthropic_json_result(empty).is_err());
+            crate::usage::record_failed_call();
+        }));
+        assert_eq!((u.calls, u.calls_with_usage, u.failed_calls), (1, 1, 1));
+        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens), (100, 20, 5));
+        // Haiku 4.5: 100 in at $1 + 20 out at $5 + 5 cache reads at $0.10, per million.
+        assert!((u.list_cost_usd.unwrap() - 0.0002005).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cli_usage_is_metered_only_for_an_accepted_answer() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let ok = r#"{"type":"result","is_error":false,"result":"[1,2]","total_cost_usd":0.05,"usage":{"input_tokens":3,"output_tokens":7}}"#;
+        let empty = r#"{"type":"result","is_error":false,"result":"","total_cost_usd":0.02,"usage":{"input_tokens":3,"output_tokens":0}}"#;
+        let (_, u) = rt.block_on(crate::usage::metered("claude-cli", "claude-opus-5-5", async {
+            assert_eq!(cli_json_result(ok).unwrap(), "[1,2]");
+            crate::usage::record_call(10, 5);
+            // `invoke_claude_cli` rejects the empty answer after this returns.
+            assert_eq!(cli_json_result(empty).unwrap(), "");
+            crate::usage::record_failed_call();
+        }));
+        assert_eq!((u.calls, u.calls_with_usage, u.failed_calls), (1, 1, 1));
+        assert_eq!((u.input_tokens, u.output_tokens), (3, 7));
+        assert_eq!(u.reported_cost_usd, Some(0.05));
+    }
+
+    #[test]
     fn cli_event_surfaces_error_messages() {
         // The CLI puts the human-readable failure in `result` on an is_error event.
         let err_result = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":404,"result":"There's an issue with the selected model (foo)."}"#;
@@ -1111,7 +1273,7 @@ mod tests {
                         emitted_text = true;
                     }
                 }
-                CliEvent::ToolUse | CliEvent::Error(_) => {}
+                CliEvent::ToolUse | CliEvent::Error(_) | CliEvent::Usage(_) => {}
             }
         }
         assert_eq!(out, "first.\n\n[[thought:2]]\n\nsecond.");

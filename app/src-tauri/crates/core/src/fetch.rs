@@ -129,7 +129,11 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
         &linked_issues,
     );
     let ai = AiBackend::from_settings(settings).await?;
-    let raw = ai.invoke(&prompt).await?;
+    // This call costs too: add it to the analysis's recorded usage (#253).
+    let connection = crate::ai::provider_for_settings(settings).label();
+    let (raw, extra) = crate::usage::metered(connection, &settings.model, ai.invoke(&prompt)).await;
+    let raw = raw?;
+    manifest.ai_usage = crate::usage::add_to_recorded(manifest.ai_usage.take(), extra);
     let known_tests: HashSet<&str> = test_diffs
         .iter()
         .chain(inline_test_diffs.iter())
@@ -181,7 +185,15 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
     Ok(manifest)
 }
 
+/// Fetch and analyze a PR. Every AI call runs inside a usage meter (#253),
+/// so the manifest records what this analysis cost.
 pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_>) -> Result<ReviewManifest, String> {
+    let connection = crate::ai::provider_for_settings(settings).label();
+    let (out, _usage) = crate::usage::metered(connection, &settings.model, fetch_pr_unmetered(pr_ref, settings, app)).await;
+    out
+}
+
+async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'_>) -> Result<ReviewManifest, String> {
     if settings.model.is_empty() {
         return Err("No model configured. Set `model` to a Claude model name (e.g. claude-sonnet-4-6) with an Anthropic API key or the `claude` CLI, or to an AWS Bedrock model ARN.".to_string());
     }
@@ -781,6 +793,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: ProgressFn<'_
         review_verdict,
         review_context,
         finding_relations,
+        // Every AI pass has finished by now; the meter holds this analysis's total.
+        ai_usage: crate::usage::current().filter(|u| u.calls + u.failed_calls + u.interrupted_calls > 0),
         files: file_diffs,
     };
 

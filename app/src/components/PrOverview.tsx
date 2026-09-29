@@ -7,6 +7,7 @@ import { RequirementsCard } from "./RequirementsCard";
 import { buildAllClearSummary, buildDigestEntries } from "./digest";
 import { contextRow, highlightKey, prRepoOf, timeAgo, ciChip } from "../utils";
 import type { ReviewManifest, FileDiff, ChangeGroup, PrChecksStatus, MyReviewState, PrCommit, NoteResolution } from "../types";
+import { describeCost } from "../review/cost";
 
 interface PrOverviewProps {
   manifest: ReviewManifest;
@@ -431,6 +432,15 @@ export function PrOverview({
             {manifest.review_verdict.reason && (
               <span className="overview-verdict-reason">{manifest.review_verdict.reason}</span>
             )}
+            {manifest.ai_usage && (() => {
+              const cost = describeCost(manifest.ai_usage);
+              return (
+                <div className="overview-cost" title={`${manifest.ai_usage.model} · ${manifest.ai_usage.input_tokens + manifest.ai_usage.cache_read_tokens + manifest.ai_usage.cache_write_tokens} tokens in, ${manifest.ai_usage.output_tokens} out`}>
+                  <span>Analysis cost: {cost.text}</span>
+                  {cost.hint && <span className="overview-cost-hint">{cost.hint}</span>}
+                </div>
+              );
+            })()}
             {(manifest.review_context?.length ?? 0) > 0 && (
               <details className="overview-context">
                 <summary>Context used ({manifest.review_context!.length})</summary>

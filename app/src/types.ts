@@ -187,6 +187,8 @@ export interface ReviewManifest {
   review_verdict?: ReviewVerdict | null;
   /** What the review read or searched beyond the diff (issue #232). */
   review_context?: ContextRead[];
+  /** What this analysis's AI calls cost (issue #253). */
+  ai_usage?: AiUsage | null;
   /** Nearby findings Jev judged one problem said twice, or one root cause
    * (issue #249). Absent without a TypeSafe key or on older caches. */
   finding_relations?: FindingRelation[];
@@ -759,4 +761,29 @@ export interface FindingRelation {
   relation: "same" | "related";
   p_same: number;
   p_related: number;
+}
+
+/** One analysis's AI usage (issue #253; mirrors marrow_core::usage::AiUsage). */
+export interface AiUsage {
+  /** Provider label: "claude-cli", "anthropic-api", "bedrock", … */
+  connection: string;
+  model: string;
+  calls: number;
+  calls_with_usage: number;
+  /** Calls that failed; a provider may bill them, but they report no usage. */
+  failed_calls?: number;
+  /** Calls Marrow cut short at a tool request; billed, but no usage arrives. */
+  interrupted_calls?: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  /** The provider's own total (the claude CLI reports one). */
+  reported_cost_usd?: number | null;
+  /** The same tokens at list price, when the model's price is known. */
+  list_cost_usd?: number | null;
+  /** CLI only: ≈ the same analysis with an Anthropic key. */
+  api_estimate_usd?: number | null;
+  content_chars_in: number;
+  content_chars_out: number;
 }

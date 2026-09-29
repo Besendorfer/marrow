@@ -2331,6 +2331,7 @@ mod tests {
             review_verdict: None,
             review_context: Vec::new(),
             finding_relations: Vec::new(),
+            ai_usage: None,
             files: vec![
                 file("pkg/low.go", "low", "@@ -1,1 +1,1 @@\n-a\n+b\n"),
                 file("pkg/high.go", "high", "@@ -1,1 +1,2 @@\n a\n+b\n"),
