@@ -280,8 +280,9 @@ describe("AI-checked risks (#243)", () => {
     expect(c("confirmed", "fix")).toContain("found a defect");
     expect(c("cleared", "look")).toContain("found no defect");
     expect(c("unresolved", "look")).toContain("couldn't settle");
-    // A cleared risk merged into a claimed defect: the defect still leads.
+    // A cleared risk merged into a note: the note's own claim still leads.
     expect(findingClaim({ kind: "bug", urgency: "fix", aiCheck: { outcome: "cleared", reason: "r" } })).toContain("needs a fix before merge");
+    expect(findingClaim({ kind: "test_gap", urgency: "look", aiCheck: { outcome: "cleared", reason: "r" } })).toStartWith("Not a bug");
   });
 });
 

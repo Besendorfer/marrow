@@ -508,7 +508,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                     score_verdict(&mut fs, verdict.as_ref(), labels.expected_verdict.as_deref());
                     let st = stats.into_inner().unwrap();
                     let checks = st.raw.as_deref().map(|raw| parse_risk_checks(raw, risks.len())).unwrap_or_default();
-                    fs.risks = score_risk_checks(&labels.risk_checks, &checks);
+                    fs.risks = score_risk_checks(&labels.risk_checks, &checks, &validated);
                     fs.tool_calls = st.tool_calls;
                     fs.degraded = st.degraded;
                     fs.degrade_reason = st.degrade_reason;
@@ -697,7 +697,8 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
     let review_json = serde_json::json!({
         "verdict_matched": vm, "verdict_labeled": vl, "complete": c, "substantive": n,
         "risk_checks": { "labeled": r.labeled, "correct": r.correct, "false_clears": r.false_clears,
-                         "false_confirms": r.false_confirms, "unresolved": r.unresolved, "unanswered": r.unanswered },
+                         "false_confirms": r.false_confirms, "unresolved": r.unresolved, "unanswered": r.unanswered,
+                         "confirmed_unanchored": r.confirmed_unanchored },
     });
     serde_json::json!({
         "corpus_version": version,
@@ -718,7 +719,8 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
                 "repaired": f.repaired, "reads": f.reads, "out_of_diff": f.out_of_diff,
                 "risks": { "labeled": f.risks.labeled, "correct": f.risks.correct, "false_clears": f.risks.false_clears,
                            "false_confirms": f.risks.false_confirms, "unresolved": f.risks.unresolved,
-                           "unanswered": f.risks.unanswered, "detail": f.risks.detail },
+                           "unanswered": f.risks.unanswered, "confirmed_unanchored": f.risks.confirmed_unanchored,
+                           "detail": f.risks.detail },
                 "detail": f.detail,
             })),
             "coverage": s.coverage.as_ref().map(|c| serde_json::json!({
@@ -791,8 +793,8 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
                 let r = &f.risks;
                 let _ = writeln!(
                     out,
-                    "{:<24} risks: correct {}/{} · false clears {} · false confirms {} · unresolved {} · unanswered {}",
-                    "", r.correct, r.labeled, r.false_clears, r.false_confirms, r.unresolved, r.unanswered
+                    "{:<24} risks: correct {}/{} · false clears {} · false confirms {} · unresolved {} · unanswered {} · confirmed w/o finding {}",
+                    "", r.correct, r.labeled, r.false_clears, r.false_confirms, r.unresolved, r.unanswered, r.confirmed_unanchored
                 );
                 for d in &r.detail {
                     let _ = writeln!(out, "    {d}");
@@ -834,8 +836,8 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
     if r.labeled > 0 {
         let _ = writeln!(
             out,
-            "RISK CHECKS correct {}/{} · false clears {} · false confirms {} · unresolved {} · unanswered {}",
-            r.correct, r.labeled, r.false_clears, r.false_confirms, r.unresolved, r.unanswered
+            "RISK CHECKS correct {}/{} · false clears {} · false confirms {} · unresolved {} · unanswered {} · confirmed w/o finding {}",
+            r.correct, r.labeled, r.false_clears, r.false_confirms, r.unresolved, r.unanswered, r.confirmed_unanchored
         );
     }
     out
@@ -851,6 +853,7 @@ fn risk_totals(scores: &[FixtureScore]) -> RiskScore {
         t.false_confirms += r.false_confirms;
         t.unresolved += r.unresolved;
         t.unanswered += r.unanswered;
+        t.confirmed_unanchored += r.confirmed_unanchored;
     }
     t
 }
@@ -916,16 +919,33 @@ struct RiskScore {
     unresolved: usize,
     /// No usable answer for the risk.
     unanswered: usize,
+    /// Confirmed with no finding near the risk's line — the defect would show
+    /// twice in the app (the risk and a separate note) or only as the risk.
+    confirmed_unanchored: usize,
     detail: Vec<String>,
 }
 
+/// Lines within which a finding counts as the one confirming a risk — the
+/// app's risk/note merge window (findings.ts MERGE_WINDOW).
+const RISK_MERGE_WINDOW: u64 = 10;
+
 /// Score the review's answers against the labels, by position (the risks
 /// were handed over in label order).
-fn score_risk_checks(labels: &[LabeledRisk], checks: &[Option<RiskCheck>]) -> RiskScore {
+fn score_risk_checks(labels: &[LabeledRisk], checks: &[Option<RiskCheck>], findings: &[HighlightResult]) -> RiskScore {
     let mut s = RiskScore { labeled: labels.len(), ..Default::default() };
     for (i, label) in labels.iter().enumerate() {
         let got = checks.get(i).cloned().flatten();
         let outcome = got.as_ref().map(|c| c.outcome.as_str());
+        let anchored = findings.iter().any(|h| {
+            h.path == label.path
+                && label.start_line.map_or(true, |l| {
+                    l + RISK_MERGE_WINDOW >= h.start_line && l <= h.end_line + RISK_MERGE_WINDOW
+                })
+        });
+        let unanchored = outcome == Some("confirmed") && !anchored;
+        if unanchored {
+            s.confirmed_unanchored += 1;
+        }
         match outcome {
             None => s.unanswered += 1,
             Some("unresolved") => s.unresolved += 1,
@@ -945,6 +965,9 @@ fn score_risk_checks(labels: &[LabeledRisk], checks: &[Option<RiskCheck>]) -> Ri
             outcome.unwrap_or("no answer"),
             got.as_ref().map(|c| if c.reason.is_empty() { String::new() } else { format!(": {}", c.reason) }).unwrap_or_default()
         ));
+        if unanchored {
+            s.detail.push(format!("    ↳ no finding near {}:{}", label.path, label.start_line.map(|l| l.to_string()).unwrap_or_default()));
+        }
     }
     s
 }
@@ -1423,14 +1446,21 @@ mod tests {
     fn risk_scoring_separates_false_clears_from_false_confirms() {
         let labels = [risk("confirmed"), risk("confirmed"), risk("cleared"), risk("cleared"), risk("confirmed"), risk("cleared")];
         let checks = [check("confirmed"), check("cleared"), check("confirmed"), check("cleared"), check("unresolved"), None];
-        let s = score_risk_checks(&labels, &checks);
+        // The first confirmed risk (a.rs:1) has a finding nearby; none for the rest.
+        let findings = [HighlightResult { path: "a.rs".into(), start_line: 5, end_line: 8, ..Default::default() }];
+        let s = score_risk_checks(&labels, &checks, &findings);
         assert_eq!(
             (s.labeled, s.correct, s.false_clears, s.false_confirms, s.unresolved, s.unanswered),
             (6, 2, 1, 1, 1, 1)
         );
         assert!(s.detail[1].starts_with("RISK ✗ confirmed risk (expected confirmed, got cleared): because"));
+        assert_eq!(s.confirmed_unanchored, 0, "a.rs:1 is within the window of L5-8");
         // Fewer answers than risks: the rest are unanswered, not a panic.
-        assert_eq!(score_risk_checks(&labels[..2], &[]).unanswered, 2);
+        assert_eq!(score_risk_checks(&labels[..2], &[], &[]).unanswered, 2);
+        // A confirmed risk with no finding near it is counted.
+        let far = [HighlightResult { path: "a.rs".into(), start_line: 50, end_line: 50, ..Default::default() }];
+        let s = score_risk_checks(&labels[..1], &[check("confirmed")], &far);
+        assert_eq!((s.correct, s.confirmed_unanchored), (1, 1));
     }
 
     #[test]

@@ -184,7 +184,9 @@ export function findingClaim(f: Pick<Finding, "kind" | "urgency" | "aiCheck">): 
   if (f.kind === "ci") return "CI is failing on this PR.";
   if (f.aiCheck?.outcome === "confirmed") return "The AI checked this risk and found a defect. Fix it before merge.";
   if (f.urgency === "fix") return "The AI thinks this is broken and needs a fix before merge.";
-  if (f.aiCheck?.outcome === "cleared") return "One of the riskiest changes in this PR. The AI checked it and found no defect.";
+  // A cleared risk that landed on a note (a test gap, a simplification)
+  // keeps that note's own claim; the card still shows what the AI checked.
+  if (f.kind === "risk" && f.aiCheck?.outcome === "cleared") return "One of the riskiest changes in this PR. The AI checked it and found no defect.";
   switch (f.kind) {
     case "risk":
       return f.aiCheck?.outcome === "unresolved"

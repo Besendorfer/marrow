@@ -2285,6 +2285,22 @@ mod tests {
     }
 
     #[test]
+    fn a_risk_check_serializes_in_the_shape_types_ts_reads() {
+        // types.ts: TopRisk.ai_check?: { outcome, reason } — kept in sync by hand.
+        let mut r = TopRisk { title: "t".into(), detail: "d".into(), path: "a.rs".into(), start_line: Some(4), ai_check: None };
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(json.get("ai_check").is_none(), "unchecked risks don't serialize the field");
+        r.ai_check = Some(crate::types::RiskCheck { outcome: "cleared".into(), reason: "guarded".into() });
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["ai_check"], serde_json::json!({ "outcome": "cleared", "reason": "guarded" }));
+        let back: TopRisk = serde_json::from_value(json).unwrap();
+        assert_eq!(back.ai_check, r.ai_check);
+        // Caches written before #243 have no field.
+        let old: TopRisk = serde_json::from_str(r#"{"title":"t","detail":"d","path":"a.rs"}"#).unwrap();
+        assert!(old.ai_check.is_none());
+    }
+
+    #[test]
     fn triage_output_never_carries_its_own_checks() {
         use super::parse_triage;
         let a = FileClassification {
