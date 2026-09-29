@@ -1207,6 +1207,23 @@ mod tests {
     }
 
     #[test]
+    fn cli_usage_is_metered_only_for_an_accepted_answer() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let ok = r#"{"type":"result","is_error":false,"result":"[1,2]","total_cost_usd":0.05,"usage":{"input_tokens":3,"output_tokens":7}}"#;
+        let empty = r#"{"type":"result","is_error":false,"result":"","total_cost_usd":0.02,"usage":{"input_tokens":3,"output_tokens":0}}"#;
+        let (_, u) = rt.block_on(crate::usage::metered("claude-cli", "claude-opus-5-5", async {
+            assert_eq!(cli_json_result(ok).unwrap(), "[1,2]");
+            crate::usage::record_call(10, 5);
+            // `invoke_claude_cli` rejects the empty answer after this returns.
+            assert_eq!(cli_json_result(empty).unwrap(), "");
+            crate::usage::record_failed_call();
+        }));
+        assert_eq!((u.calls, u.calls_with_usage, u.failed_calls), (1, 1, 1));
+        assert_eq!((u.input_tokens, u.output_tokens), (3, 7));
+        assert_eq!(u.reported_cost_usd, Some(0.05));
+    }
+
+    #[test]
     fn cli_event_surfaces_error_messages() {
         // The CLI puts the human-readable failure in `result` on an is_error event.
         let err_result = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":404,"result":"There's an issue with the selected model (foo)."}"#;

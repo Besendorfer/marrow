@@ -798,7 +798,7 @@ async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'
         review_context,
         finding_relations,
         // Every AI pass has finished by now; the meter holds this analysis's total.
-        ai_usage: crate::usage::current().filter(|u| u.calls > 0),
+        ai_usage: crate::usage::current().filter(|u| u.calls + u.failed_calls + u.interrupted_calls > 0),
         files: file_diffs,
     };
 
