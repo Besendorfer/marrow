@@ -1,0 +1,14 @@
+{
+  "title": "refactor(admin): check for admin once in the router, not in every handler",
+  "body": "Every admin handler repeated the same isAdmin check. Enforce it once with a requireAdmin middleware on the admin router and drop the per-handler copies.",
+  "files": [
+    {
+      "path": "src/admin/users.ts",
+      "diff": "@@ -2,18 +2,15 @@\n import { db } from \"../db\";\n \n export async function listUsers(req: Request, res: Response) {\n-  if (!req.user?.isAdmin) return res.status(403).end();\n   res.json(await db.users.list());\n }\n \n export async function resetPassword(req: Request, res: Response) {\n-  if (!req.user?.isAdmin) return res.status(403).end();\n   await db.users.resetPassword(req.params.id);\n   res.status(204).end();\n }\n \n export async function deleteUser(req: Request, res: Response) {\n-  if (!req.user?.isAdmin) return res.status(403).end();\n   await db.users.delete(req.params.id);\n   res.status(204).end();\n }\n"
+    },
+    {
+      "path": "src/admin/router.ts",
+      "diff": "@@ -1,8 +1,11 @@\n import { Router } from \"express\";\n+import { requireAdmin } from \"../auth/requireAdmin\";\n import { deleteUser, listUsers, resetPassword } from \"./users\";\n \n export const adminRouter = Router();\n \n adminRouter.post(\"/users/:id/reset-password\", resetPassword);\n+// Admin-only from here on: the handlers no longer check for themselves.\n+adminRouter.use(requireAdmin);\n adminRouter.get(\"/users\", listUsers);\n adminRouter.delete(\"/users/:id\", deleteUser);\n"
+    }
+  ]
+}

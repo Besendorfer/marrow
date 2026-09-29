@@ -10,7 +10,7 @@
 
 import { hashString, highlightKey, isFailingCheck } from "../utils";
 import { specResolveKey } from "../components/digest";
-import type { CheckedFindingEntry, FileDiff, FindingRelation, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, TopRisk } from "../types";
+import type { CheckedFindingEntry, FileDiff, FindingRelation, Highlight, PrChecksStatus, ReviewManifest, ReviewThread, RiskCheck, TopRisk } from "../types";
 
 /** What produced a finding. Highlight categories map 1:1; `note` is a
  * highlight from a manifest cached before categories existed. */
@@ -35,10 +35,11 @@ export type FindingRank = "critical" | "high" | "check" | "medium" | "low";
 export type FindingState = "open" | "checked" | "commented" | "dismissed";
 
 /** Does this need a fix before merge, or is it worth a look? Only a claimed
- * defect (a critical/high bug or behavior note, or failing CI) is "fix".
- * Triage risks are "look": the triage pass names the riskiest places to
- * review, it never claims they're wrong. Test gaps, uncovered requirements,
- * simplifications, and observations are "look" too. */
+ * defect (a critical/high bug or behavior note, a triage risk the review
+ * confirmed, or failing CI) is "fix". Other triage risks are "look": the
+ * triage pass names the riskiest places to review, it never claims they're
+ * wrong. Test gaps, uncovered requirements, simplifications, and
+ * observations are "look" too. */
 export type FindingUrgency = "fix" | "look";
 
 export interface Finding {
@@ -52,6 +53,8 @@ export interface Finding {
   detail?: string;
   /** Why triage flagged this spot, when a risk merged into a highlight. */
   riskDetail?: string;
+  /** How the review settled the triage risk behind this finding (#243). */
+  aiCheck?: RiskCheck;
   scenario?: string;
   fix?: string;
   path?: string;
@@ -168,20 +171,27 @@ function isCommented(f: Omit<Finding, "state" | "urgency">, threads: ReviewThrea
   });
 }
 
-function urgencyOf(kind: FindingKind, rank: FindingRank): FindingUrgency {
+function urgencyOf(kind: FindingKind, rank: FindingRank, aiCheck?: RiskCheck): FindingUrgency {
   if (kind === "ci") return "fix";
+  if (aiCheck?.outcome === "confirmed") return "fix";
   const defect = kind === "bug" || kind === "behavior" || kind === "note";
   return defect && (rank === "critical" || rank === "high") ? "fix" : "look";
 }
 
 /** One plain sentence on what the AI is (and isn't) claiming — so a
  * reviewer can tell "this is broken" from "look here" at a glance. */
-export function findingClaim(f: Pick<Finding, "kind" | "urgency">): string {
+export function findingClaim(f: Pick<Finding, "kind" | "urgency" | "aiCheck">): string {
   if (f.kind === "ci") return "CI is failing on this PR.";
+  if (f.aiCheck?.outcome === "confirmed") return "The AI checked this risk and found a defect. Fix it before merge.";
   if (f.urgency === "fix") return "The AI thinks this is broken and needs a fix before merge.";
+  // A cleared risk that landed on a note (a test gap, a simplification)
+  // keeps that note's own claim; the card still shows what the AI checked.
+  if (f.kind === "risk" && f.aiCheck?.outcome === "cleared") return "One of the riskiest changes in this PR. The AI checked it and found no defect.";
   switch (f.kind) {
     case "risk":
-      return "No defect claimed. It's one of the riskiest changes in this PR, so verify it yourself.";
+      return f.aiCheck?.outcome === "unresolved"
+        ? "No defect claimed. The AI couldn't settle this one, so verify it yourself."
+        : "No defect claimed. It's one of the riskiest changes in this PR, so verify it yourself.";
     case "test_gap":
       return "Not a bug: behavior no test checks yet. Worth closing, not blocking.";
     case "spec":
@@ -218,6 +228,15 @@ export function findingCommentBody(f: Finding): string {
 function isChecked(checked: Map<string, CheckedFindingEntry> | undefined, key: string, linesHash: string): boolean {
   const entry = checked?.get(key);
   return !!entry && linesHash !== "" && entry.lines_hash === linesHash;
+}
+
+/** A highlight's rank once a triage risk lands on it: at least "check" (a
+ * place triage called risky), and at least "high" when the review
+ * confirmed the risk as a defect. */
+function mergedRank(rank: FindingRank, merged: TopRisk | undefined): FindingRank {
+  if (!merged) return rank;
+  const floor: FindingRank = merged.ai_check?.outcome === "confirmed" ? "high" : "check";
+  return compareRank(floor, rank) < 0 ? floor : rank;
 }
 
 export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {}): FindingsResult {
@@ -269,10 +288,11 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
     findings.push({
       key: highlightKey(p.path, h),
       kind: highlightKind(h),
-      rank: merged && compareRank("check", p.rank) < 0 ? "check" : p.rank,
+      rank: mergedRank(p.rank, merged),
       title: merged ? merged.title : firstSentence(h.comment),
       detail: h.comment,
       riskDetail: merged?.detail,
+      aiCheck: merged?.ai_check ?? undefined,
       scenario: h.scenario || undefined,
       fix: h.fix || undefined,
       path: p.path,
@@ -286,7 +306,8 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
     findings.push({
       key: riskKey(r),
       kind: "risk",
-      rank: "check",
+      rank: r.ai_check?.outcome === "confirmed" ? "high" : "check",
+      aiCheck: r.ai_check ?? undefined,
       title: r.title,
       detail: r.detail,
       path: r.path,
@@ -361,7 +382,7 @@ export function buildFindings(manifest: ReviewManifest, input: FindingsInput = {
 
   const stated: Finding[] = findings.map((f) => ({
       ...f,
-      urgency: urgencyOf(f.kind, f.rank),
+      urgency: urgencyOf(f.kind, f.rank, f.aiCheck),
       state: dismissed?.has(f.key)
         ? "dismissed"
         : isChecked(checked, f.key, f.linesHash)

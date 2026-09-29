@@ -8,14 +8,14 @@ use marrow_core::ai::{extract_json_array, extract_json_object, AiBackend};
 use marrow_core::config::{load_settings, resolve_jev_api_key};
 use crate::jev_eval::{self, Judged};
 use marrow_core::fetch::{
-    finalize_coverage, parse_review_response, run_review_pass, validate_classifications, validate_highlights,
+    finalize_coverage, parse_review_response, parse_risk_checks, run_review_pass, validate_classifications, validate_highlights,
 };
 use marrow_core::repo_tools::{RepoToolTarget, SnapshotRepo, ToolBackend, ToolExecutor, ToolScope};
 use marrow_core::prompts::{
     build_classification_prompt, build_highlight_prompt_with, build_requirements_coverage_prompt,
-    has_inline_test_markers, is_test_path, HighlightExtras,
+    has_inline_test_markers, is_test_path, risk_check_section, HighlightExtras,
 };
-use marrow_core::types::{FileClassification, HighlightResult, RequirementsCoverage, ReviewVerdict};
+use marrow_core::types::{FileClassification, HighlightResult, RequirementsCoverage, ReviewVerdict, RiskCheck, TopRisk};
 use std::collections::HashSet;
 use serde::Deserialize;
 use std::fs;
@@ -53,6 +53,27 @@ struct FixtureLabels {
     /// "fix_first" | "ship" | "needs_discussion".
     #[serde(default)]
     expected_verdict: Option<String>,
+    /// Triage risks handed to the review, each with how it should settle
+    /// (labels schema v5, issue #243): "confirmed" (a real defect) or
+    /// "cleared" (scary but correct). A false clear is the costly error.
+    #[serde(default)]
+    risk_checks: Vec<LabeledRisk>,
+}
+
+#[derive(Deserialize)]
+struct LabeledRisk {
+    title: String,
+    detail: String,
+    path: String,
+    #[serde(default)]
+    start_line: Option<u64>,
+    expected: String,
+}
+
+impl LabeledRisk {
+    fn as_top_risk(&self) -> TopRisk {
+        TopRisk { title: self.title.clone(), detail: self.detail.clone(), path: self.path.clone(), start_line: self.start_line, ai_check: None }
+    }
 }
 
 const VERDICTS: [&str; 3] = ["fix_first", "ship", "needs_discussion"];
@@ -180,6 +201,8 @@ struct AgentStats {
     degrade_reason: Option<String>,
     repaired: bool,
     reads: Vec<String>,
+    /// The accepted answer's raw text (risk checks are parsed from it).
+    raw: Option<String>,
 }
 
 /// Owner every fixture's PR repo (and its sibling repos) lives under.
@@ -381,7 +404,9 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
         if !labels.expected_findings.is_empty()
             || !labels.should_not_flag.is_empty()
             || labels.expected_verdict.is_some()
+            || !labels.risk_checks.is_empty()
         {
+            let risks: Vec<TopRisk> = labels.risk_checks.iter().map(LabeledRisk::as_top_risk).collect();
             let relevant_diffs = label_relevant_diffs(&pr.files, &labels.relevant);
             // Test-file diffs ride along as context, exactly as the app feeds
             // them (issue #231) — detected by the core's own is_test_path.
@@ -404,7 +429,13 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
             // The last attempt's agent stats (tool calls, degraded, reads).
             let stats: std::sync::Mutex<AgentStats> = std::sync::Mutex::new(AgentStats::default());
             let result = if single_shot {
-                retry_review_pass(&score.name, || ai.invoke(&hl_prompt)).await
+                let prompt = format!("{hl_prompt}{}", risk_check_section(&risks, false));
+                retry_review_pass(&score.name, || async {
+                    let out = ai.invoke(&prompt).await;
+                    stats.lock().unwrap().raw = out.as_ref().ok().cloned();
+                    out
+                })
+                .await
             } else {
                 retry_review_pass(&score.name, || async {
                     let ex = ToolExecutor::new(
@@ -417,7 +448,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                         },
                         ToolScope::REVIEW,
                     );
-                    let out = run_review_pass(&ai, &ex, &agentic_prompt, &hl_prompt).await;
+                    let out = run_review_pass(&ai, &ex, &agentic_prompt, &hl_prompt, &risks).await;
                     let reads = out.reads.iter().map(|r| format!("{} {} {} {}", r.tool, r.repo, r.rev, r.path)).collect();
                     *stats.lock().unwrap() = AgentStats {
                         tool_calls: out.tool_calls,
@@ -425,6 +456,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                         degrade_reason: out.degrade_reason.clone(),
                         repaired: out.repaired,
                         reads,
+                        raw: out.raw.as_ref().ok().cloned(),
                     };
                     out.raw
                 })
@@ -475,6 +507,8 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                     fs.detail.extend(out_of_diff);
                     score_verdict(&mut fs, verdict.as_ref(), labels.expected_verdict.as_deref());
                     let st = stats.into_inner().unwrap();
+                    let checks = st.raw.as_deref().map(|raw| parse_risk_checks(raw, risks.len())).unwrap_or_default();
+                    fs.risks = score_risk_checks(&labels.risk_checks, &checks, &validated);
                     fs.tool_calls = st.tool_calls;
                     fs.degraded = st.degraded;
                     fs.degrade_reason = st.degrade_reason;
@@ -659,7 +693,13 @@ fn completion_status(scores: &[FixtureScore]) -> Result<(), String> {
 /// the reporting contract (issue #226) and must stay testable offline.
 fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, precision: f64, recall: f64) -> serde_json::Value {
     let (vm, vl, c, n) = review_totals(scores);
-    let review_json = serde_json::json!({ "verdict_matched": vm, "verdict_labeled": vl, "complete": c, "substantive": n });
+    let r = risk_totals(scores);
+    let review_json = serde_json::json!({
+        "verdict_matched": vm, "verdict_labeled": vl, "complete": c, "substantive": n,
+        "risk_checks": { "labeled": r.labeled, "correct": r.correct, "false_clears": r.false_clears,
+                         "false_confirms": r.false_confirms, "unresolved": r.unresolved, "unanswered": r.unanswered,
+                         "confirmed_unanchored": r.confirmed_unanchored },
+    });
     serde_json::json!({
         "corpus_version": version,
         "model": model,
@@ -677,6 +717,10 @@ fn render_json_report(scores: &[FixtureScore], version: &str, model: &str, preci
                 "verdict": f.verdict, "verdict_match": f.verdict_match, "shapes": f.shapes,
                 "tool_calls": f.tool_calls, "degraded": f.degraded, "degrade_reason": f.degrade_reason,
                 "repaired": f.repaired, "reads": f.reads, "out_of_diff": f.out_of_diff,
+                "risks": { "labeled": f.risks.labeled, "correct": f.risks.correct, "false_clears": f.risks.false_clears,
+                           "false_confirms": f.risks.false_confirms, "unresolved": f.risks.unresolved,
+                           "unanswered": f.risks.unanswered, "confirmed_unanchored": f.risks.confirmed_unanchored,
+                           "detail": f.risks.detail },
                 "detail": f.detail,
             })),
             "coverage": s.coverage.as_ref().map(|c| serde_json::json!({
@@ -745,6 +789,17 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
             if let Some(r) = &f.degrade_reason {
                 let _ = writeln!(out, "    degraded: {r}");
             }
+            if f.risks.labeled > 0 {
+                let r = &f.risks;
+                let _ = writeln!(
+                    out,
+                    "{:<24} risks: correct {}/{} · false clears {} · false confirms {} · unresolved {} · unanswered {} · confirmed w/o finding {}",
+                    "", r.correct, r.labeled, r.false_clears, r.false_confirms, r.unresolved, r.unanswered, r.confirmed_unanchored
+                );
+                for d in &r.detail {
+                    let _ = writeln!(out, "    {d}");
+                }
+            }
             for d in &f.detail {
                 let _ = writeln!(out, "    {d}");
             }
@@ -777,7 +832,30 @@ fn render_text_report(scores: &[FixtureScore], version: &str, precision: f64, re
     let _ = writeln!(out, "RELEVANT precision {precision:.2} · recall {recall:.2} (corpus v{version})");
     let (vm, vl, comp, subst) = review_totals(scores);
     let _ = writeln!(out, "REVIEW verdict {vm}/{vl} · complete findings {comp}/{subst}");
+    let r = risk_totals(scores);
+    if r.labeled > 0 {
+        let _ = writeln!(
+            out,
+            "RISK CHECKS correct {}/{} · false clears {} · false confirms {} · unresolved {} · unanswered {} · confirmed w/o finding {}",
+            r.correct, r.labeled, r.false_clears, r.false_confirms, r.unresolved, r.unanswered, r.confirmed_unanchored
+        );
+    }
     out
+}
+
+/// Risk-check totals across fixtures (issue #243).
+fn risk_totals(scores: &[FixtureScore]) -> RiskScore {
+    let mut t = RiskScore::default();
+    for r in scores.iter().filter_map(|s| s.findings.as_ref()).map(|f| &f.risks) {
+        t.labeled += r.labeled;
+        t.correct += r.correct;
+        t.false_clears += r.false_clears;
+        t.false_confirms += r.false_confirms;
+        t.unresolved += r.unresolved;
+        t.unanswered += r.unanswered;
+        t.confirmed_unanchored += r.confirmed_unanchored;
+    }
+    t
 }
 
 /// Aggregate review metrics (issue #231): (verdicts matched, verdicts
@@ -823,7 +901,75 @@ struct FindingsScore {
     reads: Vec<String>,
     /// Findings discarded for anchoring on a file outside the PR.
     out_of_diff: usize,
+    /// Triage-risk checks (issue #243).
+    risks: RiskScore,
     detail: Vec<String>,
+}
+
+/// How the review settled the fixture's labeled triage risks (issue #243).
+#[derive(Default, Debug, PartialEq)]
+struct RiskScore {
+    labeled: usize,
+    /// Answered with the labeled outcome.
+    correct: usize,
+    /// A real defect answered "cleared" — the costly error.
+    false_clears: usize,
+    /// A correct-but-scary change answered "confirmed".
+    false_confirms: usize,
+    unresolved: usize,
+    /// No usable answer for the risk.
+    unanswered: usize,
+    /// Confirmed with no finding near the risk's line — the defect would show
+    /// twice in the app (the risk and a separate note) or only as the risk.
+    confirmed_unanchored: usize,
+    detail: Vec<String>,
+}
+
+/// Lines within which a finding counts as the one confirming a risk — the
+/// app's risk/note merge window (findings.ts MERGE_WINDOW).
+const RISK_MERGE_WINDOW: u64 = 10;
+
+/// Score the review's answers against the labels, by position (the risks
+/// were handed over in label order).
+fn score_risk_checks(labels: &[LabeledRisk], checks: &[Option<RiskCheck>], findings: &[HighlightResult]) -> RiskScore {
+    let mut s = RiskScore { labeled: labels.len(), ..Default::default() };
+    for (i, label) in labels.iter().enumerate() {
+        let got = checks.get(i).cloned().flatten();
+        let outcome = got.as_ref().map(|c| c.outcome.as_str());
+        let anchored = findings.iter().any(|h| {
+            h.path == label.path
+                && label.start_line.map_or(true, |l| {
+                    l + RISK_MERGE_WINDOW >= h.start_line && l <= h.end_line + RISK_MERGE_WINDOW
+                })
+        });
+        let unanchored = outcome == Some("confirmed") && !anchored;
+        if unanchored {
+            s.confirmed_unanchored += 1;
+        }
+        match outcome {
+            None => s.unanswered += 1,
+            Some("unresolved") => s.unresolved += 1,
+            Some(o) if o == label.expected => s.correct += 1,
+            Some("cleared") => s.false_clears += 1,
+            Some(_) => s.false_confirms += 1,
+        }
+        let mark = match outcome {
+            Some(o) if o == label.expected => "✓",
+            None | Some("unresolved") => "·",
+            _ => "✗",
+        };
+        s.detail.push(format!(
+            "RISK {mark} {} (expected {}, got {}){}",
+            label.title,
+            label.expected,
+            outcome.unwrap_or("no answer"),
+            got.as_ref().map(|c| if c.reason.is_empty() { String::new() } else { format!(": {}", c.reason) }).unwrap_or_default()
+        ));
+        if unanchored {
+            s.detail.push(format!("    ↳ no finding near {}:{}", label.path, label.start_line.map(|l| l.to_string()).unwrap_or_default()));
+        }
+    }
+    s
 }
 
 /// Requirements-coverage scorecard for one fixture (issue #229).
@@ -1054,6 +1200,14 @@ fn validate_labels(pr: &FixturePr, labels: &FixtureLabels, name: &str) -> Result
             return Err(format!("{name}: unknown expected_verdict {v:?} (use one of {VERDICTS:?})"));
         }
     }
+    for r in &labels.risk_checks {
+        if !matches!(r.expected.as_str(), "confirmed" | "cleared") {
+            return Err(format!("{name}: risk \"{}\" expects {:?} (use \"confirmed\" or \"cleared\")", r.title, r.expected));
+        }
+        if !labels.relevant.contains(&r.path) {
+            return Err(format!("{name}: risk \"{}\" is on {} which is not label-relevant", r.title, r.path));
+        }
+    }
     for e in &labels.expected_coverage {
         if e.requirement_contains.trim().is_empty() {
             return Err(format!("{name}: expected_coverage entry with empty requirement_contains"));
@@ -1104,11 +1258,11 @@ mod tests {
                 FixtureFile { path: "b.rs".into(), diff: String::new() },
             ],
         };
-        let ok = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None };
+        let ok = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None, risk_checks: vec![] };
         assert!(validate_labels(&pr, &ok, "f").is_ok());
-        let overlap = FixtureLabels { relevant: vec!["a.rs".into(), "b.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None };
+        let overlap = FixtureLabels { relevant: vec!["a.rs".into(), "b.rs".into()], not_relevant: vec!["b.rs".into()], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None, risk_checks: vec![] };
         assert!(validate_labels(&pr, &overlap, "f").is_err());
-        let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None };
+        let missing = FixtureLabels { relevant: vec!["a.rs".into()], not_relevant: vec![], expected_findings: vec![], should_not_flag: vec![], expected_coverage: vec![], expected_verdict: None, risk_checks: vec![] };
         assert!(validate_labels(&pr, &missing, "f").is_err());
         // A typo'd importance must not silently bucket as "important".
         let typo = FixtureLabels {
@@ -1118,6 +1272,7 @@ mod tests {
             should_not_flag: vec![],
             expected_coverage: vec![],
             expected_verdict: None,
+            risk_checks: vec![],
         };
         assert!(validate_labels(&pr, &typo, "f").is_err());
         // A findings region on a non-relevant path could never be scored.
@@ -1128,6 +1283,7 @@ mod tests {
             should_not_flag: vec![],
             expected_coverage: vec![],
             expected_verdict: None,
+            risk_checks: vec![],
         };
         assert!(validate_labels(&pr, &unwinnable, "f").is_err());
     }
@@ -1213,6 +1369,7 @@ mod tests {
             should_not_flag: vec![region("b.rs", 3, 6, "important")],
             expected_coverage: vec![],
             expected_verdict: None,
+            risk_checks: vec![],
         };
         let highlights = vec![
             highlight("a.rs", 25, 27),  // overlaps the important region → found
@@ -1277,6 +1434,50 @@ mod tests {
     /// The shipped corpus must parse and validate under the current schema.
     /// VERSION must be ≥ 2 (the findings-labels schema) and numeric, but is
     /// not pinned — it bumps with every fixture change by design.
+    fn risk(expected: &str) -> LabeledRisk {
+        LabeledRisk { title: format!("{expected} risk"), detail: "d".into(), path: "a.rs".into(), start_line: Some(1), expected: expected.into() }
+    }
+
+    fn check(outcome: &str) -> Option<RiskCheck> {
+        Some(RiskCheck { outcome: outcome.into(), reason: "because".into() })
+    }
+
+    #[test]
+    fn risk_scoring_separates_false_clears_from_false_confirms() {
+        let labels = [risk("confirmed"), risk("confirmed"), risk("cleared"), risk("cleared"), risk("confirmed"), risk("cleared")];
+        let checks = [check("confirmed"), check("cleared"), check("confirmed"), check("cleared"), check("unresolved"), None];
+        // The first confirmed risk (a.rs:1) has a finding nearby; none for the rest.
+        let findings = [HighlightResult { path: "a.rs".into(), start_line: 5, end_line: 8, ..Default::default() }];
+        let s = score_risk_checks(&labels, &checks, &findings);
+        assert_eq!(
+            (s.labeled, s.correct, s.false_clears, s.false_confirms, s.unresolved, s.unanswered),
+            (6, 2, 1, 1, 1, 1)
+        );
+        assert!(s.detail[1].starts_with("RISK ✗ confirmed risk (expected confirmed, got cleared): because"));
+        assert_eq!(s.confirmed_unanchored, 0, "a.rs:1 is within the window of L5-8");
+        // Fewer answers than risks: the rest are unanswered, not a panic.
+        assert_eq!(score_risk_checks(&labels[..2], &[], &[]).unanswered, 2);
+        // A confirmed risk with no finding near it is counted.
+        let far = [HighlightResult { path: "a.rs".into(), start_line: 50, end_line: 50, ..Default::default() }];
+        let s = score_risk_checks(&labels[..1], &[check("confirmed")], &far);
+        assert_eq!((s.correct, s.confirmed_unanchored), (1, 1));
+    }
+
+    #[test]
+    fn label_validation_rejects_bad_risk_labels() {
+        let pr: FixturePr = serde_json::from_str(r#"{"title":"t","body":"","files":[{"path":"a.rs","diff":""},{"path":"b.md","diff":""}]}"#).unwrap();
+        let bad_outcome: FixtureLabels = serde_json::from_str(
+            r#"{"relevant":["a.rs"],"not_relevant":["b.md"],"risk_checks":[{"title":"t","detail":"d","path":"a.rs","expected":"unresolved"}]}"#,
+        )
+        .unwrap();
+        assert!(validate_labels(&pr, &bad_outcome, "f").unwrap_err().contains("expects"));
+        let not_relevant: FixtureLabels = serde_json::from_str(
+            r#"{"relevant":["a.rs"],"not_relevant":["b.md"],"risk_checks":[{"title":"t","detail":"d","path":"b.md","expected":"cleared"}]}"#,
+        )
+        .unwrap();
+        assert!(validate_labels(&pr, &not_relevant, "f").unwrap_err().contains("not label-relevant"));
+    }
+
     #[test]
     fn shipped_corpus_parses_and_validates() {
         let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../corpus");
@@ -1312,6 +1513,13 @@ mod tests {
             "planted-bug-rs lost its minor naming-nit region"
         );
         assert!(!planted.should_not_flag.is_empty(), "planted-bug-rs lost its should_not_flag region");
+
+        // The risk-check yardstick (issue #243): moved-guard-ts hands the
+        // review two look-alike risks, one real and one guarded.
+        let guard: FixtureLabels = read_json(&corpus.join("fixtures/moved-guard-ts/labels.json")).unwrap();
+        for expected in ["confirmed", "cleared"] {
+            assert!(guard.risk_checks.iter().any(|r| r.expected == expected), "moved-guard-ts lost its {expected} risk");
+        }
 
         // The coverage yardstick must stay in place too: coverage-upload-ts
         // labels all three statuses and its hallucination bait must remain
@@ -1439,6 +1647,7 @@ mod tests {
             should_not_flag: vec![],
             expected_coverage: vec![exp("retries", "mostly-covered")],
             expected_verdict: None,
+            risk_checks: vec![],
         };
         assert!(validate_labels(&pr, &bad_status, "f").is_err());
         let empty_needle = FixtureLabels {
@@ -1448,6 +1657,7 @@ mod tests {
             should_not_flag: vec![],
             expected_coverage: vec![exp("  ", "covered")],
             expected_verdict: None,
+            risk_checks: vec![],
         };
         assert!(validate_labels(&pr, &empty_needle, "f").is_err());
         let valid = FixtureLabels {
@@ -1457,6 +1667,7 @@ mod tests {
             should_not_flag: vec![],
             expected_coverage: vec![exp("retries", "covered"), exp("toast", "untestable")],
             expected_verdict: None,
+            risk_checks: vec![],
         };
         assert!(validate_labels(&pr, &valid, "f").is_ok());
     }

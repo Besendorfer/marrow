@@ -25,7 +25,7 @@ def line_of(text, marker, nth=0):
     return hits[nth]
 
 
-def write(name, title, body, files, relevant, not_relevant, findings, should_not_flag, verdict, readme, snapshot=None):
+def write(name, title, body, files, relevant, not_relevant, findings, should_not_flag, verdict, readme, snapshot=None, risks=()):
     root = os.path.join(OUT, name)
     os.makedirs(root, exist_ok=True)
     pr = {"title": title, "body": body, "files": [{"path": p, "diff": unified(b, h)} for p, (b, h) in files.items()]}
@@ -45,6 +45,13 @@ def write(name, title, body, files, relevant, not_relevant, findings, should_not
     if not labels["should_not_flag"]:
         del labels["should_not_flag"]
     labels["expected_verdict"] = verdict
+    # Triage risks handed to the review (schema v5, issue #243), each with
+    # how it should settle: (path, head-line marker, title, detail, expected).
+    if risks:
+        labels["risk_checks"] = [
+            {"title": t, "detail": dt, "path": path, "start_line": line_of(heads[path], marker), "expected": exp}
+            for path, marker, t, dt, exp in risks
+        ]
     json.dump(pr, open(os.path.join(root, "pr.json"), "w"), indent=2)
     json.dump(labels, open(os.path.join(root, "labels.json"), "w"), indent=2)
     open(os.path.join(root, "README.md"), "w").write(readme)
@@ -226,6 +233,12 @@ write(
                "Concurrent read-then-debit: every request reads the balance before any debit lands, so a batch whose total exceeds the balance is fully approved and the account overdraws. Sequential order was load-bearing.")],
     should_not_flag=[],
     verdict="fix_first",
+    risks=[
+        ("src/ledger/withdraw.ts", "const balance = await ledger.balance(account.id);", "Withdrawals in a batch now run concurrently",
+         "Every request in the batch reads the balance and debits the same account in parallel.", "confirmed"),
+        ("src/ledger/withdraw.ts", "return Promise.all(", "Batch results may come back out of request order",
+         "Requests now resolve concurrently; callers match each result to its request by position.", "cleared"),
+    ],
     readme=d('''
         # parallel-withdrawals-ts
 
@@ -297,6 +310,10 @@ write(
                "svc/orders.py (unchanged, outside the diff) wraps create_order in @retry; it charges the card and then parses the response. Any exception after the charge (a KeyError on a missing order_id, a DB error) now retries and charges the card again, up to 3 times. Only knowable by reading callers.")],
     should_not_flag=[],
     verdict="fix_first",
+    risks=[
+        ("svc/retry.py", "except Exception:", "retry() now retries on any exception",
+         "Only TransientError used to be retried; every decorated call now re-runs after any failure.", "confirmed"),
+    ],
     readme=d('''
         # broad-retry-py
 
@@ -380,6 +397,10 @@ write(
                "Nothing implements '0 = no limit': src/pool/builder.rs passes max_connections straight to Pool::new, and src/pool/mod.rs acquire() returns Exhausted when in_use >= max, so with 0 every acquire fails and every request errors. Two hops outside the diff.")],
     should_not_flag=[],
     verdict="fix_first",
+    risks=[
+        ("src/config.rs", "max_connections: 0,", "Default pool cap changed from 10 to 0",
+         "max_connections now defaults to 0, which the new doc comment says means no limit.", "confirmed"),
+    ],
     readme=d('''
         # zero-means-unlimited-rs
 
@@ -396,6 +417,17 @@ write(
 )
 
 # ── 5. looks-scary-correct-ts (the right answer is ship) ─────────────────
+inv_types = d('''
+    export interface InvoiceLine {
+      label: string;
+      amount: number;
+    }
+
+    export interface Invoice {
+      number: string;
+      lines: InvoiceLine[];
+    }
+''')
 inv_base = d('''
     import type { Invoice } from "./types";
 
@@ -444,6 +476,10 @@ write(
     findings=[],
     should_not_flag=[("src/invoices/render.ts", "export function formatInvoice(inv: Invoice): string {", 'out += `<p>${line.label}', "Removing the null path is safe: the only caller checks first and the type now forbids null. Flagging it is noise."),],
     verdict="ship",
+    risks=[
+        ("src/invoices/render.ts", "export function formatInvoice(inv: Invoice): string {", "formatInvoice no longer handles a missing invoice",
+         "The null guard is gone; a caller that passes a missing invoice now throws on inv.number.", "cleared"),
+    ],
     readme=d('''
         # looks-scary-correct-ts
 
@@ -452,5 +488,113 @@ write(
         missing invoice and the parameter type now excludes null. The right review
         is "ship" with nothing flagged. Tests false alarms, where a weaker model
         might over-warn.
+
+        Corpus v8 (issue #243) adds a `repo/` snapshot: renderInvoice's
+        not-found check is outside the diff's context lines, so a review
+        clearing the "missing invoice" risk on evidence has to read it.
     '''),
+    snapshot={
+        "base": {"src/invoices/render.ts": inv_base, "src/invoices/types.ts": inv_types},
+        "head": {"src/invoices/render.ts": inv_head, "src/invoices/types.ts": inv_types},
+    },
+)
+
+
+# ── 6. moved-guard-ts (corpus v8, issue #243: one risk real, one cleared) ─
+users_base = d('''
+    import type { Request, Response } from "express";
+    import { db } from "../db";
+
+    export async function listUsers(req: Request, res: Response) {
+      if (!req.user?.isAdmin) return res.status(403).end();
+      res.json(await db.users.list());
+    }
+
+    export async function resetPassword(req: Request, res: Response) {
+      if (!req.user?.isAdmin) return res.status(403).end();
+      await db.users.resetPassword(req.params.id);
+      res.status(204).end();
+    }
+
+    export async function deleteUser(req: Request, res: Response) {
+      if (!req.user?.isAdmin) return res.status(403).end();
+      await db.users.delete(req.params.id);
+      res.status(204).end();
+    }
+''')
+users_head = users_base.replace("  if (!req.user?.isAdmin) return res.status(403).end();\n", "")
+router_base = d('''
+    import { Router } from "express";
+    import { deleteUser, listUsers, resetPassword } from "./users";
+
+    export const adminRouter = Router();
+
+    adminRouter.post("/users/:id/reset-password", resetPassword);
+    adminRouter.get("/users", listUsers);
+    adminRouter.delete("/users/:id", deleteUser);
+''')
+router_head = d('''
+    import { Router } from "express";
+    import { requireAdmin } from "../auth/requireAdmin";
+    import { deleteUser, listUsers, resetPassword } from "./users";
+
+    export const adminRouter = Router();
+
+    adminRouter.post("/users/:id/reset-password", resetPassword);
+    // Admin-only from here on: the handlers no longer check for themselves.
+    adminRouter.use(requireAdmin);
+    adminRouter.get("/users", listUsers);
+    adminRouter.delete("/users/:id", deleteUser);
+''')
+require_admin = d('''
+    import type { NextFunction, Request, Response } from "express";
+
+    /** Rejects any request whose user isn't an admin. */
+    export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+      if (!req.user?.isAdmin) return res.status(403).end();
+      next();
+    }
+''')
+app_ts = d('''
+    import express from "express";
+    import { adminRouter } from "./admin/router";
+    import { session } from "./auth/session";
+
+    export const app = express();
+    app.use(session);
+    app.use("/admin", adminRouter);
+''')
+write(
+    "moved-guard-ts",
+    "refactor(admin): check for admin once in the router, not in every handler",
+    "Every admin handler repeated the same isAdmin check. Enforce it once with a requireAdmin middleware on the admin router and drop the per-handler copies.",
+    {"src/admin/users.ts": (users_base, users_head), "src/admin/router.ts": (router_base, router_head)},
+    relevant=["src/admin/users.ts", "src/admin/router.ts"],
+    not_relevant=[],
+    findings=[("src/admin/router.ts", 'adminRouter.post("/users/:id/reset-password", resetPassword);', "adminRouter.use(requireAdmin);", "important",
+               "Express applies router.use middleware only to routes registered after it. reset-password is registered above requireAdmin and its own check was removed, so any logged-in user can reset any user's password.")],
+    should_not_flag=[],
+    verdict="fix_first",
+    risks=[
+        ("src/admin/users.ts", "export async function deleteUser", "Admin check removed from deleteUser",
+         "deleteUser no longer verifies that the caller is an admin before deleting an account.", "cleared"),
+        ("src/admin/users.ts", "export async function resetPassword", "Admin check removed from resetPassword",
+         "resetPassword no longer verifies that the caller is an admin before resetting a password.", "confirmed"),
+    ],
+    readme=d('''
+        # moved-guard-ts
+
+        Hard fixture (corpus v8, issue #243). Per-handler admin checks move into
+        a `requireAdmin` router middleware. Two triage risks look identical
+        ("admin check removed from …"), but only one is real: Express applies
+        `router.use` only to routes registered after it, and reset-password is
+        registered above the middleware. deleteUser is registered below it and
+        stays guarded. The right review confirms one risk and clears the other;
+        clearing both is the costly error.
+    '''),
+    snapshot={
+        "base": {"src/admin/users.ts": users_base, "src/admin/router.ts": router_base, "src/app.ts": app_ts},
+        "head": {"src/admin/users.ts": users_head, "src/admin/router.ts": router_head, "src/app.ts": app_ts,
+                 "src/auth/requireAdmin.ts": require_admin},
+    },
 )
