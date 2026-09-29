@@ -316,6 +316,26 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_scopes_keep_separate_totals() {
+        // Two tabs analysing at once on one multi-threaded runtime, each
+        // yielding mid-way so their calls interleave.
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+        let (a, b) = rt.block_on(async {
+            let tab = |calls: usize| {
+                tokio::spawn(metered("claude-cli", "claude-opus-5-5", async move {
+                    for _ in 0..calls {
+                        record_call(1, 1);
+                        tokio::task::yield_now().await;
+                    }
+                }))
+            };
+            let (a, b) = tokio::join!(tab(3), tab(5));
+            (a.unwrap().1, b.unwrap().1)
+        });
+        assert_eq!((a.calls, b.calls), (3, 5));
+    }
+
+    #[test]
     fn a_mismatched_merge_keeps_every_count() {
         let a = AiUsage { connection: "claude-cli".into(), model: "m".into(), calls: 2, calls_with_usage: 2, input_tokens: 10, content_chars_in: 40, ..Default::default() };
         let b = AiUsage { connection: "anthropic-api".into(), model: "m".into(), calls: 1, calls_with_usage: 1, input_tokens: 5, interrupted_calls: 1, content_chars_in: 20, ..Default::default() };
