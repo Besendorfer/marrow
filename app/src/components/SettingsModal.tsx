@@ -172,6 +172,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 For <code>claude*</code> models — calls the Anthropic API
                 directly (no AWS or <code>claude</code> CLI needed). Falls back to{" "}
                 <code>ANTHROPIC_API_KEY</code>, then the <code>claude</code> CLI.
+                A key is usually much cheaper per review than the CLI, which adds
+                its own setup to every call; each PR's About panel shows what its
+                analysis cost.
               </p>
               <input
                 id="anthropic-key"

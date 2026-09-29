@@ -1,0 +1,245 @@
+//! What an analysis cost (issue #253). Every AI call made inside a
+//! [`metered`] scope adds its tokens — and, for the `claude` CLI, the cost it
+//! reports — to that scope's meter, so one PR's analysis gets one total even
+//! when several tabs analyze at once. Outside a scope, recording is a no-op.
+//!
+//! Why it matters: through the `claude` CLI every call also carries the CLI's
+//! own setup (its system prompt and tools, ~25–35k tokens), which on the
+//! corpus cost more than the review itself (#251). An Anthropic key sends only
+//! Marrow's prompt, so the summary also estimates that cost for CLI users.
+
+use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+
+/// Tokens and cost for one AI call, as the provider reported them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CallUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// The provider's own figure (the `claude` CLI reports `total_cost_usd`).
+    pub reported_cost_usd: Option<f64>,
+}
+
+/// One analysis's AI usage, stored on the manifest.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AiUsage {
+    /// The provider label (`ai::Provider::label`): "claude-cli", "anthropic-api", …
+    pub connection: String,
+    pub model: String,
+    pub calls: u32,
+    /// Calls whose provider reported token usage (the rest count only as calls).
+    pub calls_with_usage: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// Sum of provider-reported costs, when every call reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_cost_usd: Option<f64>,
+    /// The same tokens at list price, when the model's price is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_cost_usd: Option<f64>,
+    /// For the `claude` CLI: roughly what this analysis would cost with an
+    /// Anthropic key — Marrow's own prompts and replies only (≈4 characters
+    /// a token), at list price, without the CLI's per-call setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_estimate_usd: Option<f64>,
+    /// Characters of Marrow's own prompts / the replies (feeds the estimate).
+    pub content_chars_in: u64,
+    pub content_chars_out: u64,
+}
+
+/// List prices, USD per million tokens (claude.com/pricing, 2026-09-28).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    pub cache_write: f64,
+    pub cache_read: f64,
+}
+
+/// The list price for a Claude model id, when known. Matched by family so
+/// dated ids (`claude-haiku-4-5-20251001`) resolve too.
+pub fn price_for(model: &str) -> Option<Price> {
+    let m = model.to_ascii_lowercase();
+    if m.contains("haiku-4-5") {
+        Some(Price { input: 1.0, output: 5.0, cache_write: 1.25, cache_read: 0.10 })
+    } else if m.contains("sonnet-5") {
+        Some(Price { input: 2.0, output: 10.0, cache_write: 2.50, cache_read: 0.20 })
+    } else if m.contains("opus-5-5") {
+        Some(Price { input: 4.0, output: 20.0, cache_write: 5.0, cache_read: 0.20 })
+    } else {
+        None
+    }
+}
+
+impl AiUsage {
+    fn add(&mut self, call: &CallUsage) {
+        self.calls_with_usage += 1;
+        self.input_tokens += call.input_tokens;
+        self.output_tokens += call.output_tokens;
+        self.cache_read_tokens += call.cache_read_tokens;
+        self.cache_write_tokens += call.cache_write_tokens;
+        self.reported_cost_usd = match (self.calls_with_usage, self.reported_cost_usd, call.reported_cost_usd) {
+            (1, _, c) => c,
+            (_, Some(total), Some(c)) => Some(total + c),
+            // One call didn't report: a partial sum would understate.
+            _ => None,
+        };
+    }
+
+    /// Fill in the derived costs once the scope is done.
+    pub fn finalize(mut self) -> AiUsage {
+        let price = price_for(&self.model).filter(|_| matches!(self.connection.as_str(), "claude-cli" | "anthropic-api"));
+        if self.calls_with_usage < self.calls {
+            // Some calls reported nothing: any total would understate.
+            self.reported_cost_usd = None;
+        }
+        if let Some(p) = price {
+            if self.calls_with_usage == self.calls && self.calls > 0 {
+                self.list_cost_usd = Some(
+                    (self.input_tokens as f64 * p.input
+                        + self.output_tokens as f64 * p.output
+                        + self.cache_write_tokens as f64 * p.cache_write
+                        + self.cache_read_tokens as f64 * p.cache_read)
+                        / 1e6,
+                );
+            }
+            if self.connection == "claude-cli" && self.calls > 0 {
+                self.api_estimate_usd = Some(
+                    (self.content_chars_in as f64 / 4.0 * p.input + self.content_chars_out as f64 / 4.0 * p.output) / 1e6,
+                );
+            }
+        }
+        self
+    }
+}
+
+tokio::task_local! {
+    static METER: Arc<Mutex<AiUsage>>;
+}
+
+/// Run `fut` with a fresh meter for `connection`/`model`; every AI call inside
+/// it (on this task) is counted. Returns the output and the finalized usage.
+pub async fn metered<F: Future>(connection: &str, model: &str, fut: F) -> (F::Output, AiUsage) {
+    let meter = Arc::new(Mutex::new(AiUsage { connection: connection.to_string(), model: model.to_string(), ..Default::default() }));
+    let out = METER.scope(meter.clone(), fut).await;
+    let usage = meter.lock().map(|u| u.clone()).unwrap_or_default();
+    (out, usage.finalize())
+}
+
+/// The current scope's usage so far (finalized), or None outside a scope.
+pub fn current() -> Option<AiUsage> {
+    METER.try_with(|m| m.lock().map(|u| u.clone()).ok()).ok().flatten().map(AiUsage::finalize)
+}
+
+/// Count one call and the characters of Marrow's prompt / the reply.
+pub fn record_call(chars_in: usize, chars_out: usize) {
+    let _ = METER.try_with(|m| {
+        if let Ok(mut u) = m.lock() {
+            u.calls += 1;
+            u.content_chars_in += chars_in as u64;
+            u.content_chars_out += chars_out as u64;
+        }
+    });
+}
+
+/// Add a call's provider-reported usage to the current scope.
+pub fn record_usage(call: CallUsage) {
+    let _ = METER.try_with(|m| {
+        if let Ok(mut u) = m.lock() {
+            u.add(&call);
+        }
+    });
+}
+
+/// Parse an Anthropic-style `usage` object — the API's responses and the
+/// `claude` CLI's result both use these field names.
+pub fn usage_from_json(usage: &serde_json::Value, reported_cost: Option<f64>) -> Option<CallUsage> {
+    let n = |k: &str| usage.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if !usage.is_object() {
+        return None;
+    }
+    Some(CallUsage {
+        input_tokens: n("input_tokens"),
+        output_tokens: n("output_tokens"),
+        cache_read_tokens: n("cache_read_input_tokens"),
+        cache_write_tokens: n("cache_creation_input_tokens"),
+        reported_cost_usd: reported_cost,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn prices_resolve_by_family_including_dated_ids() {
+        assert_eq!(price_for("claude-haiku-4-5-20251001").unwrap().input, 1.0);
+        assert_eq!(price_for("claude-opus-5-5").unwrap().output, 20.0);
+        assert!(price_for("gpt-5").is_none());
+    }
+
+    #[test]
+    fn a_scope_counts_only_its_own_calls_and_prices_them() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        record_call(10, 10); // outside any scope: ignored
+        let (_, u) = rt.block_on(metered("claude-cli", "claude-opus-5-5", async {
+            for _ in 0..2 {
+                record_call(4_000, 400);
+                record_usage(CallUsage {
+                    input_tokens: 10,
+                    output_tokens: 100,
+                    cache_read_tokens: 20_000,
+                    cache_write_tokens: 10_000,
+                    reported_cost_usd: Some(0.06),
+                });
+            }
+        }));
+        assert_eq!((u.calls, u.calls_with_usage, u.output_tokens), (2, 2, 200));
+        assert!((u.reported_cost_usd.unwrap() - 0.12).abs() < 1e-9);
+        // 20 in ×4 + 200 out ×20 + 20k write ×5 + 40k read ×0.2, per million.
+        assert!((u.list_cost_usd.unwrap() - (20.0 * 4.0 + 200.0 * 20.0 + 20_000.0 * 5.0 + 40_000.0 * 0.2) / 1e6).abs() < 1e-9);
+        // API estimate: 8k chars in → 2k tokens ×4, 800 chars out → 200 ×20.
+        assert!((u.api_estimate_usd.unwrap() - (2_000.0 * 4.0 + 200.0 * 20.0) / 1e6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_call_without_usage_blanks_the_totals_instead_of_understating() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (_, u) = rt.block_on(metered("anthropic-api", "claude-sonnet-5", async {
+            record_call(100, 100);
+            record_usage(CallUsage { input_tokens: 1_000, output_tokens: 100, ..Default::default() });
+            record_call(100, 100); // reported nothing
+        }));
+        assert_eq!((u.calls, u.calls_with_usage), (2, 1));
+        assert!(u.list_cost_usd.is_none());
+        assert!(u.reported_cost_usd.is_none());
+        assert!(u.api_estimate_usd.is_none(), "only estimated for the CLI");
+    }
+
+    #[test]
+    fn unknown_models_and_other_providers_get_no_price() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (_, u) = rt.block_on(metered("openai-compatible", "claude-opus-5-5", async {
+            record_call(1, 1);
+            record_usage(CallUsage { input_tokens: 1, ..Default::default() });
+        }));
+        assert!(u.list_cost_usd.is_none() && u.api_estimate_usd.is_none());
+    }
+
+    #[test]
+    fn usage_json_uses_anthropic_field_names() {
+        let u = usage_from_json(
+            &json!({"input_tokens": 3, "output_tokens": 4, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 6}),
+            Some(0.1),
+        )
+        .unwrap();
+        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens), (3, 4, 5, 6));
+        assert!(usage_from_json(&json!(null), None).is_none());
+    }
+}

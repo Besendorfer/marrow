@@ -254,6 +254,10 @@ pub struct ReviewManifest {
     /// (issue #249). Empty without a TypeSafe key, or on older caches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub finding_relations: Vec<FindingRelation>,
+    /// What this analysis's AI calls cost (issue #253). None on older caches
+    /// or when no AI call ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_usage: Option<crate::usage::AiUsage>,
     pub files: Vec<FileDiff>,
 }
 

@@ -28,5 +28,6 @@ pub mod repo_tools;
 pub mod resolved_specs;
 pub mod session;
 pub mod types;
+pub mod usage;
 pub mod viewed_state;
 pub mod watches;
