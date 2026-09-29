@@ -1193,8 +1193,14 @@ fn parse_triage(raw: &str, relevant: &[&FileClassification]) -> Option<TriageRep
         r.ai_check = None;
     }
     finalize_triage(&mut report, relevant);
+    // Triage is asked for 2-3 risks; hold it to that. Each one the review
+    // settles adds tool budget (RISK_CHECK_TOOL_CALLS), so the list must be bounded.
+    report.top_risks.truncate(MAX_TOP_RISKS);
     Some(report)
 }
+
+/// The most triage risks kept — TRIAGE_PROMPT asks for 2-3.
+const MAX_TOP_RISKS: usize = 3;
 
 /// Deterministic triage for when the AI pass is unavailable: order relevant files
 /// by risk (critical first), and surface the critical/high files as top risks,
@@ -2353,6 +2359,13 @@ mod tests {
         assert_eq!(report.top_risks.len(), 1, "finalized before the review sees it");
         assert!(report.top_risks[0].ai_check.is_none());
         assert!(parse_triage(r#"{"top_risks":[],"review_order":[]}"#, &relevant).is_none());
+        // More than asked for: held to three, so the review's budget is bounded.
+        let many = format!(
+            r#"{{"top_risks":[{}],"review_order":[{{"path":"a.rs","rationale":"r"}}]}}"#,
+            (0..6).map(|i| format!(r#"{{"title":"R{i}","detail":"d","path":"a.rs"}}"#)).collect::<Vec<_>>().join(",")
+        );
+        let titles: Vec<String> = parse_triage(&many, &relevant).unwrap().top_risks.into_iter().map(|r| r.title).collect();
+        assert_eq!(titles, vec!["R0", "R1", "R2"]);
     }
 
     #[test]
