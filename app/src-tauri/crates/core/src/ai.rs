@@ -507,26 +507,11 @@ async fn stream_anthropic(
         resp,
         |data| {
             let json: serde_json::Value = serde_json::from_str(data).ok()?;
-            match json["type"].as_str() {
-                // content_block_delta events carry the streamed text.
-                Some("content_block_delta") => return json["delta"]["text"].as_str().map(str::to_string),
-                Some("message_start") => {
-                    if let Some(u) = crate::usage::usage_from_json(&json["message"]["usage"], None) {
-                        usage.input_tokens = u.input_tokens;
-                        usage.cache_read_tokens = u.cache_read_tokens;
-                        usage.cache_write_tokens = u.cache_write_tokens;
-                        usage.output_tokens = u.output_tokens;
-                        saw_usage = true;
-                    }
-                }
-                Some("message_delta") => {
-                    if let Some(n) = json["usage"]["output_tokens"].as_u64() {
-                        usage.output_tokens = n;
-                        saw_usage = true;
-                    }
-                }
-                _ => {}
+            // content_block_delta events carry the streamed text.
+            if json["type"] == "content_block_delta" {
+                return json["delta"]["text"].as_str().map(str::to_string);
             }
+            saw_usage |= anthropic_stream_usage(&json, &mut usage);
             None
         },
         on,
@@ -536,6 +521,32 @@ async fn stream_anthropic(
         crate::usage::record_usage(usage);
     }
     out
+}
+
+/// Fold one Anthropic stream event's usage into `usage`: input and cache
+/// counts arrive on `message_start`, the final output count on
+/// `message_delta`. Returns whether the event carried usage.
+fn anthropic_stream_usage(json: &serde_json::Value, usage: &mut crate::usage::CallUsage) -> bool {
+    match json["type"].as_str() {
+        Some("message_start") => match crate::usage::usage_from_json(&json["message"]["usage"], None) {
+            Some(u) => {
+                usage.input_tokens = u.input_tokens;
+                usage.cache_read_tokens = u.cache_read_tokens;
+                usage.cache_write_tokens = u.cache_write_tokens;
+                usage.output_tokens = u.output_tokens;
+                true
+            }
+            None => false,
+        },
+        Some("message_delta") => match json["usage"]["output_tokens"].as_u64() {
+            Some(n) => {
+                usage.output_tokens = n;
+                true
+            }
+            None => false,
+        },
+        _ => false,
+    }
 }
 
 /// Stream from an OpenAI-compatible Chat Completions endpoint (`stream: true`).
@@ -1128,6 +1139,18 @@ mod tests {
         let result = r#"{"type":"result","is_error":false,"result":"Hello"}"#;
         assert_eq!(cli_event(result), None);
         assert_eq!(cli_event("not json"), None);
+    }
+
+    #[test]
+    fn anthropic_stream_usage_combines_start_and_delta_events() {
+        let mut u = crate::usage::CallUsage::default();
+        let start = serde_json::json!({"type":"message_start","message":{"usage":{"input_tokens":1200,"output_tokens":1,"cache_read_input_tokens":300,"cache_creation_input_tokens":50}}});
+        let text = serde_json::json!({"type":"content_block_delta","delta":{"text":"hi"}});
+        let delta = serde_json::json!({"type":"message_delta","usage":{"output_tokens":480}});
+        assert!(anthropic_stream_usage(&start, &mut u));
+        assert!(!anthropic_stream_usage(&text, &mut u));
+        assert!(anthropic_stream_usage(&delta, &mut u));
+        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens), (1200, 480, 300, 50));
     }
 
     #[test]

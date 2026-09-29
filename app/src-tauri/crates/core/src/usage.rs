@@ -62,7 +62,10 @@ pub struct Price {
 }
 
 /// The list price for a Claude model id, when known. Matched by family so
-/// dated ids (`claude-haiku-4-5-20251001`) resolve too.
+/// dated ids (`claude-haiku-4-5-20251001`) resolve too. Bare CLI aliases
+/// (`opus`, `sonnet`) aren't priced: they follow whatever model the CLI
+/// currently maps them to. Opus 5.5's cache read is $0.20, not 10% of its
+/// input price — that's the published figure (verified 2026-09-29).
 pub fn price_for(model: &str) -> Option<Price> {
     let m = model.to_ascii_lowercase();
     if m.contains("haiku-4-5") {
@@ -89,6 +92,30 @@ impl AiUsage {
             // One call didn't report: a partial sum would understate.
             _ => None,
         };
+    }
+
+    /// Add another scope's usage (a later AI call on the same analysis, e.g.
+    /// re-running requirements coverage) and recompute the derived costs.
+    pub fn merged(self, other: AiUsage) -> AiUsage {
+        let reported = match (self.reported_cost_usd, other.reported_cost_usd) {
+            (Some(a), Some(b)) => Some(a + b),
+            _ => None,
+        };
+        AiUsage {
+            calls: self.calls + other.calls,
+            calls_with_usage: self.calls_with_usage + other.calls_with_usage,
+            input_tokens: self.input_tokens + other.input_tokens,
+            output_tokens: self.output_tokens + other.output_tokens,
+            cache_read_tokens: self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens + other.cache_write_tokens,
+            content_chars_in: self.content_chars_in + other.content_chars_in,
+            content_chars_out: self.content_chars_out + other.content_chars_out,
+            reported_cost_usd: reported,
+            list_cost_usd: None,
+            api_estimate_usd: None,
+            ..self
+        }
+        .finalize()
     }
 
     /// Fill in the derived costs once the scope is done.
@@ -230,6 +257,22 @@ mod tests {
             record_usage(CallUsage { input_tokens: 1, ..Default::default() });
         }));
         assert!(u.list_cost_usd.is_none() && u.api_estimate_usd.is_none());
+    }
+
+    #[test]
+    fn a_later_call_merges_into_the_recorded_total() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let run = |cost: f64| {
+            rt.block_on(metered("claude-cli", "claude-opus-5-5", async move {
+                record_call(400, 40);
+                record_usage(CallUsage { output_tokens: 10, reported_cost_usd: Some(cost), ..Default::default() });
+            }))
+            .1
+        };
+        let total = run(0.5).merged(run(0.25));
+        assert_eq!((total.calls, total.calls_with_usage, total.output_tokens), (2, 2, 20));
+        assert!((total.reported_cost_usd.unwrap() - 0.75).abs() < 1e-9);
+        assert!(total.api_estimate_usd.unwrap() > 0.0 && total.list_cost_usd.is_some());
     }
 
     #[test]

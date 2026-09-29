@@ -13,7 +13,7 @@ describe("describeCost", () => {
   test("a CLI analysis shows the reported cost and the cheaper key path", () => {
     const c = describeCost({ ...base, reported_cost_usd: 0.142, api_estimate_usd: 0.039 });
     expect(c.text).toBe("$0.14 · 5 AI calls via the Claude CLI");
-    expect(c.hint).toBe("≈$0.04 with an Anthropic key — the CLI adds its own setup to every call.");
+    expect(c.hint).toBe("≈$0.04 with an Anthropic key (rough estimate) — the CLI adds its own setup to every call.");
   });
 
   test("no hint when the key wouldn't be meaningfully cheaper", () => {
