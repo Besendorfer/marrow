@@ -895,11 +895,15 @@ async fn invoke_anthropic(api_key: &str, model: &str, prompt: &str) -> Result<St
         ));
     }
 
+    anthropic_json_result(&text)
+}
+
+/// The text of a non-streaming Messages API response. Like `cli_json_result`,
+/// usage is recorded only for an accepted answer: an empty one fails the call,
+/// and failed calls count separately.
+fn anthropic_json_result(text: &str) -> Result<String, String> {
     let json: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("Anthropic API returned invalid JSON: {e}"))?;
-    if let Some(u) = crate::usage::usage_from_json(&json["usage"], None) {
-        crate::usage::record_usage(u);
-    }
+        serde_json::from_str(text).map_err(|e| format!("Anthropic API returned invalid JSON: {e}"))?;
     // `content` is an array of blocks; concatenate the text blocks.
     let out: String = json["content"]
         .as_array()
@@ -910,6 +914,9 @@ async fn invoke_anthropic(api_key: &str, model: &str, prompt: &str) -> Result<St
     if out.trim().is_empty() {
         let snippet: String = text.chars().take(500).collect();
         return Err(format!("Anthropic API returned no text content. Raw: {snippet}"));
+    }
+    if let Some(u) = crate::usage::usage_from_json(&json["usage"], None) {
+        crate::usage::record_usage(u);
     }
     Ok(out)
 }
@@ -1177,6 +1184,24 @@ mod tests {
         // An older CLI (or plain text) is the answer as-is.
         assert_eq!(cli_json_result("[1,2]\n").unwrap(), "[1,2]\n");
         assert_eq!(cli_json_result(r#"{"verdict":"ship"}"#).unwrap(), r#"{"verdict":"ship"}"#);
+    }
+
+    #[test]
+    fn anthropic_usage_is_metered_only_for_an_accepted_answer() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let ok = r#"{"content":[{"type":"text","text":"[1,2]"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5}}"#;
+        let empty = r#"{"content":[],"usage":{"input_tokens":100,"output_tokens":0}}"#;
+        let (_, u) = rt.block_on(crate::usage::metered("anthropic-api", "claude-haiku-4-5", async {
+            // What `invoke` does around each call.
+            assert_eq!(anthropic_json_result(ok).unwrap(), "[1,2]");
+            crate::usage::record_call(10, 5);
+            assert!(anthropic_json_result(empty).is_err());
+            crate::usage::record_failed_call();
+        }));
+        assert_eq!((u.calls, u.calls_with_usage, u.failed_calls), (1, 1, 1));
+        assert_eq!((u.input_tokens, u.output_tokens, u.cache_read_tokens), (100, 20, 5));
+        // Haiku 4.5: 100 in at $1 + 20 out at $5 + 5 cache reads at $0.10, per million.
+        assert!((u.list_cost_usd.unwrap() - 0.0002005).abs() < 1e-12);
     }
 
     #[test]

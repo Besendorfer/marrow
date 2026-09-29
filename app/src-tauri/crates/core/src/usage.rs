@@ -72,15 +72,31 @@ pub struct Price {
 /// input price — that's the published figure (verified 2026-09-29).
 pub fn price_for(model: &str) -> Option<Price> {
     let m = model.to_ascii_lowercase();
-    if m.contains("haiku-4-5") {
+    if is_family(&m, "haiku-4-5") {
         Some(Price { input: 1.0, output: 5.0, cache_write: 1.25, cache_read: 0.10 })
-    } else if m.contains("sonnet-5") {
+    } else if is_family(&m, "sonnet-5") {
         Some(Price { input: 2.0, output: 10.0, cache_write: 2.50, cache_read: 0.20 })
-    } else if m.contains("opus-5-5") {
+    } else if is_family(&m, "opus-5-5") {
         Some(Price { input: 4.0, output: 20.0, cache_write: 5.0, cache_read: 0.20 })
     } else {
         None
     }
+}
+
+/// Whether `model` names exactly `family`: the family may be followed by a
+/// date (`-20251001`) or a suffix like `[1m]`, but not by another version
+/// number, so `sonnet-5` doesn't price `sonnet-5-5`.
+fn is_family(model: &str, family: &str) -> bool {
+    model.match_indices(family).any(|(i, _)| {
+        let rest = &model[i + family.len()..];
+        match rest.strip_prefix('-') {
+            Some(tail) => {
+                let digits = tail.chars().take_while(|c| c.is_ascii_digit()).count();
+                digits >= 6
+            }
+            None => !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.'),
+        }
+    })
 }
 
 impl AiUsage {
@@ -139,8 +155,11 @@ impl AiUsage {
     /// Fill in the derived costs once the scope is done.
     pub fn finalize(mut self) -> AiUsage {
         let price = price_for(&self.model).filter(|_| matches!(self.connection.as_str(), "claude-cli" | "anthropic-api"));
-        if self.calls_with_usage < self.calls {
-            // Some calls reported nothing: any total would understate.
+        if self.calls_with_usage != self.calls {
+            // Some calls reported nothing, so any total would understate; or
+            // usage was recorded for a call that then failed, so the counts
+            // don't line up. Either way, no total rather than a wrong one —
+            // the UI says "cost not reported".
             self.reported_cost_usd = None;
         }
         if let Some(p) = price {
@@ -236,6 +255,27 @@ mod tests {
         assert_eq!(price_for("claude-haiku-4-5-20251001").unwrap().input, 1.0);
         assert_eq!(price_for("claude-opus-5-5").unwrap().output, 20.0);
         assert!(price_for("gpt-5").is_none());
+        assert_eq!(price_for("claude-sonnet-5").unwrap().input, 2.0);
+        assert_eq!(price_for("claude-opus-5-5[1m]").unwrap().input, 4.0);
+        // A later version of a family isn't priced as the earlier one.
+        assert!(price_for("claude-sonnet-5-5").is_none());
+        assert!(price_for("claude-sonnet-5.1").is_none());
+        assert!(price_for("claude-haiku-4-50").is_none());
+    }
+
+    #[test]
+    fn usage_recorded_for_more_calls_than_succeeded_blanks_the_totals() {
+        let u = AiUsage {
+            connection: "claude-cli".into(),
+            model: "claude-opus-5-5".into(),
+            calls: 1,
+            calls_with_usage: 2,
+            reported_cost_usd: Some(0.5),
+            input_tokens: 1000,
+            ..Default::default()
+        }
+        .finalize();
+        assert_eq!((u.reported_cost_usd, u.list_cost_usd), (None, None));
     }
 
     #[test]
