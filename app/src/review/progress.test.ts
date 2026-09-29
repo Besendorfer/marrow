@@ -31,6 +31,8 @@ mock.module("@tauri-apps/api/core", () => ({
 
 const { createProgress } = await import("./progress");
 
+const history: Set<string>[] = [];
+
 function fakeCtx() {
   let tab = {
     id: "t1",
@@ -46,6 +48,7 @@ function fakeCtx() {
     updateTab: (_id: string, fn: (t: any) => any) => {
       tab = fn(tab);
       tabsRef.current = [tab];
+      history.push(new Set(tab.dismissedHighlights));
     },
   } as any;
   return { progress: createProgress(ctx), tab: () => tab };
@@ -63,7 +66,11 @@ describe("dismissal persistence", () => {
     progress.resolveHighlight("b", { state: "noise", reason: "" } as any);
     // The optimistic update already shows both (no stale-snapshot loss).
     expect([...tab().dismissedHighlights].sort()).toEqual(["a", "b"]);
+    const shown = history.length;
     await settle();
+    // No flicker: the first write's result (which predates "b") is never
+    // applied while "b" is still queued; "b" stays shown throughout.
+    expect(history.slice(shown).every((keys) => keys.has("b"))).toBe(true);
     expect(calls).toEqual(["dismiss_highlight:a", "dismiss_highlight:b"]);
     // After the writes, the tab shows the merged disk state, script key included.
     expect([...tab().dismissedHighlights].sort()).toEqual(["a", "b", "x"]);

@@ -11,9 +11,12 @@ import type { ReviewCtx } from "./ctx";
 
 // `ctxArg` is typed unknown only so ReturnType<typeof create…> (which
 // ReviewCtx is built from) doesn't loop through this parameter's type.
-// Per-tab chain of dismissal writes (see persistDismissal). Module scope:
-// the create… factories run on every render, so a local map would be lost.
+// Per-tab chain of dismissal writes and how many are still pending (see
+// persistDismissal). Module scope: the create… factories run on every
+// render, so local maps would be lost. Entries are removed once a tab's
+// queue drains.
 const dismissalQueue = new Map<string, Promise<void>>();
+const dismissalPending = new Map<string, number>();
 
 export function createProgress(ctxArg: unknown) {
   const ctx = ctxArg as ReviewCtx;
@@ -70,21 +73,40 @@ export function createProgress(ctxArg: unknown) {
   /** Persist one dismissal change (issue #252). The backend applies it to
    * what's on disk key-by-key and returns the merged state, so a resolution
    * written meanwhile by another tool (the resolve script) is kept, never
-   * overwritten, and shows up here. Writes for a tab run in order, so a slow
-   * response can't roll back a newer one. */
+   * overwritten, and shows up here. Writes for a tab run in order, and only
+   * the LAST pending write's result is applied: an earlier result predates
+   * the dismissals still queued behind it, so applying it would make those
+   * flicker back until their own result lands. */
   function persistDismissal(tabId: string, prUrl: string, command: "dismiss_highlight" | "restore_dismissed_highlight", args: Record<string, unknown>) {
     const { owner, repo, number } = parsePrUrl(prUrl);
+    dismissalPending.set(tabId, (dismissalPending.get(tabId) ?? 0) + 1);
+    const settle = (): boolean => {
+      const left = (dismissalPending.get(tabId) ?? 1) - 1;
+      if (left > 0) {
+        dismissalPending.set(tabId, left);
+        return false;
+      }
+      dismissalPending.delete(tabId);
+      dismissalQueue.delete(tabId);
+      return true;
+    };
     const prev = dismissalQueue.get(tabId) ?? Promise.resolve();
     const next = prev
       .then(() => invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> }>(command, { owner, repo, prNumber: number, ...args }))
-      .then((saved) => {
-        ctx.updateTab(tabId, (t) => ({
-          ...t,
-          dismissedHighlights: new Set(saved.keys),
-          noteResolutions: new Map(Object.entries(saved.resolutions ?? {})),
-        }));
-      })
-      .catch(() => addToast("error", "Couldn't save — this dismissal may not persist"));
+      .then(
+        (saved) => {
+          if (!settle()) return;
+          ctx.updateTab(tabId, (t) => ({
+            ...t,
+            dismissedHighlights: new Set(saved.keys),
+            noteResolutions: new Map(Object.entries(saved.resolutions ?? {})),
+          }));
+        },
+        () => {
+          settle();
+          addToast("error", "Couldn't save — this dismissal may not persist");
+        },
+      );
     dismissalQueue.set(tabId, next);
   }
 
