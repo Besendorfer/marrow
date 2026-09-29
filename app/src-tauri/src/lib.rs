@@ -215,8 +215,15 @@ pub fn run() {
                             // the panel (which activates the app but does not focus the
                             // main window) never hides it.
                             let acode = if active { 1 } else { 2 };
-                            if wa.swap(acode, Ordering::Relaxed) == 1 && acode == 2 {
+                            let was = wa.swap(acode, Ordering::Relaxed);
+                            if was == 1 && acode == 2 {
                                 let _ = commands::set_activity_window_visible(h, true);
+                            } else if was == 2 && acode == 1 {
+                                // Coming back to Marrow (Cmd+Tab, Dock) sends the
+                                // webview no focus event; tell the frontend so it
+                                // re-reads state written outside the app (#252).
+                                use tauri::Emitter;
+                                let _ = h.emit("app-activated", ());
                             }
                         });
                     }
@@ -268,7 +275,8 @@ pub fn run() {
             commands::load_viewed_files,
             commands::save_viewed_files,
             commands::load_dismissed_highlights,
-            commands::save_dismissed_highlights,
+            commands::dismiss_highlight,
+            commands::restore_dismissed_highlight,
             commands::load_resolved_specs,
             commands::save_resolved_specs,
             commands::load_checked_findings,

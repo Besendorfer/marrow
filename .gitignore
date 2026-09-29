@@ -4,6 +4,8 @@ app/node_modules/
 # Build artifacts
 app/dist/
 app/src-tauri/target/
+# Extra cargo target dirs (e.g. CARGO_TARGET_DIR=target-wt in a worktree).
+app/src-tauri/target-*/
 app/src-tauri/gen/
 
 # Lock files (Cargo.lock is checked in for binary crates)

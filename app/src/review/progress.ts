@@ -11,6 +11,30 @@ import type { ReviewCtx } from "./ctx";
 
 // `ctxArg` is typed unknown only so ReturnType<typeof create…> (which
 // ReviewCtx is built from) doesn't loop through this parameter's type.
+// Per-tab chain of dismissal writes and how many are still pending (see
+// persistDismissal). Module scope: the create… factories run on every
+// render, so local maps would be lost. Entries are removed once a tab's
+// queue drains.
+const dismissalQueue = new Map<string, Promise<void>>();
+const dismissalPending = new Map<string, number>();
+
+// Bumped on every dismissal change per tab, so a disk reload can tell
+// whether anything changed while it was in flight.
+const dismissalVersion = new Map<string, number>();
+
+/** A tab's dismissal version. A reload captures it when sent and applies
+ * its result only if it's unchanged and nothing is pending: a dismissal
+ * made meanwhile (even one that already finished) is newer than the read. */
+export function dismissalVersionOf(tabId: string): number {
+  return dismissalVersion.get(tabId) ?? 0;
+}
+
+/** Whether a tab still has dismissal writes in flight — their results carry
+ * the fresh on-disk state, so a reload from disk would only race them. */
+export function hasPendingDismissals(tabId: string): boolean {
+  return (dismissalPending.get(tabId) ?? 0) > 0;
+}
+
 export function createProgress(ctxArg: unknown) {
   const ctx = ctxArg as ReviewCtx;
   const { tabs, setTabs, activeTabId, addToast, tabsRef } = ctx;
@@ -63,46 +87,85 @@ export function createProgress(ctxArg: unknown) {
     }
   }
 
-  /** Persist the current tab's dismissed-set + resolutions in one write. */
-  function saveDismissedState(tab: Tab, keys: Set<string>, resolutions: Map<string, NoteResolution>) {
-    if (!tab.manifest) return;
-    const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
-    invoke("save_dismissed_highlights", {
-      owner,
-      repo,
-      prNumber: number,
-      state: { keys: [...keys], resolutions: Object.fromEntries(resolutions) },
-    }).catch(() => addToast("error", "Couldn't save — this dismissal may not persist"));
+  /** Persist one dismissal change (issue #252). The backend applies it to
+   * what's on disk key-by-key and returns the merged state, so a resolution
+   * written meanwhile by another tool (the resolve script) is kept, never
+   * overwritten, and shows up here. Writes for a tab run in order, and only
+   * the LAST pending write's result is applied: an earlier result predates
+   * the dismissals still queued behind it, so applying it would make those
+   * flicker back until their own result lands. */
+  function persistDismissal(tabId: string, prUrl: string, command: "dismiss_highlight" | "restore_dismissed_highlight", args: Record<string, unknown>) {
+    const { owner, repo, number } = parsePrUrl(prUrl);
+    dismissalPending.set(tabId, (dismissalPending.get(tabId) ?? 0) + 1);
+    dismissalVersion.set(tabId, dismissalVersionOf(tabId) + 1);
+    const settle = (): boolean => {
+      const left = (dismissalPending.get(tabId) ?? 1) - 1;
+      if (left > 0) {
+        dismissalPending.set(tabId, left);
+        return false;
+      }
+      dismissalPending.delete(tabId);
+      dismissalQueue.delete(tabId);
+      return true;
+    };
+    const prev = dismissalQueue.get(tabId) ?? Promise.resolve();
+    // catch first: one earlier write's failure must not block the writes
+    // queued after it (they'd skip straight to the error toast).
+    const next = prev
+      .catch(() => {})
+      .then(() => invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> }>(command, { owner, repo, prNumber: number, ...args }))
+      .then(
+        (saved) => {
+          if (!settle()) return;
+          ctx.updateTab(tabId, (t) => ({
+            ...t,
+            dismissedHighlights: new Set(saved.keys),
+            noteResolutions: new Map(Object.entries(saved.resolutions ?? {})),
+          }));
+        },
+        () => {
+          settle();
+          addToast("error", "Couldn't save — this dismissal may not persist");
+        },
+      )
+      // Applying the result failed (a render error): the write itself landed
+      // and the next reload shows it. Never leave the link rejected.
+      .catch(() => {});
+    dismissalQueue.set(tabId, next);
   }
 
   /** Dismiss (hide) a note, optionally recording how/why it was resolved.
    * `resolution: null` is a plain/quick dismiss — no resolution metadata is
-   * recorded (renders as the legacy "Dismissed" chip, same as noise). */
+   * recorded (renders as the legacy "Dismissed" chip, same as noise). The
+   * update is functional, so several in a row (a merged finding and its
+   * duplicates) each apply to the latest state, not a stale snapshot. */
   function resolveHighlight(key: string, resolution: NoteResolution | null) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab || !tab.manifest) return;
-    const nextKeys = new Set(tab.dismissedHighlights);
-    nextKeys.add(key);
-    const nextResolutions = new Map(tab.noteResolutions);
-    if (resolution) {
-      nextResolutions.set(key, { ...resolution, at: new Date().toISOString() });
-    } else {
-      nextResolutions.delete(key);
-    }
-    ctx.updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: nextKeys, noteResolutions: nextResolutions }));
-    saveDismissedState(tab, nextKeys, nextResolutions);
+    const stamped = resolution ? { ...resolution, at: new Date().toISOString() } : null;
+    ctx.updateTab(tab.id, (t) => {
+      const keys = new Set(t.dismissedHighlights);
+      keys.add(key);
+      const resolutions = new Map(t.noteResolutions);
+      if (stamped) resolutions.set(key, stamped);
+      else resolutions.delete(key);
+      return { ...t, dismissedHighlights: keys, noteResolutions: resolutions };
+    });
+    persistDismissal(tab.id, tab.manifest.pr_url, "dismiss_highlight", { key, resolution: stamped });
   }
 
   /** Restore a previously-dismissed note, clearing any recorded resolution. */
   function restoreHighlight(key: string) {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab || !tab.manifest) return;
-    const nextKeys = new Set(tab.dismissedHighlights);
-    nextKeys.delete(key);
-    const nextResolutions = new Map(tab.noteResolutions);
-    nextResolutions.delete(key);
-    ctx.updateTab(tab.id, (t) => ({ ...t, dismissedHighlights: nextKeys, noteResolutions: nextResolutions }));
-    saveDismissedState(tab, nextKeys, nextResolutions);
+    ctx.updateTab(tab.id, (t) => {
+      const keys = new Set(t.dismissedHighlights);
+      keys.delete(key);
+      const resolutions = new Map(t.noteResolutions);
+      resolutions.delete(key);
+      return { ...t, dismissedHighlights: keys, noteResolutions: resolutions };
+    });
+    persistDismissal(tab.id, tab.manifest.pr_url, "restore_dismissed_highlight", { key });
   }
 
   async function loadResolvedSpecs(tab: Tab) {
@@ -343,7 +406,6 @@ export function createProgress(ctxArg: unknown) {
     reconcileViewedFiles,
     loadPersistedViewedState,
     loadDismissedHighlights,
-    saveDismissedState,
     resolveHighlight,
     restoreHighlight,
     loadResolvedSpecs,

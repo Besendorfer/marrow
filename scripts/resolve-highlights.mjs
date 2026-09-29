@@ -154,11 +154,14 @@ if (flags.has("--prune")) {
 fs.mkdirSync(DISMISSED, { recursive: true });
 const sortedKeys = [...nextKeys].sort();
 const sortedResolutions = Object.fromEntries(sortedKeys.filter((k) => nextResolutions[k]).map((k) => [k, nextResolutions[k]]));
-fs.writeFileSync(dismissedPath, JSON.stringify({ keys: sortedKeys, resolutions: sortedResolutions }, null, 2));
-fs.chmodSync(dismissedPath, 0o600);
+// Atomic: write a temp file, then rename over the target, so the app never
+// reads a half-written file (the app writes the same way; issue #252).
+const tmpPath = `${dismissedPath}.tmp-${process.pid}`;
+fs.writeFileSync(tmpPath, JSON.stringify({ keys: sortedKeys, resolutions: sortedResolutions }, null, 2), { mode: 0o600 });
+fs.renameSync(tmpPath, dismissedPath);
 
 console.log(
   `\n${undo ? "un-resolved" : `resolved (${state})`} ${changed} | file now has ${nextKeys.size} key(s)\n` +
     `→ ${dismissedPath}\n` +
-    `→ switch back to Marrow (it reloads on window focus) to see the change.`,
+    `→ switch back to Marrow (it reloads when the app becomes active) to see the change.`,
 );

@@ -18,7 +18,7 @@ import { useReviewState } from "./useReviewState";
 import { createTabs } from "./tabs";
 import { createNavigation } from "./navigation";
 import { createLoading } from "./loading";
-import { createProgress } from "./progress";
+import { createProgress, dismissalVersionOf, hasPendingDismissals } from "./progress";
 import { createChecks } from "./checks";
 import { createChat } from "./chat";
 import { createComments } from "./comments";
@@ -741,35 +741,44 @@ export function useReviewController(): ReviewCtx {
     };
   }, []);
 
-  // Re-load dismissed-highlight and resolved-spec state from disk when the
-  // window regains focus, so resolutions made outside the app (e.g. an
+  // Re-load dismissed-highlight and resolved-spec state from disk when you
+  // come back to Marrow, so resolutions made outside the app (e.g. an
   // external/AI tool writing the ~/.config/marrow/dismissed or resolved_specs
-  // files) show up without reopening the PR.
+  // files) show up without reopening the PR. On macOS, switching back to the
+  // app (Cmd+Tab, Dock) gives the webview no focus event, so the backend's
+  // app-active poll emits "app-activated" as well (issue #252).
   useEffect(() => {
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused) return;
+    const reload = () => {
       for (const tab of tabsRef.current) {
         if (!tab.manifest) continue;
         const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
-        invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> } | null>("load_dismissed_highlights", { owner, repo, prNumber: number })
-          .then((saved) => {
-            const keys = saved?.keys ?? [];
-            const resolutions = saved?.resolutions ?? {};
-            updateTab(tab.id, (t) => {
-              const sameKeys = t.dismissedHighlights.size === keys.length && keys.every((k) => t.dismissedHighlights.has(k));
-              // Resolutions must be compared too, or a metadata-only change
-              // (e.g. the resolve script adding a reason to an existing key)
-              // would be invisible until restart.
-              const entries = Object.entries(resolutions);
-              const sameRes = t.noteResolutions.size === entries.length && entries.every(([k, r]) => {
-                const cur = t.noteResolutions.get(k);
-                return !!cur && cur.state === r.state && (cur.reason ?? "") === (r.reason ?? "") && (cur.at ?? "") === (r.at ?? "");
+        // Writes still queued for this tab return fresh disk state themselves;
+        // reading disk now could drop their not-yet-written keys (issue #252).
+        const version = dismissalVersionOf(tab.id);
+        if (!hasPendingDismissals(tab.id)) {
+          invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> } | null>("load_dismissed_highlights", { owner, repo, prNumber: number })
+            .then((saved) => {
+              // A dismissal made while this load was in flight (pending, or
+              // already finished) wins; its own write returned fresher state.
+              if (hasPendingDismissals(tab.id) || dismissalVersionOf(tab.id) !== version) return;
+              const keys = saved?.keys ?? [];
+              const resolutions = saved?.resolutions ?? {};
+              updateTab(tab.id, (t) => {
+                const sameKeys = t.dismissedHighlights.size === keys.length && keys.every((k) => t.dismissedHighlights.has(k));
+                // Resolutions must be compared too, or a metadata-only change
+                // (e.g. the resolve script adding a reason to an existing key)
+                // would be invisible until restart.
+                const entries = Object.entries(resolutions);
+                const sameRes = t.noteResolutions.size === entries.length && entries.every(([k, r]) => {
+                  const cur = t.noteResolutions.get(k);
+                  return !!cur && cur.state === r.state && (cur.reason ?? "") === (r.reason ?? "") && (cur.at ?? "") === (r.at ?? "");
+                });
+                if (sameKeys && sameRes) return t;
+                return { ...t, dismissedHighlights: new Set(keys), noteResolutions: new Map(entries) };
               });
-              if (sameKeys && sameRes) return t;
-              return { ...t, dismissedHighlights: new Set(keys), noteResolutions: new Map(entries) };
-            });
-          })
-          .catch(() => {});
+            })
+            .catch(() => {});
+        }
         // Same drill for the requirements card's resolved specs — previously
         // only loaded at PR-open, so external writes were invisible until the
         // tab was reopened.
@@ -790,8 +799,15 @@ export function useReviewController(): ReviewCtx {
           })
           .catch(() => {});
       }
+    };
+    const unFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) reload();
     });
-    return () => { unlisten.then((fn) => fn()); };
+    const unActivated = listen("app-activated", reload);
+    return () => {
+      unFocus.then((fn) => fn());
+      unActivated.then((fn) => fn());
+    };
   }, []);
 
   // Persist session state whenever tabs or active tab change (debounced)
