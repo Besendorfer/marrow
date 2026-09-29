@@ -29,7 +29,7 @@ mock.module("@tauri-apps/api/core", () => ({
   },
 }));
 
-const { createProgress } = await import("./progress");
+const { createProgress, dismissalVersionOf } = await import("./progress");
 
 const history: Set<string>[] = [];
 
@@ -101,5 +101,14 @@ describe("dismissal persistence", () => {
     await settle();
     expect(calls.slice(-2)).toEqual(["dismiss_highlight:f1", "dismiss_highlight:f2"]);
     expect(disk.keys).toContain("f2");
+  });
+
+  test("every dismissal change bumps the tab's version, so an older read can tell", async () => {
+    const { progress } = fakeCtx();
+    const before = dismissalVersionOf("t1");
+    progress.resolveHighlight("v1", null);
+    progress.restoreHighlight("v1");
+    await settle();
+    expect(dismissalVersionOf("t1")).toBe(before + 2);
   });
 });

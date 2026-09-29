@@ -18,6 +18,17 @@ import type { ReviewCtx } from "./ctx";
 const dismissalQueue = new Map<string, Promise<void>>();
 const dismissalPending = new Map<string, number>();
 
+// Bumped on every dismissal change per tab, so a disk reload can tell
+// whether anything changed while it was in flight.
+const dismissalVersion = new Map<string, number>();
+
+/** A tab's dismissal version. A reload captures it when sent and applies
+ * its result only if it's unchanged and nothing is pending: a dismissal
+ * made meanwhile (even one that already finished) is newer than the read. */
+export function dismissalVersionOf(tabId: string): number {
+  return dismissalVersion.get(tabId) ?? 0;
+}
+
 /** Whether a tab still has dismissal writes in flight — their results carry
  * the fresh on-disk state, so a reload from disk would only race them. */
 export function hasPendingDismissals(tabId: string): boolean {
@@ -86,6 +97,7 @@ export function createProgress(ctxArg: unknown) {
   function persistDismissal(tabId: string, prUrl: string, command: "dismiss_highlight" | "restore_dismissed_highlight", args: Record<string, unknown>) {
     const { owner, repo, number } = parsePrUrl(prUrl);
     dismissalPending.set(tabId, (dismissalPending.get(tabId) ?? 0) + 1);
+    dismissalVersion.set(tabId, dismissalVersionOf(tabId) + 1);
     const settle = (): boolean => {
       const left = (dismissalPending.get(tabId) ?? 1) - 1;
       if (left > 0) {

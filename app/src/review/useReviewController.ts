@@ -18,7 +18,7 @@ import { useReviewState } from "./useReviewState";
 import { createTabs } from "./tabs";
 import { createNavigation } from "./navigation";
 import { createLoading } from "./loading";
-import { createProgress, hasPendingDismissals } from "./progress";
+import { createProgress, dismissalVersionOf, hasPendingDismissals } from "./progress";
 import { createChecks } from "./checks";
 import { createChat } from "./chat";
 import { createComments } from "./comments";
@@ -754,12 +754,13 @@ export function useReviewController(): ReviewCtx {
         const { owner, repo, number } = parsePrUrl(tab.manifest.pr_url);
         // Writes still queued for this tab return fresh disk state themselves;
         // reading disk now could drop their not-yet-written keys (issue #252).
+        const version = dismissalVersionOf(tab.id);
         if (!hasPendingDismissals(tab.id)) {
           invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> } | null>("load_dismissed_highlights", { owner, repo, prNumber: number })
             .then((saved) => {
-              // A dismissal made while this load was in flight wins; its own
-              // write returns fresher disk state.
-              if (hasPendingDismissals(tab.id)) return;
+              // A dismissal made while this load was in flight (pending, or
+              // already finished) wins; its own write returned fresher state.
+              if (hasPendingDismissals(tab.id) || dismissalVersionOf(tab.id) !== version) return;
               const keys = saved?.keys ?? [];
               const resolutions = saved?.resolutions ?? {};
               updateTab(tab.id, (t) => {
