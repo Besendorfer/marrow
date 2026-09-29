@@ -330,8 +330,9 @@ impl AiBackend {
     pub async fn invoke(&self, prompt: &str) -> Result<String, String> {
         let out = self.invoke_inner(prompt).await;
         traffic::record(prompt.chars().count(), out.as_ref().map(|s| s.chars().count()).unwrap_or(0));
-        if let Ok(text) = &out {
-            crate::usage::record_call(prompt.chars().count(), text.chars().count());
+        match &out {
+            Ok(text) => crate::usage::record_call(prompt.chars().count(), text.chars().count()),
+            Err(_) => crate::usage::record_failed_call(),
         }
         out
     }
@@ -366,8 +367,9 @@ impl AiBackend {
         // A call that fails records its prompt as sent and nothing received,
         // even if part of a response had streamed.
         traffic::record(sent, out.as_ref().map(|s| s.chars().count()).unwrap_or(0));
-        if let Ok(text) = &out {
-            crate::usage::record_call(sent, text.chars().count());
+        match &out {
+            Ok(text) => crate::usage::record_call(sent, text.chars().count()),
+            Err(_) => crate::usage::record_failed_call(),
         }
         out
     }
@@ -1080,10 +1082,15 @@ fn cli_json_result(raw: &str) -> Result<String, String> {
             json["result"].as_str().unwrap_or("the CLI reported an error")
         ));
     }
-    if let Some(u) = crate::usage::usage_from_json(&json["usage"], json["total_cost_usd"].as_f64()) {
-        crate::usage::record_usage(u);
+    let text = json["result"].as_str().unwrap_or_default().to_string();
+    // Record usage only for an answer that's accepted: an empty one fails the
+    // call, and failed calls count separately.
+    if !text.trim().is_empty() {
+        if let Some(u) = crate::usage::usage_from_json(&json["usage"], json["total_cost_usd"].as_f64()) {
+            crate::usage::record_usage(u);
+        }
     }
-    Ok(json["result"].as_str().unwrap_or_default().to_string())
+    Ok(text)
 }
 
 #[cfg(test)]

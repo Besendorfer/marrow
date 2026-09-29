@@ -32,6 +32,10 @@ pub struct AiUsage {
     pub calls: u32,
     /// Calls whose provider reported token usage (the rest count only as calls).
     pub calls_with_usage: u32,
+    /// Calls that failed. A provider may still bill them, but they report no
+    /// usage, so the costs above leave them out and the UI says so.
+    #[serde(default)]
+    pub failed_calls: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
@@ -97,6 +101,19 @@ impl AiUsage {
     /// Add another scope's usage (a later AI call on the same analysis, e.g.
     /// re-running requirements coverage) and recompute the derived costs.
     pub fn merged(self, other: AiUsage) -> AiUsage {
+        if self.connection != other.connection || self.model != other.model {
+            // Different providers or models can't be priced together; keep
+            // the counts but blank every cost rather than mislabel one.
+            return AiUsage {
+                calls: self.calls + other.calls,
+                failed_calls: self.failed_calls + other.failed_calls,
+                calls_with_usage: 0,
+                reported_cost_usd: None,
+                list_cost_usd: None,
+                api_estimate_usd: None,
+                ..self
+            };
+        }
         let reported = match (self.reported_cost_usd, other.reported_cost_usd) {
             (Some(a), Some(b)) => Some(a + b),
             _ => None,
@@ -104,6 +121,7 @@ impl AiUsage {
         AiUsage {
             calls: self.calls + other.calls,
             calls_with_usage: self.calls_with_usage + other.calls_with_usage,
+            failed_calls: self.failed_calls + other.failed_calls,
             input_tokens: self.input_tokens + other.input_tokens,
             output_tokens: self.output_tokens + other.output_tokens,
             cache_read_tokens: self.cache_read_tokens + other.cache_read_tokens,
@@ -170,6 +188,15 @@ pub fn record_call(chars_in: usize, chars_out: usize) {
             u.calls += 1;
             u.content_chars_in += chars_in as u64;
             u.content_chars_out += chars_out as u64;
+        }
+    });
+}
+
+/// Count a failed call (no usage to record; see `AiUsage::failed_calls`).
+pub fn record_failed_call() {
+    let _ = METER.try_with(|m| {
+        if let Ok(mut u) = m.lock() {
+            u.failed_calls += 1;
         }
     });
 }
@@ -273,6 +300,24 @@ mod tests {
         assert_eq!((total.calls, total.calls_with_usage, total.output_tokens), (2, 2, 20));
         assert!((total.reported_cost_usd.unwrap() - 0.75).abs() < 1e-9);
         assert!(total.api_estimate_usd.unwrap() > 0.0 && total.list_cost_usd.is_some());
+        // A re-run on another provider or model can't be priced together.
+        let mut other = run(0.1);
+        other.connection = "anthropic-api".into();
+        let mixed = run(0.5).merged(other);
+        assert_eq!(mixed.calls, 2);
+        assert!(mixed.reported_cost_usd.is_none() && mixed.list_cost_usd.is_none() && mixed.api_estimate_usd.is_none());
+    }
+
+    #[test]
+    fn failed_calls_are_counted_apart_and_leave_the_cost_of_the_rest() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (_, u) = rt.block_on(metered("claude-cli", "claude-opus-5-5", async {
+            record_call(100, 10);
+            record_usage(CallUsage { output_tokens: 5, reported_cost_usd: Some(0.2), ..Default::default() });
+            record_failed_call();
+        }));
+        assert_eq!((u.calls, u.failed_calls), (1, 1));
+        assert_eq!(u.reported_cost_usd, Some(0.2));
     }
 
     #[test]

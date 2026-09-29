@@ -34,4 +34,9 @@ describe("describeCost", () => {
     expect(money(0.004)).toBe("<$0.01");
     expect(money(1.2345)).toBe("$1.23");
   });
+
+  test("failed calls are called out rather than silently left out", () => {
+    const c = describeCost({ ...base, calls: 4, reported_cost_usd: 0.5, failed_calls: 1 });
+    expect(c.text).toBe("$0.50 · 4 AI calls via the Claude CLI · 1 failed call not included");
+  });
 });

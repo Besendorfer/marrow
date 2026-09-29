@@ -31,6 +31,8 @@ export function describeCost(u: AiUsage): CostLine {
   if (u.reported_cost_usd != null) text = `${money(u.reported_cost_usd)} · ${calls}`;
   else if (u.list_cost_usd != null) text = `≈${money(u.list_cost_usd)} at list price · ${calls}`;
   else text = `${calls} · cost not reported`;
+  const failed = u.failed_calls ?? 0;
+  if (failed > 0) text += ` · ${failed} failed call${failed === 1 ? "" : "s"} not included`;
   let hint: string | null = null;
   const current = u.reported_cost_usd ?? u.list_cost_usd;
   // Only worth saying when an Anthropic key would be meaningfully cheaper.

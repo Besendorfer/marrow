@@ -770,6 +770,8 @@ export interface AiUsage {
   model: string;
   calls: number;
   calls_with_usage: number;
+  /** Calls that failed; a provider may bill them, but they report no usage. */
+  failed_calls?: number;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
