@@ -181,6 +181,13 @@ impl AiUsage {
     }
 }
 
+/// Add a later call's usage (a requirements re-run) to an analysis's recorded
+/// total. An older cache has no recorded total; showing only this call would
+/// read as the whole analysis's cost, so it stays unrecorded.
+pub fn add_to_recorded(recorded: Option<AiUsage>, extra: AiUsage) -> Option<AiUsage> {
+    recorded.map(|total| total.merged(extra))
+}
+
 tokio::task_local! {
     static METER: Arc<Mutex<AiUsage>>;
 }
@@ -333,6 +340,16 @@ mod tests {
             (a.unwrap().1, b.unwrap().1)
         });
         assert_eq!((a.calls, b.calls), (3, 5));
+    }
+
+    #[test]
+    fn a_rerun_adds_to_a_recorded_total_but_never_starts_one() {
+        let rerun = AiUsage { connection: "claude-cli".into(), model: "claude-opus-5-5".into(), calls: 1, calls_with_usage: 1, reported_cost_usd: Some(0.1), ..Default::default() };
+        assert_eq!(add_to_recorded(None, rerun.clone()), None);
+        let total = AiUsage { calls: 5, calls_with_usage: 5, reported_cost_usd: Some(1.0), ..rerun.clone() };
+        let u = add_to_recorded(Some(total), rerun).unwrap();
+        assert_eq!(u.calls, 6);
+        assert!((u.reported_cost_usd.unwrap() - 1.1).abs() < 1e-9);
     }
 
     #[test]

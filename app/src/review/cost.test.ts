@@ -16,6 +16,11 @@ describe("describeCost", () => {
     expect(c.hint).toBe("≈$0.04 with an Anthropic key (rough estimate) — the CLI adds its own setup to every call.");
   });
 
+  test("the hint needs the key to be at least 20% cheaper", () => {
+    expect(describeCost({ ...base, reported_cost_usd: 1, api_estimate_usd: 0.81 }).hint).toBeNull();
+    expect(describeCost({ ...base, reported_cost_usd: 1, api_estimate_usd: 0.8 }).hint).not.toBeNull();
+  });
+
   test("no hint when the key wouldn't be meaningfully cheaper", () => {
     expect(describeCost({ ...base, reported_cost_usd: 0.05, api_estimate_usd: 0.045 }).hint).toBeNull();
   });

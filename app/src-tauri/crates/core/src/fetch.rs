@@ -133,11 +133,7 @@ pub async fn analyze_requirements_impl(pr_ref: &str, settings: &Settings) -> Res
     let connection = crate::ai::provider_for_settings(settings).label();
     let (raw, extra) = crate::usage::metered(connection, &settings.model, ai.invoke(&prompt)).await;
     let raw = raw?;
-    // An older cache has no recorded total; showing only this call would
-    // read as the whole analysis's cost, so it stays unrecorded.
-    if let Some(total) = manifest.ai_usage.take() {
-        manifest.ai_usage = Some(total.merged(extra));
-    }
+    manifest.ai_usage = crate::usage::add_to_recorded(manifest.ai_usage.take(), extra);
     let known_tests: HashSet<&str> = test_diffs
         .iter()
         .chain(inline_test_diffs.iter())

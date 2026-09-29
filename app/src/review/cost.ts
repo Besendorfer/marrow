@@ -38,7 +38,7 @@ export function describeCost(u: AiUsage): CostLine {
   let hint: string | null = null;
   const current = u.reported_cost_usd ?? u.list_cost_usd;
   // Only worth saying when an Anthropic key would be meaningfully cheaper.
-  if (u.connection === "claude-cli" && u.api_estimate_usd != null && current != null && u.api_estimate_usd < current * 0.8) {
+  if (u.connection === "claude-cli" && u.api_estimate_usd != null && current != null && u.api_estimate_usd <= current * 0.8) {
     hint = `≈${money(u.api_estimate_usd)} with an Anthropic key (rough estimate) — the CLI adds its own setup to every call.`;
   }
   return { text, hint };
