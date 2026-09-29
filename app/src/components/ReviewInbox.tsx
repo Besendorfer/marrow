@@ -628,6 +628,7 @@ function FindingCard({ finding: f, onLooksFine, onComment, onReopen, choosing, r
       <p className={`inbox-card-claim inbox-card-claim--${f.urgency}`}>{findingClaim(f)}</p>
       {showDetail && <p className="inbox-card-text">{f.detail}</p>}
       {f.riskDetail && <p className="inbox-card-text inbox-card-why"><span>Why it was flagged</span>{f.riskDetail}</p>}
+      {f.aiCheck?.reason && <p className="inbox-card-text inbox-card-why"><span>Checked by the AI</span>{f.aiCheck.reason}</p>}
       {(f.scenario || f.fix) && (
         <dl className="inbox-card-dl">
           {f.scenario && (<><dt>Scenario</dt><dd>{f.scenario}</dd></>)}

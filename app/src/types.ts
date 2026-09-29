@@ -67,6 +67,17 @@ export interface TopRisk {
   path: string;
   /** Line (in the head version) to scroll to, when known. */
   start_line?: number | null;
+  /** How the review settled this risk (issue #243). Absent when no check ran. */
+  ai_check?: RiskCheck | null;
+}
+
+/** The review's answer to a triage risk (issue #243). */
+export interface RiskCheck {
+  /** "confirmed" = a defect (the review also reports it as a finding);
+   * "cleared" = checked, and it holds; "unresolved" = couldn't settle it. */
+  outcome: "confirmed" | "cleared" | "unresolved";
+  /** One line: the defect, or the evidence it holds. */
+  reason: string;
 }
 
 /** One file in the contract-first "fastest path" ordering, with a one-line

@@ -11,12 +11,12 @@ use crate::prompts::{
 };
 use crate::types::{
     ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, LinkedIssue,
-    PassStatus, RequirementsCoverage, ReviewManifest, ReviewOrderItem, ReviewVerdict, Settings, TopRisk, TriageReport,
+    PassStatus, RequirementsCoverage, ReviewManifest, ReviewOrderItem, ReviewVerdict, RiskCheck, Settings, TopRisk, TriageReport,
 };
 use crate::ai::{ChatRole, ChatTurn, StreamUpdate};
 use crate::chat_agent::run_agent;
 use crate::local_repo;
-use crate::prompts::{REVIEW_KICKOFF, REVIEW_MAX_TOOL_CALLS, REVIEW_REPAIR};
+use crate::prompts::{risk_check_section, REVIEW_KICKOFF, REVIEW_MAX_TOOL_CALLS, REVIEW_REPAIR, RISK_CHECK_TOOL_CALLS};
 use crate::repo_tools::{ContextRead, RepoToolTarget, ToolBackend, ToolExecutor, ToolScope};
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::future::Future;
@@ -480,8 +480,15 @@ async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'
             ToolScope::REVIEW,
         );
         let review_side: std::sync::Mutex<Option<ReviewPassOutcome>> = std::sync::Mutex::new(None);
+        // The review settles triage's risks (issue #243), so it starts once
+        // triage has named them; summary, grouping and coverage don't wait.
+        // Triage hands over its finalized report — the risks the review sees
+        // are exactly the ones stored, so answers line up by position.
+        let (risks_tx, risks_rx) = tokio::sync::oneshot::channel::<Vec<TopRisk>>();
+        let triage_side: std::sync::Mutex<Option<TriageReport>> = std::sync::Mutex::new(None);
         let review_fut: PassFuture<'_> = Box::pin(async {
-            let outcome = run_review_pass(&ai, &review_executor, &agentic_prompt, &highlight_prompt).await;
+            let risks = if run_triage { risks_rx.await.unwrap_or_default() } else { Vec::new() };
+            let outcome = run_review_pass(&ai, &review_executor, &agentic_prompt, &highlight_prompt, &risks).await;
             let raw = outcome.raw.clone();
             *review_side.lock().unwrap() = Some(outcome);
             raw
@@ -493,7 +500,16 @@ async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'
             ("grouping", Box::pin(ai.invoke(&grouping_prompt))),
         ];
         if run_triage {
-            tasks.push(("triage", Box::pin(ai.invoke(&triage_prompt))));
+            tasks.push((
+                "triage",
+                Box::pin(async {
+                    let raw = ai.invoke(&triage_prompt).await;
+                    let report = raw.as_ref().ok().and_then(|raw| parse_triage(raw, &relevant));
+                    let _ = risks_tx.send(report.as_ref().map(|r| r.top_risks.clone()).unwrap_or_default());
+                    *triage_side.lock().unwrap() = report;
+                    raw
+                }),
+            ));
         }
         if run_coverage {
             tasks.push(("coverage", Box::pin(ai.invoke(&coverage_prompt))));
@@ -504,7 +520,6 @@ async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'
         let mut highlights_raw = Err("not started".to_string());
         let mut summary_raw = Err("not started".to_string());
         let mut grouping_raw = Err("not started".to_string());
-        let mut triage_raw = Err("not started".to_string());
         let mut coverage_raw = Err("not started".to_string());
         let mut ai_done: u32 = 0;
         while let Some((name, result)) = ai_stream.next().await {
@@ -514,7 +529,7 @@ async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'
                 "highlights" => highlights_raw = result,
                 "summary" => summary_raw = result,
                 "grouping" => grouping_raw = result,
-                "triage" => triage_raw = result,
+                "triage" => {} // its report is in triage_side
                 "coverage" => coverage_raw = result,
                 _ => {}
             }
@@ -524,6 +539,7 @@ async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'
         // The highlights pass is load-bearing: a failure errors the whole
         // fetch (keeping any cached manifest) rather than rendering as a
         // clean review with zero findings (issue #198).
+        let review_raw = highlights_raw.as_ref().ok().cloned();
         let (highlight_results, verdict) = parse_highlights_strict(highlights_raw)?;
         let highlight_results = validate_highlights(highlight_results, &file_list);
         review_verdict = verdict;
@@ -585,18 +601,28 @@ async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'
         // risk-ordered report. Either way, finalize so it references only real
         // files and covers every relevant file.
         if run_triage {
-            let parsed = triage_raw
-                .ok()
-                .and_then(|raw| extract_json_object(&raw).ok())
-                .and_then(|json| serde_json::from_value::<TriageReport>(json).ok())
-                .filter(|t| !t.review_order.is_empty());
+            let parsed = triage_side.lock().unwrap().take();
             // The deterministic fallback keeps the UI working, but it is not
             // the AI ordering the user asked for — record the pass as failed.
-            if parsed.is_none() {
-                failed_passes.push("triage".to_string());
-            }
-            let mut report = parsed.unwrap_or_else(|| fallback_triage(&relevant, &highlights_by_path));
-            finalize_triage(&mut report, &relevant);
+            let report = match parsed {
+                Some(mut report) => {
+                    // The review's answers to the risks it was handed (#243).
+                    let checks = review_raw
+                        .as_deref()
+                        .map(|raw| parse_risk_checks(raw, report.top_risks.len()))
+                        .unwrap_or_default();
+                    for (risk, check) in report.top_risks.iter_mut().zip(checks) {
+                        risk.ai_check = check;
+                    }
+                    report
+                }
+                None => {
+                    failed_passes.push("triage".to_string());
+                    let mut report = fallback_triage(&relevant, &highlights_by_path);
+                    finalize_triage(&mut report, &relevant);
+                    report
+                }
+            };
             triage = Some(report);
         }
 
@@ -832,15 +858,23 @@ pub struct ReviewPassOutcome {
 /// conversation (keeping what the tools found); only if the loop errors or
 /// the repair also fails does the single-shot prompt run instead. Public for
 /// the corpus eval, so the eval measures exactly the pipeline the app runs.
+///
+/// `risks` are the triage risks the review must settle (issue #243): they
+/// ride in the kickoff turn (and at the end of the single-shot prompt), and
+/// each adds `RISK_CHECK_TOOL_CALLS` to the tool budget.
 pub async fn run_review_pass(
     ai: &AiBackend,
     executor: &ToolExecutor<'_>,
     agentic_prompt: &str,
     single_shot_prompt: &str,
+    risks: &[TopRisk],
 ) -> ReviewPassOutcome {
-    let turns = vec![ChatTurn { role: ChatRole::User, content: REVIEW_KICKOFF.to_string() }];
+    let kickoff = format!("{REVIEW_KICKOFF}{}", risk_check_section(risks, true));
+    let single_shot_prompt = &format!("{single_shot_prompt}{}", risk_check_section(risks, false));
+    let budget = REVIEW_MAX_TOOL_CALLS + RISK_CHECK_TOOL_CALLS * risks.len();
+    let turns = vec![ChatTurn { role: ChatRole::User, content: kickoff }];
     let mut ignore = |_: StreamUpdate| {};
-    let (reason, tool_calls) = match run_agent(ai, executor, agentic_prompt, turns, REVIEW_MAX_TOOL_CALLS, &mut ignore).await {
+    let (reason, tool_calls) = match run_agent(ai, executor, agentic_prompt, turns, budget, &mut ignore).await {
         Ok(run) if parse_review_response(&run.final_segment).is_ok() => {
             return ReviewPassOutcome {
                 raw: Ok(run.final_segment),
@@ -882,6 +916,37 @@ pub async fn run_review_pass(
         reads: Vec::new(),
         tool_calls,
     }
+}
+
+/// The review's answers to the triage risks it was given (issue #243), by
+/// position in that list. Best effort: a missing or malformed answer leaves
+/// that risk unchecked (None) rather than failing the review. A "cleared"
+/// with no reason is downgraded to "unresolved" — clearing a risk must name
+/// its evidence. Public for the corpus eval.
+pub fn parse_risk_checks(raw: &str, count: usize) -> Vec<Option<RiskCheck>> {
+    let mut out = vec![None; count];
+    let Some(checks) = extract_json_object(raw)
+        .ok()
+        .and_then(|o| o.get("risk_checks").and_then(|c| c.as_array()).cloned())
+    else {
+        return out;
+    };
+    for c in checks {
+        let Some(n) = c.get("risk").and_then(|n| n.as_u64()) else { continue };
+        let Some(slot) = (n as usize).checked_sub(1).and_then(|i| out.get_mut(i)) else { continue };
+        if slot.is_some() {
+            continue; // the first answer for a risk wins
+        }
+        let reason = c.get("reason").and_then(|r| r.as_str()).unwrap_or("").trim().to_string();
+        let outcome = match c.get("outcome").and_then(|o| o.as_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("confirmed") => "confirmed",
+            Some("cleared") if !reason.is_empty() => "cleared",
+            Some("cleared") | Some("unresolved") => "unresolved",
+            _ => continue,
+        };
+        *slot = Some(RiskCheck { outcome: outcome.to_string(), reason });
+    }
+    out
 }
 
 /// Mark a completed pass "degraded" in place (issue #232). A failed pass
@@ -1112,6 +1177,22 @@ fn risk_rank(level: &str) -> u8 {
     }
 }
 
+/// Parse the triage pass's answer and finalize it against the relevant files;
+/// None when it's unusable (the caller falls back and records the failure).
+fn parse_triage(raw: &str, relevant: &[&FileClassification]) -> Option<TriageReport> {
+    let mut report = extract_json_object(raw)
+        .ok()
+        .and_then(|json| serde_json::from_value::<TriageReport>(json).ok())
+        .filter(|t| !t.review_order.is_empty())?;
+    // Triage is asked for risks, not verdicts on them; a check only ever
+    // comes from the review.
+    for r in &mut report.top_risks {
+        r.ai_check = None;
+    }
+    finalize_triage(&mut report, relevant);
+    Some(report)
+}
+
 /// Deterministic triage for when the AI pass is unavailable: order relevant files
 /// by risk (critical first), and surface the critical/high files as top risks,
 /// using each file's first highlight (or its classification reason) as the detail.
@@ -1137,6 +1218,7 @@ fn fallback_triage(
                 detail: first.map(|h| h.comment.clone()).unwrap_or_else(|| f.reason.clone()),
                 path: f.path.clone(),
                 start_line: first.map(|h| h.start_line),
+                ai_check: None,
             }
         })
         .collect();
@@ -2030,7 +2112,7 @@ mod tests {
             RepoToolTarget { owner: "o".into(), repo: "r".into(), head_sha: "h".into(), base_sha: "b".into() },
             ToolScope::REVIEW,
         );
-        let out = run_review_pass(&ai, &ex, "agentic", "single").await;
+        let out = run_review_pass(&ai, &ex, "agentic", "single", &[]).await;
         assert!(out.degraded, "a failed loop is recorded as degraded, not hidden");
         assert!(out.reads.is_empty());
         assert!(out.raw.is_err(), "the fallback's own failure still surfaces to the strict parser");
@@ -2104,7 +2186,7 @@ mod tests {
         ]);
         let ai = crate::ai::AiBackend::OpenAiCompatible { base_url: url, api_key: "k".into(), model: "m".into() };
         let ex = snapshot_executor(&snap);
-        let out = run_review_pass(&ai, &ex, "agentic", "single").await;
+        let out = run_review_pass(&ai, &ex, "agentic", "single", &[]).await;
         assert!(!out.degraded, "{:?}", out.degrade_reason);
         assert!(out.repaired);
         assert_eq!(out.tool_calls, 1);
@@ -2129,13 +2211,98 @@ mod tests {
         ]);
         let ai = crate::ai::AiBackend::OpenAiCompatible { base_url: url, api_key: "k".into(), model: "m".into() };
         let ex = snapshot_executor(&snap);
-        let out = run_review_pass(&ai, &ex, "agentic", "single").await;
+        let out = run_review_pass(&ai, &ex, "agentic", "single", &[]).await;
         assert!(out.degraded && !out.repaired);
         assert!(out.degrade_reason.unwrap().contains("repair turn unusable"));
         assert!(out.raw.unwrap().contains("a.rs"));
         let bodies = bodies.lock().unwrap();
         assert!(!bodies[2].contains("\"stream\":true"), "the fallback is the single-shot prompt");
         assert!(bodies[2].contains("single"));
+    }
+
+    #[tokio::test]
+    async fn the_review_is_handed_the_triage_risks_with_extra_budget() {
+        use super::run_review_pass;
+        let snap = crate::repo_tools::SnapshotRepo::default();
+        let (url, bodies) = mock_ai(vec![
+            r#"{"verdict":"ship","verdict_reason":"clean","findings":[],"risk_checks":[{"risk":1,"outcome":"cleared","reason":"guarded at L3"}]}"#,
+        ]);
+        let ai = crate::ai::AiBackend::OpenAiCompatible { base_url: url, api_key: "k".into(), model: "m".into() };
+        let ex = snapshot_executor(&snap);
+        let risks = vec![TopRisk {
+            title: "Auth check moved".into(),
+            detail: "The admin guard now runs after the write.".into(),
+            path: "a.rs".into(),
+            start_line: Some(12),
+            ai_check: None,
+        }];
+        let out = run_review_pass(&ai, &ex, "agentic", "single", &risks).await;
+        assert!(!out.degraded);
+        let bodies = bodies.lock().unwrap();
+        assert!(bodies[0].contains("1. Auth check moved — a.rs:12"), "{}", bodies[0]);
+        assert!(bodies[0].contains("2 extra tool calls"));
+        let checks = super::parse_risk_checks(&out.raw.unwrap(), 1);
+        assert_eq!(checks[0].as_ref().unwrap().outcome, "cleared");
+    }
+
+    #[tokio::test]
+    async fn a_degraded_review_still_carries_the_risks_without_tool_budget() {
+        use super::run_review_pass;
+        let snap = crate::repo_tools::SnapshotRepo::default();
+        let (url, bodies) = mock_ai(vec!["no json", "still no json", r#"{"verdict":"ship","findings":[]}"#]);
+        let ai = crate::ai::AiBackend::OpenAiCompatible { base_url: url, api_key: "k".into(), model: "m".into() };
+        let ex = snapshot_executor(&snap);
+        let risks = vec![TopRisk { title: "R".into(), detail: "d".into(), path: "a.rs".into(), start_line: None, ai_check: None }];
+        let out = run_review_pass(&ai, &ex, "agentic", "single", &risks).await;
+        assert!(out.degraded);
+        let bodies = bodies.lock().unwrap();
+        assert!(bodies[2].contains("single") && bodies[2].contains("1. R — a.rs"));
+        assert!(!bodies[2].contains("extra tool calls"), "the single-shot review has no tools");
+    }
+
+    #[test]
+    fn risk_checks_parse_by_position_and_clear_only_with_evidence() {
+        use super::parse_risk_checks;
+        let raw = r#"{"verdict":"fix_first","findings":[],"risk_checks":[
+            {"risk":2,"outcome":"Confirmed","reason":"guard runs after the write"},
+            {"risk":1,"outcome":"cleared","reason":""},
+            {"risk":3,"outcome":"cleared","reason":"validate_repo_path rejects .."},
+            {"risk":3,"outcome":"confirmed","reason":"second answer ignored"},
+            {"risk":4,"outcome":"maybe","reason":"x"},
+            {"risk":0,"outcome":"confirmed"},
+            {"risk":9,"outcome":"confirmed"}
+        ]}"#;
+        let c = parse_risk_checks(raw, 4);
+        let o = |i: usize| c[i].as_ref().map(|c| c.outcome.as_str());
+        assert_eq!(o(0), Some("unresolved"), "a clear with no evidence isn't a clear");
+        assert_eq!(o(1), Some("confirmed"));
+        assert_eq!(c[1].as_ref().unwrap().reason, "guard runs after the write");
+        assert_eq!(o(2), Some("cleared"), "the first answer wins");
+        assert_eq!(o(3), None, "an unknown outcome leaves the risk unchecked");
+        // No risk_checks at all (or not JSON): every risk stays unchecked.
+        assert_eq!(parse_risk_checks(r#"{"verdict":"ship","findings":[]}"#, 2), vec![None, None]);
+        assert_eq!(parse_risk_checks("nope", 1), vec![None]);
+    }
+
+    #[test]
+    fn triage_output_never_carries_its_own_checks() {
+        use super::parse_triage;
+        let a = FileClassification {
+            path: "a.rs".into(),
+            classification: "RELEVANT".into(),
+            category: "Business Logic".into(),
+            risk_level: "high".into(),
+            reason: "r".into(),
+        };
+        let relevant = vec![&a];
+        let raw = r#"{"top_risks":[
+            {"title":"T","detail":"d","path":"a.rs","start_line":3,"ai_check":{"outcome":"cleared","reason":"trust me"}},
+            {"title":"Ghost","detail":"d","path":"ghost.rs"}
+        ],"review_order":[{"path":"a.rs","rationale":"r"}]}"#;
+        let report = parse_triage(raw, &relevant).unwrap();
+        assert_eq!(report.top_risks.len(), 1, "finalized before the review sees it");
+        assert!(report.top_risks[0].ai_check.is_none());
+        assert!(parse_triage(r#"{"top_risks":[],"review_order":[]}"#, &relevant).is_none());
     }
 
     #[test]
@@ -2354,7 +2521,7 @@ mod tests {
         // AI returned an order missing b.rs, listing a.rs twice, and a
         // hallucinated ghost.rs, plus a top risk pointing at a file not in the PR.
         let mut report = TriageReport {
-            top_risks: vec![TopRisk { title: "x".into(), detail: "y".into(), path: "ghost.rs".into(), start_line: None }],
+            top_risks: vec![TopRisk { title: "x".into(), detail: "y".into(), path: "ghost.rs".into(), start_line: None, ai_check: None }],
             review_order: vec![
                 ReviewOrderItem { path: "a.rs".into(), rationale: "defines it".into() },
                 ReviewOrderItem { path: "ghost.rs".into(), rationale: "nope".into() },

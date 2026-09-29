@@ -12,5 +12,14 @@
       "note": "Removing the null path is safe: the only caller checks first and the type now forbids null. Flagging it is noise."
     }
   ],
-  "expected_verdict": "ship"
+  "expected_verdict": "ship",
+  "risk_checks": [
+    {
+      "title": "formatInvoice no longer handles a missing invoice",
+      "detail": "The null guard is gone; a caller that passes a missing invoice now throws on inv.number.",
+      "path": "src/invoices/render.ts",
+      "start_line": 11,
+      "expected": "cleared"
+    }
+  ]
 }

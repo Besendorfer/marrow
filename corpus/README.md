@@ -35,6 +35,13 @@ shipped on faith.
       still runs the findings pass. The report also counts "complete"
       findings: bug/behavior/test_gap findings carrying both a scenario and
       a fix.
+    One optional list (schema v5, issue #243) drives triage-risk scoring:
+    - `risk_checks`: `{ title, detail, path, start_line, expected:
+      "confirmed"|"cleared" }` — risks handed to the review the way the
+      triage pass hands them over, with how each should settle. The report
+      counts correct answers, **false clears** (a real defect answered
+      "cleared" — the costly error), false confirms, and unresolved.
+      Write them the way triage would: never hint at the answer.
   - `repo/` (optional, issue #232) — a snapshot the agentic review's repo
     tools read instead of GitHub: `repo/head/**` and `repo/base/**` are the
     PR's repo at its head/base commits; `repo/other/<name>/**` is sibling
