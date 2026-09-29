@@ -86,21 +86,6 @@ pub fn load_dismissed(owner: &str, repo: &str, pr_number: u64) -> Option<Dismiss
     serde_json::from_str(&content).ok()
 }
 
-pub fn save_dismissed(
-    owner: &str,
-    repo: &str,
-    pr_number: u64,
-    state: &DismissedHighlights,
-) -> Result<(), String> {
-    let path = dismissed_path(owner, repo, pr_number);
-    let json =
-        serde_json::to_string_pretty(state).map_err(|e| format!("Failed to serialize: {}", e))?;
-    crate::state_io::write_atomic(&path, json.as_bytes())
-        .map_err(|e| format!("Failed to write dismissed state: {}", e))?;
-
-    Ok(())
-}
-
 /// One change to a PR's dismissed set (issue #252).
 pub enum DismissChange {
     /// Hide the note; `Some` records how/why, `None` is a plain dismiss

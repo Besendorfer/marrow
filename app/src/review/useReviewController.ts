@@ -757,6 +757,9 @@ export function useReviewController(): ReviewCtx {
         if (!hasPendingDismissals(tab.id)) {
           invoke<{ keys: string[]; resolutions?: Record<string, NoteResolution> } | null>("load_dismissed_highlights", { owner, repo, prNumber: number })
             .then((saved) => {
+              // A dismissal made while this load was in flight wins; its own
+              // write returns fresher disk state.
+              if (hasPendingDismissals(tab.id)) return;
               const keys = saved?.keys ?? [];
               const resolutions = saved?.resolutions ?? {};
               updateTab(tab.id, (t) => {
