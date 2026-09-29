@@ -606,14 +606,7 @@ async fn fetch_pr_unmetered(pr_ref: &str, settings: &Settings, app: ProgressFn<'
             // the AI ordering the user asked for — record the pass as failed.
             let report = match parsed {
                 Some(mut report) => {
-                    // The review's answers to the risks it was handed (#243).
-                    let checks = review_raw
-                        .as_deref()
-                        .map(|raw| parse_risk_checks(raw, report.top_risks.len()))
-                        .unwrap_or_default();
-                    for (risk, check) in report.top_risks.iter_mut().zip(checks) {
-                        risk.ai_check = check;
-                    }
+                    attach_risk_checks(&mut report, review_raw.as_deref());
                     report
                 }
                 None => {
@@ -947,6 +940,16 @@ pub fn parse_risk_checks(raw: &str, count: usize) -> Vec<Option<RiskCheck>> {
         *slot = Some(RiskCheck { outcome: outcome.to_string(), reason });
     }
     out
+}
+
+/// Attach the review's answers to the risks it was handed (issue #243).
+/// `report` must be the same finalized report whose risks the review saw —
+/// answers match by position. No review output leaves every risk unchecked.
+fn attach_risk_checks(report: &mut TriageReport, review_raw: Option<&str>) {
+    let checks = review_raw.map(|raw| parse_risk_checks(raw, report.top_risks.len())).unwrap_or_default();
+    for (risk, check) in report.top_risks.iter_mut().zip(checks) {
+        risk.ai_check = check;
+    }
 }
 
 /// Mark a completed pass "degraded" in place (issue #232). A failed pass
@@ -2298,6 +2301,37 @@ mod tests {
         // Caches written before #243 have no field.
         let old: TopRisk = serde_json::from_str(r#"{"title":"t","detail":"d","path":"a.rs"}"#).unwrap();
         assert!(old.ai_check.is_none());
+    }
+
+    #[test]
+    fn the_reviews_answers_land_on_the_stored_risks_in_order() {
+        use super::{attach_risk_checks, parse_triage};
+        let a = FileClassification {
+            path: "a.rs".into(),
+            classification: "RELEVANT".into(),
+            category: "Business Logic".into(),
+            risk_level: "high".into(),
+            reason: "r".into(),
+        };
+        let relevant = vec![&a];
+        // A ghost risk is dropped before the review sees the list, so the
+        // review's "risk 2" is the stored second risk, not the ghost.
+        let triage = r#"{"top_risks":[
+            {"title":"One","detail":"d","path":"a.rs"},
+            {"title":"Ghost","detail":"d","path":"ghost.rs"},
+            {"title":"Two","detail":"d","path":"a.rs"}
+        ],"review_order":[{"path":"a.rs","rationale":"r"}]}"#;
+        let mut report = parse_triage(triage, &relevant).unwrap();
+        let review = r#"{"verdict":"fix_first","findings":[],"risk_checks":[
+            {"risk":2,"outcome":"confirmed","reason":"broken"},{"risk":1,"outcome":"cleared","reason":"guarded"}]}"#;
+        attach_risk_checks(&mut report, Some(review));
+        let got: Vec<(&str, &str)> =
+            report.top_risks.iter().map(|r| (r.title.as_str(), r.ai_check.as_ref().unwrap().outcome.as_str())).collect();
+        assert_eq!(got, vec![("One", "cleared"), ("Two", "confirmed")]);
+        // A failed review leaves every risk unchecked.
+        let mut report = parse_triage(triage, &relevant).unwrap();
+        attach_risk_checks(&mut report, None);
+        assert!(report.top_risks.iter().all(|r| r.ai_check.is_none()));
     }
 
     #[test]
