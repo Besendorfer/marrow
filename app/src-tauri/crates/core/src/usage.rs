@@ -13,7 +13,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 /// Tokens and cost for one AI call, as the provider reported them.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CallUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -37,10 +37,17 @@ pub struct AiUsage {
     #[serde(default)]
     pub failed_calls: u32,
     /// Calls Marrow cut short (the agentic review stops a stream at each tool
-    /// request). Billed for what streamed, but no usage arrives; left out of
-    /// the costs like failed calls, and the UI says so.
+    /// request). Billed for what streamed, but no final usage or cost
+    /// arrives; left out of the costs like failed calls, and the UI says so.
     #[serde(default)]
     pub interrupted_calls: u32,
+    /// What the cut-short calls reported before the cut (issue #236): their
+    /// input and cache counts arrive when a stream starts. Kept apart from
+    /// the totals above — the output past the start is never reported, so
+    /// pricing these would understate — but it shows where the cache paid
+    /// off: tool turns re-send the whole prompt.
+    #[serde(default)]
+    pub cut_short_usage: CallUsage,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
@@ -132,6 +139,13 @@ impl AiUsage {
             calls_with_usage: self.calls_with_usage + other.calls_with_usage,
             failed_calls: self.failed_calls + other.failed_calls,
             interrupted_calls: self.interrupted_calls + other.interrupted_calls,
+            cut_short_usage: CallUsage {
+                input_tokens: self.cut_short_usage.input_tokens + other.cut_short_usage.input_tokens,
+                output_tokens: self.cut_short_usage.output_tokens + other.cut_short_usage.output_tokens,
+                cache_read_tokens: self.cut_short_usage.cache_read_tokens + other.cut_short_usage.cache_read_tokens,
+                cache_write_tokens: self.cut_short_usage.cache_write_tokens + other.cut_short_usage.cache_write_tokens,
+                reported_cost_usd: None,
+            },
             input_tokens: self.input_tokens + other.input_tokens,
             output_tokens: self.output_tokens + other.output_tokens,
             cache_read_tokens: self.cache_read_tokens + other.cache_read_tokens,
@@ -217,16 +231,33 @@ pub fn record_call(chars_in: usize, chars_out: usize) {
     });
 }
 
+tokio::task_local! {
+    /// The in-flight call's usage so far (see `CallGuard::scope`).
+    static CALL: Arc<Mutex<CallUsage>>;
+}
+
 /// Marks one call in flight. `finish` it when the call returns; dropped
 /// unfinished — the caller abandoned the call mid-stream — it counts as an
-/// interrupted call (see `AiUsage::interrupted_calls`).
+/// interrupted call (see `AiUsage::interrupted_calls`), with whatever the
+/// call reported before the cut.
 pub struct CallGuard {
     done: bool,
+    /// This call's own usage so far. Per call, not per meter: the review
+    /// streams while other passes run beside it on the same task, and one of
+    /// them finishing must not touch this call's counts.
+    partial: Arc<Mutex<CallUsage>>,
 }
 
 impl CallGuard {
     pub fn start() -> CallGuard {
-        CallGuard { done: false }
+        CallGuard { done: false, partial: Arc::new(Mutex::new(CallUsage::default())) }
+    }
+
+    /// Run the call's future with this guard's slot, so `note_partial_usage`
+    /// inside it lands here. A task-local scope applies only while this
+    /// future is polled, so calls running side by side stay apart.
+    pub async fn scope<F: Future>(&self, fut: F) -> F::Output {
+        CALL.scope(self.partial.clone(), fut).await
     }
 
     pub fn finish(mut self) {
@@ -240,10 +271,31 @@ impl Drop for CallGuard {
             let _ = METER.try_with(|m| {
                 if let Ok(mut u) = m.lock() {
                     u.interrupted_calls += 1;
+                    if let Ok(partial) = self.partial.lock() {
+                        let c = &mut u.cut_short_usage;
+                        c.input_tokens += partial.input_tokens;
+                        c.output_tokens += partial.output_tokens;
+                        c.cache_read_tokens += partial.cache_read_tokens;
+                        c.cache_write_tokens += partial.cache_write_tokens;
+                    }
                 }
             });
         }
     }
+}
+
+/// Note a message start's usage for the in-flight call, so a call cut short
+/// afterwards still shows what it reported. One CLI run can start several
+/// messages; each is billed, so their counts add up.
+pub fn note_partial_usage(call: CallUsage) {
+    let _ = CALL.try_with(|slot| {
+        if let Ok(mut p) = slot.lock() {
+            p.input_tokens += call.input_tokens;
+            p.output_tokens += call.output_tokens;
+            p.cache_read_tokens += call.cache_read_tokens;
+            p.cache_write_tokens += call.cache_write_tokens;
+        }
+    });
 }
 
 /// Count a failed call (no usage to record; see `AiUsage::failed_calls`).
@@ -350,6 +402,55 @@ mod tests {
         let u = add_to_recorded(Some(total), rerun).unwrap();
         assert_eq!(u.calls, 6);
         assert!((u.reported_cost_usd.unwrap() - 1.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_cut_short_call_keeps_what_it_reported_apart_from_the_cost() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (_, u) = rt.block_on(metered("claude-cli", "claude-opus-5-5", async {
+            // A tool turn streams (two message starts, as one CLI run can
+            // emit) while another pass runs beside it on the same task and
+            // finishes — then run_agent drops the turn at the tool fence.
+            tokio::select! {
+                biased;
+                _ = async {
+                    let g = CallGuard::start();
+                    g.scope(async {
+                        note_partial_usage(CallUsage { input_tokens: 20, cache_read_tokens: 90_000, output_tokens: 1, ..Default::default() });
+                        note_partial_usage(CallUsage { input_tokens: 5, cache_read_tokens: 1_000, ..Default::default() });
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    })
+                    .await;
+                    g.finish();
+                } => unreachable!(),
+                _ = async {
+                    // The pass beside it completes, with the CLI's reported cost.
+                    let g = CallGuard::start();
+                    g.scope(async {
+                        note_partial_usage(CallUsage { input_tokens: 30, ..Default::default() });
+                        record_usage(CallUsage { input_tokens: 30, cache_read_tokens: 90_000, output_tokens: 400, reported_cost_usd: Some(0.4), ..Default::default() });
+                    })
+                    .await;
+                    record_call(10, 5);
+                    g.finish();
+                } => {}
+            }
+            // A failed call's start usage never reaches the cut-short tally.
+            let g = CallGuard::start();
+            g.scope(async { note_partial_usage(CallUsage { input_tokens: 999, ..Default::default() }) }).await;
+            record_failed_call();
+            g.finish();
+        }));
+        assert_eq!((u.calls, u.calls_with_usage, u.interrupted_calls, u.failed_calls), (1, 1, 1, 1));
+        // The completed call alone makes the cost — still the CLI's own figure.
+        assert_eq!((u.input_tokens, u.cache_read_tokens, u.output_tokens), (30, 90_000, 400));
+        assert_eq!(u.reported_cost_usd, Some(0.4));
+        // The cut-short turn keeps its own counts, summed across its messages,
+        // untouched by the pass that finished beside it.
+        assert_eq!(
+            (u.cut_short_usage.input_tokens, u.cut_short_usage.cache_read_tokens, u.cut_short_usage.output_tokens),
+            (25, 91_000, 1)
+        );
     }
 
     #[test]

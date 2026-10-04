@@ -364,7 +364,7 @@ impl AiBackend {
     ) -> Result<String, String> {
         let sent = system.chars().count() + turns.iter().map(|t| t.content.chars().count()).sum::<usize>();
         let guard = crate::usage::CallGuard::start();
-        let out = self.invoke_chat_stream_inner(system, turns, on).await;
+        let out = guard.scope(self.invoke_chat_stream_inner(system, turns, on)).await;
         guard.finish();
         // A call that fails records its prompt as sent and nothing received,
         // even if part of a response had streamed.
@@ -466,6 +466,22 @@ fn turns_to_messages(turns: &[ChatTurn]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The streaming Messages API request. The system prompt goes as one text
+/// block marked for prompt caching (issue #236): the agentic review re-sends
+/// the same system prompt — instructions plus every relevant diff — on each
+/// tool turn, so turns after the first read it from the cache instead of
+/// paying full input price. Prompts below the model's cache minimum are
+/// simply not cached.
+fn anthropic_stream_body(model: &str, system: &str, turns: &[ChatTurn]) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "stream": true,
+        "system": [{ "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }],
+        "messages": turns_to_messages(turns),
+    })
+}
+
 /// Stream from the Anthropic Messages API (`stream: true`, SSE).
 async fn stream_anthropic(
     api_key: &str,
@@ -474,13 +490,7 @@ async fn stream_anthropic(
     turns: &[ChatTurn],
     on: &mut (dyn FnMut(StreamUpdate) + Send),
 ) -> Result<String, String> {
-    let body = serde_json::json!({
-        "model": model,
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-        "stream": true,
-        "system": system,
-        "messages": turns_to_messages(turns),
-    });
+    let body = anthropic_stream_body(model, system, turns);
     let resp = post_with_retries(
         || {
             crate::net::http_client()
@@ -509,15 +519,7 @@ async fn stream_anthropic(
     let mut saw_usage = false;
     let out = consume_sse(
         resp,
-        |data| {
-            let json: serde_json::Value = serde_json::from_str(data).ok()?;
-            // content_block_delta events carry the streamed text.
-            if json["type"] == "content_block_delta" {
-                return json["delta"]["text"].as_str().map(str::to_string);
-            }
-            saw_usage |= anthropic_stream_usage(&json, &mut usage);
-            None
-        },
+        |data| anthropic_sse_event(data, &mut usage, &mut saw_usage),
         on,
     )
     .await;
@@ -525,6 +527,24 @@ async fn stream_anthropic(
         crate::usage::record_usage(usage);
     }
     out
+}
+
+/// Handle one Anthropic SSE `data` payload: the streamed text, if it carries
+/// any, while folding usage into `usage`. Input and cache counts are known
+/// from `message_start`, so they're noted with the meter right away, in case
+/// the agent cuts this stream short at a tool request (issue #236).
+fn anthropic_sse_event(data: &str, usage: &mut crate::usage::CallUsage, saw_usage: &mut bool) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(data).ok()?;
+    // content_block_delta events carry the streamed text.
+    if json["type"] == "content_block_delta" {
+        return json["delta"]["text"].as_str().map(str::to_string);
+    }
+    let carried = anthropic_stream_usage(&json, usage);
+    *saw_usage |= carried;
+    if json["type"] == "message_start" && carried {
+        crate::usage::note_partial_usage(usage.clone());
+    }
+    None
 }
 
 /// Fold one Anthropic stream event's usage into `usage`: input and cache
@@ -744,6 +764,7 @@ async fn stream_claude_cli(
                 Some(CliEvent::Usage(u)) => {
                     cli_usage = Some(u);
                 }
+                Some(CliEvent::StartUsage(u)) => crate::usage::note_partial_usage(u),
                 None => {}
             }
         }
@@ -810,6 +831,8 @@ enum CliEvent {
     Error(String),
     /// The run finished: its token usage and the cost the CLI reports (#253).
     Usage(crate::usage::CallUsage),
+    /// A message started: its input and cache counts so far (issue #236).
+    StartUsage(crate::usage::CallUsage),
 }
 
 /// Parse one NDJSON line into a [`CliEvent`], or None for lines we don't surface
@@ -828,6 +851,8 @@ fn cli_event(line: &str) -> Option<CliEvent> {
                 "content_block_delta" if event["delta"]["type"] == "text_delta" => {
                     Some(CliEvent::Text(event["delta"]["text"].as_str()?.to_string()))
                 }
+                // Input and cache counts, known before the reply (issue #236).
+                "message_start" => crate::usage::usage_from_json(&event["message"]["usage"], None).map(CliEvent::StartUsage),
                 _ => None,
             }
         }
@@ -1224,6 +1249,53 @@ mod tests {
     }
 
     #[test]
+    fn the_anthropic_system_prompt_is_marked_for_caching() {
+        let turns = vec![
+            ChatTurn { role: ChatRole::User, content: "Review this.".into() },
+            ChatTurn { role: ChatRole::Assistant, content: "Reading a.rs.".into() },
+        ];
+        let body = anthropic_stream_body("claude-opus-5-5", "SYSTEM PROMPT", &turns);
+        assert_eq!(
+            body["system"],
+            serde_json::json!([{ "type": "text", "text": "SYSTEM PROMPT", "cache_control": { "type": "ephemeral" } }])
+        );
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2, "the system prompt isn't repeated in the turns");
+        assert_eq!(body["messages"][1]["role"], "assistant");
+    }
+
+    #[test]
+    fn a_cli_message_start_carries_input_usage() {
+        let start = r#"{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":41000,"cache_creation_input_tokens":200,"output_tokens":1}}}}"#;
+        let Some(CliEvent::StartUsage(u)) = cli_event(start) else { panic!("expected start usage") };
+        assert_eq!((u.input_tokens, u.cache_read_tokens, u.cache_write_tokens), (3, 41000, 200));
+        assert_eq!(u.reported_cost_usd, None, "the CLI reports cost only at the end");
+    }
+
+    #[test]
+    fn an_anthropic_stream_cut_after_its_start_keeps_the_start_usage() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (_, u) = rt.block_on(crate::usage::metered("anthropic-api", "claude-opus-5-5", async {
+            // What stream_anthropic does with each event, then run_agent
+            // dropping the call at the tool fence.
+            let guard = crate::usage::CallGuard::start();
+            guard
+                .scope(async {
+                    let (mut usage, mut saw) = (crate::usage::CallUsage::default(), false);
+                    let start = r#"{"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":88000,"cache_creation_input_tokens":0,"output_tokens":1}}}"#;
+                    assert_eq!(anthropic_sse_event(start, &mut usage, &mut saw), None);
+                    let text = r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"```marrow-tool"}}"#;
+                    assert_eq!(anthropic_sse_event(text, &mut usage, &mut saw).as_deref(), Some("```marrow-tool"));
+                    assert!(saw);
+                })
+                .await;
+            drop(guard);
+        }));
+        assert_eq!((u.calls, u.interrupted_calls), (0, 1));
+        assert_eq!((u.cut_short_usage.input_tokens, u.cut_short_usage.cache_read_tokens), (12, 88_000));
+    }
+
+    #[test]
     fn cli_event_surfaces_error_messages() {
         // The CLI puts the human-readable failure in `result` on an is_error event.
         let err_result = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":404,"result":"There's an issue with the selected model (foo)."}"#;
@@ -1273,7 +1345,7 @@ mod tests {
                         emitted_text = true;
                     }
                 }
-                CliEvent::ToolUse | CliEvent::Error(_) | CliEvent::Usage(_) => {}
+                CliEvent::ToolUse | CliEvent::Error(_) | CliEvent::Usage(_) | CliEvent::StartUsage(_) => {}
             }
         }
         assert_eq!(out, "first.\n\n[[thought:2]]\n\nsecond.");
