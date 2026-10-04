@@ -158,6 +158,7 @@ impl AiUsage {
             content_chars_in: self.content_chars_in + other.content_chars_in,
             content_chars_out: self.content_chars_out + other.content_chars_out,
             reported_cost_usd: reported,
+            pending: None,
             list_cost_usd: None,
             api_estimate_usd: None,
             ..self
@@ -216,7 +217,9 @@ tokio::task_local! {
 pub async fn metered<F: Future>(connection: &str, model: &str, fut: F) -> (F::Output, AiUsage) {
     let meter = Arc::new(Mutex::new(AiUsage { connection: connection.to_string(), model: model.to_string(), ..Default::default() }));
     let out = METER.scope(meter.clone(), fut).await;
-    let usage = meter.lock().map(|u| u.clone()).unwrap_or_default();
+    let mut usage = meter.lock().map(|u| u.clone()).unwrap_or_default();
+    // A finished scope has no call in flight.
+    usage.pending = None;
     (out, usage.finalize())
 }
 

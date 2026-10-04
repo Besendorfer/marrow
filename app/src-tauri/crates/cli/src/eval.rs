@@ -278,11 +278,14 @@ fn work_entry(name: &str, start: (u64, u64), started: std::time::Instant, jev_ti
 /// meter — one fixture's share (issue #236). The cost is only known when both
 /// snapshots carry one, or the earlier one is the empty start of the run.
 fn usage_delta(now: &AiUsage, before: &AiUsage) -> Vec<(&'static str, serde_json::Value)> {
-    let cost = match (now.reported_cost_usd, before.reported_cost_usd) {
+    let diff = |n: Option<f64>, b: Option<f64>| match (n, b) {
         (Some(n), Some(b)) => Some(n - b),
         (Some(n), None) if before.calls == 0 => Some(n),
         _ => None,
     };
+    let cost = diff(now.reported_cost_usd, before.reported_cost_usd);
+    // The API path reports no cost of its own; its list-price figure does.
+    let list_cost = diff(now.list_cost_usd, before.list_cost_usd);
     vec![
         ("calls", now.calls.saturating_sub(before.calls).into()),
         ("interrupted_calls", now.interrupted_calls.saturating_sub(before.interrupted_calls).into()),
@@ -295,6 +298,11 @@ fn usage_delta(now: &AiUsage, before: &AiUsage) -> Vec<(&'static str, serde_json
             "cut_short_cache_read_tokens",
             now.cut_short_usage.cache_read_tokens.saturating_sub(before.cut_short_usage.cache_read_tokens).into(),
         ),
+        (
+            "cut_short_cache_write_tokens",
+            now.cut_short_usage.cache_write_tokens.saturating_sub(before.cut_short_usage.cache_write_tokens).into(),
+        ),
+        ("list_cost_usd", serde_json::json!(list_cost)),
         ("reported_cost_usd", serde_json::json!(cost)),
     ]
 }
@@ -1607,6 +1615,14 @@ mod tests {
         let lost: std::collections::HashMap<_, _> =
             usage_delta(&AiUsage { calls: 5, ..Default::default() }, &before).into_iter().collect();
         assert!(lost["reported_cost_usd"].is_null());
+        // The list-price figure differences the same way (the API path's cost).
+        let priced: std::collections::HashMap<_, _> = usage_delta(
+            &AiUsage { calls: 4, list_cost_usd: Some(0.9), ..Default::default() },
+            &AiUsage { calls: 1, list_cost_usd: Some(0.2), ..Default::default() },
+        )
+        .into_iter()
+        .collect();
+        assert!((priced["list_cost_usd"].as_f64().unwrap() - 0.7).abs() < 1e-9);
     }
 
     #[test]
