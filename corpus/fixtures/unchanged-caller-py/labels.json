@@ -13,5 +13,21 @@
       "note": "svc/jobs/nightly.py (unchanged, outside the diff) still wraps get_user in `except KeyError`; a miss now returns None, the except never fires, and `user.email` raises AttributeError, so the nightly digest crashes. Only knowable by reading beyond the diff; the body claims all call sites were updated."
     }
   ],
-  "expected_verdict": "fix_first"
+  "expected_verdict": "fix_first",
+  "risk_checks": [
+    {
+      "title": "get_user returns None on a miss instead of raising KeyError",
+      "detail": "Callers that catch KeyError to fall back to the database now receive None instead.",
+      "path": "svc/cache.py",
+      "start_line": 12,
+      "expected": "confirmed"
+    },
+    {
+      "title": "show_user's cache fallback rewritten",
+      "detail": "The try/except KeyError fallback to the database became an explicit None check.",
+      "path": "svc/api/users.py",
+      "start_line": 5,
+      "expected": "cleared"
+    }
+  ]
 }

@@ -14,5 +14,21 @@
       "note": "Concurrent read-then-debit: every request reads the balance before any debit lands, so a batch whose total exceeds the balance is fully approved and the account overdraws. Sequential order was load-bearing."
     }
   ],
-  "expected_verdict": "fix_first"
+  "expected_verdict": "fix_first",
+  "risk_checks": [
+    {
+      "title": "Withdrawals in a batch now run concurrently",
+      "detail": "Every request in the batch reads the balance and debits the same account in parallel.",
+      "path": "src/ledger/withdraw.ts",
+      "start_line": 8,
+      "expected": "confirmed"
+    },
+    {
+      "title": "Batch results may come back out of request order",
+      "detail": "Requests now resolve concurrently; callers match each result to its request by position.",
+      "path": "src/ledger/withdraw.ts",
+      "start_line": 6,
+      "expected": "cleared"
+    }
+  ]
 }

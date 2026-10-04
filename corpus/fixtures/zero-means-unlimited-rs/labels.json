@@ -12,5 +12,14 @@
       "note": "Nothing implements '0 = no limit': src/pool/builder.rs passes max_connections straight to Pool::new, and src/pool/mod.rs acquire() returns Exhausted when in_use >= max, so with 0 every acquire fails and every request errors. Two hops outside the diff."
     }
   ],
-  "expected_verdict": "fix_first"
+  "expected_verdict": "fix_first",
+  "risk_checks": [
+    {
+      "title": "Default pool cap changed from 10 to 0",
+      "detail": "max_connections now defaults to 0, which the new doc comment says means no limit.",
+      "path": "src/config.rs",
+      "start_line": 12,
+      "expected": "confirmed"
+    }
+  ]
 }

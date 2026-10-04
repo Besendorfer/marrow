@@ -247,6 +247,45 @@ describe("urgency — does it need a fix?", () => {
   });
 });
 
+describe("AI-checked risks (#243)", () => {
+  const checked = (outcome: "confirmed" | "cleared" | "unresolved", r: TopRisk): TopRisk => ({ ...r, ai_check: { outcome, reason: `${outcome} because` } });
+
+  test("a confirmed risk is a fix; cleared and unresolved stay a look", () => {
+    const m = manifest([file("a.ts"), file("b.ts"), file("c.ts")], {
+      triage: {
+        top_risks: [checked("confirmed", risk("a.ts", 5, "C")), checked("cleared", risk("b.ts", 5, "K")), checked("unresolved", risk("c.ts", 5, "U"))],
+        review_order: [],
+      },
+    } as Partial<ReviewManifest>);
+    const f = new Map(buildFindings(m).findings.map((x) => [x.title, x]));
+    expect([f.get("C")!.urgency, f.get("C")!.rank]).toEqual(["fix", "high"]);
+    expect([f.get("K")!.urgency, f.get("K")!.rank]).toEqual(["look", "check"]);
+    expect([f.get("U")!.urgency, f.get("U")!.rank]).toEqual(["look", "check"]);
+    expect(f.get("K")!.aiCheck?.reason).toBe("cleared because");
+  });
+
+  test("a confirmed risk lifts the note it lands on to a fix", () => {
+    const m = manifest([file("a.ts", [hl(10, 10, "info", "test_gap"), hl(60, 60, "warning", "test_gap")])], {
+      triage: { top_risks: [checked("confirmed", risk("a.ts", 11, "R1")), checked("cleared", risk("a.ts", 61, "R2"))], review_order: [] },
+    } as Partial<ReviewManifest>);
+    const f = new Map(buildFindings(m).findings.map((x) => [x.title, x]));
+    expect([f.get("R1")!.rank, f.get("R1")!.urgency]).toEqual(["high", "fix"]);
+    expect(f.get("R1")!.aiCheck?.outcome).toBe("confirmed");
+    expect([f.get("R2")!.rank, f.get("R2")!.urgency]).toEqual(["check", "look"]);
+  });
+
+  test("the claim line reports the check", () => {
+    const c = (outcome: "confirmed" | "cleared" | "unresolved", urgency: "fix" | "look") =>
+      findingClaim({ kind: "risk", urgency, aiCheck: { outcome, reason: "r" } });
+    expect(c("confirmed", "fix")).toContain("found a defect");
+    expect(c("cleared", "look")).toContain("found no defect");
+    expect(c("unresolved", "look")).toContain("couldn't settle");
+    // A cleared risk merged into a note: the note's own claim still leads.
+    expect(findingClaim({ kind: "bug", urgency: "fix", aiCheck: { outcome: "cleared", reason: "r" } })).toContain("needs a fix before merge");
+    expect(findingClaim({ kind: "test_gap", urgency: "look", aiCheck: { outcome: "cleared", reason: "r" } })).toStartWith("Not a bug");
+  });
+});
+
 describe("selectionIdFor", () => {
   test("aggregates get fixed ids; everything else uses its key", () => {
     expect(selectionIdFor({ kind: "spec", key: "spec-set:abc" })).toBe("spec");

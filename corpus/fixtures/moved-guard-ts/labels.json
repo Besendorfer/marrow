@@ -1,0 +1,33 @@
+{
+  "relevant": [
+    "src/admin/users.ts",
+    "src/admin/router.ts"
+  ],
+  "not_relevant": [],
+  "expected_findings": [
+    {
+      "path": "src/admin/router.ts",
+      "start_line": 7,
+      "end_line": 9,
+      "importance": "important",
+      "note": "Express applies router.use middleware only to routes registered after it. reset-password is registered above requireAdmin and its own check was removed, so any logged-in user can reset any user's password."
+    }
+  ],
+  "expected_verdict": "fix_first",
+  "risk_checks": [
+    {
+      "title": "Admin check removed from deleteUser",
+      "detail": "deleteUser no longer verifies that the caller is an admin before deleting an account.",
+      "path": "src/admin/users.ts",
+      "start_line": 13,
+      "expected": "cleared"
+    },
+    {
+      "title": "Admin check removed from resetPassword",
+      "detail": "resetPassword no longer verifies that the caller is an admin before resetting a password.",
+      "path": "src/admin/users.ts",
+      "start_line": 8,
+      "expected": "confirmed"
+    }
+  ]
+}

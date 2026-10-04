@@ -86,6 +86,22 @@ pub struct TopRisk {
     /// Line (in the head version) to scroll to, when known.
     #[serde(default)]
     pub start_line: Option<u64>,
+    /// The review pass's answer to this risk (issue #243): did it check out
+    /// as a defect, hold up, or stay unsettled? None when no check ran
+    /// (small PRs, the deterministic fallback, older caches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_check: Option<RiskCheck>,
+}
+
+/// How the review settled one triage risk (issue #243).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct RiskCheck {
+    /// "confirmed" (a defect — the review also reports it as a finding),
+    /// "cleared" (checked, and it holds), or "unresolved".
+    pub outcome: String,
+    /// One line: the defect, or the evidence it holds.
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// One file in the contract-first "fastest path" ordering, with a one-line

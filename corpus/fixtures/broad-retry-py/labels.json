@@ -12,5 +12,14 @@
       "note": "svc/orders.py (unchanged, outside the diff) wraps create_order in @retry; it charges the card and then parses the response. Any exception after the charge (a KeyError on a missing order_id, a DB error) now retries and charges the card again, up to 3 times. Only knowable by reading callers."
     }
   ],
-  "expected_verdict": "fix_first"
+  "expected_verdict": "fix_first",
+  "risk_checks": [
+    {
+      "title": "retry() now retries on any exception",
+      "detail": "Only TransientError used to be retried; every decorated call now re-runs after any failure.",
+      "path": "svc/retry.py",
+      "start_line": 16,
+      "expected": "confirmed"
+    }
+  ]
 }
