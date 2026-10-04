@@ -290,6 +290,11 @@ fn usage_delta(now: &AiUsage, before: &AiUsage) -> Vec<(&'static str, serde_json
         ("cache_read_tokens", now.cache_read_tokens.saturating_sub(before.cache_read_tokens).into()),
         ("cache_write_tokens", now.cache_write_tokens.saturating_sub(before.cache_write_tokens).into()),
         ("output_tokens", now.output_tokens.saturating_sub(before.output_tokens).into()),
+        ("cut_short_input_tokens", now.cut_short_usage.input_tokens.saturating_sub(before.cut_short_usage.input_tokens).into()),
+        (
+            "cut_short_cache_read_tokens",
+            now.cut_short_usage.cache_read_tokens.saturating_sub(before.cut_short_usage.cache_read_tokens).into(),
+        ),
         ("reported_cost_usd", serde_json::json!(cost)),
     ]
 }
@@ -342,10 +347,17 @@ fn usage_line(u: &AiUsage) -> String {
         "AI USAGE {} calls via {} · input {} · cache read {} · cache write {} · output {} · {cost}",
         u.calls, u.connection, u.input_tokens, u.cache_read_tokens, u.cache_write_tokens, u.output_tokens
     );
-    for (n, what) in [(u.failed_calls, "failed"), (u.interrupted_calls, "cut-short")] {
-        if n > 0 {
-            line.push_str(&format!(" · {n} {what} call(s) not included"));
-        }
+    if u.failed_calls > 0 {
+        line.push_str(&format!(" · {} failed call(s) not included", u.failed_calls));
+    }
+    if u.interrupted_calls > 0 {
+        // Tool turns: priced nowhere (their output is never reported), but
+        // their cache reads are where prompt caching pays off.
+        let c = &u.cut_short_usage;
+        line.push_str(&format!(
+            " · {} cut-short call(s) not included (before the cut: input {} · cache read {} · cache write {})",
+            u.interrupted_calls, c.input_tokens, c.cache_read_tokens, c.cache_write_tokens
+        ));
     }
     line
 }
@@ -1556,17 +1568,36 @@ mod tests {
             "AI USAGE 4 calls via anthropic-api · input 1200 · cache read 90000 · cache write 30000 · output 800 · ≈$0.31 at list price"
         );
         assert!(usage_line(&AiUsage { reported_cost_usd: Some(1.5), ..u.clone() }).ends_with("$1.50 reported"));
-        assert!(usage_line(&AiUsage { interrupted_calls: 2, ..u }).ends_with("· 2 cut-short call(s) not included"));
+        let cut = AiUsage {
+            interrupted_calls: 2,
+            cut_short_usage: marrow_core::usage::CallUsage { input_tokens: 40, cache_read_tokens: 180_000, ..Default::default() },
+            ..u
+        };
+        assert!(usage_line(&cut).ends_with(
+            "· 2 cut-short call(s) not included (before the cut: input 40 · cache read 180000 · cache write 0)"
+        ));
     }
 
     #[test]
     fn a_fixtures_usage_is_the_difference_between_snapshots() {
         let before = AiUsage { calls: 3, input_tokens: 100, cache_read_tokens: 1000, reported_cost_usd: Some(0.5), ..Default::default() };
-        let now = AiUsage { calls: 7, interrupted_calls: 1, input_tokens: 150, cache_read_tokens: 91_000, output_tokens: 40, reported_cost_usd: Some(0.8), ..Default::default() };
+        let now = AiUsage {
+            calls: 7,
+            interrupted_calls: 1,
+            input_tokens: 150,
+            cache_read_tokens: 91_000,
+            cache_write_tokens: 20,
+            output_tokens: 40,
+            reported_cost_usd: Some(0.8),
+            cut_short_usage: marrow_core::usage::CallUsage { input_tokens: 9, cache_read_tokens: 45_000, ..Default::default() },
+            ..Default::default()
+        };
         let d: std::collections::HashMap<_, _> = usage_delta(&now, &before).into_iter().collect();
         assert_eq!(d["calls"], 4);
         assert_eq!(d["interrupted_calls"], 1);
-        assert_eq!(d["cache_read_tokens"], 90_000);
+        assert_eq!((d["input_tokens"].clone(), d["cache_read_tokens"].clone(), d["cache_write_tokens"].clone(), d["output_tokens"].clone()),
+                   (50.into(), 90_000.into(), 20.into(), 40.into()));
+        assert_eq!((d["cut_short_input_tokens"].clone(), d["cut_short_cache_read_tokens"].clone()), (9.into(), 45_000.into()));
         assert!((d["reported_cost_usd"].as_f64().unwrap() - 0.3).abs() < 1e-9);
         // The run's first fixture starts from an empty meter.
         let first: std::collections::HashMap<_, _> =

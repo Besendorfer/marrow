@@ -785,6 +785,8 @@ export interface AiUsage {
   failed_calls?: number;
   /** Calls Marrow cut short at a tool request; billed, but no usage arrives. */
   interrupted_calls?: number;
+  /** What the cut-short calls reported before the cut (#236) — kept out of the cost. */
+  cut_short_usage?: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number };
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
