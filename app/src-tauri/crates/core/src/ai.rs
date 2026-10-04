@@ -466,6 +466,22 @@ fn turns_to_messages(turns: &[ChatTurn]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The streaming Messages API request. The system prompt goes as one text
+/// block marked for prompt caching (issue #236): the agentic review re-sends
+/// the same system prompt — instructions plus every relevant diff — on each
+/// tool turn, so turns after the first read it from the cache instead of
+/// paying full input price. Prompts below the model's cache minimum are
+/// simply not cached.
+fn anthropic_stream_body(model: &str, system: &str, turns: &[ChatTurn]) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "stream": true,
+        "system": [{ "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }],
+        "messages": turns_to_messages(turns),
+    })
+}
+
 /// Stream from the Anthropic Messages API (`stream: true`, SSE).
 async fn stream_anthropic(
     api_key: &str,
@@ -474,13 +490,7 @@ async fn stream_anthropic(
     turns: &[ChatTurn],
     on: &mut (dyn FnMut(StreamUpdate) + Send),
 ) -> Result<String, String> {
-    let body = serde_json::json!({
-        "model": model,
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-        "stream": true,
-        "system": system,
-        "messages": turns_to_messages(turns),
-    });
+    let body = anthropic_stream_body(model, system, turns);
     let resp = post_with_retries(
         || {
             crate::net::http_client()
@@ -1221,6 +1231,22 @@ mod tests {
         assert_eq!((u.calls, u.calls_with_usage, u.failed_calls), (1, 1, 1));
         assert_eq!((u.input_tokens, u.output_tokens), (3, 7));
         assert_eq!(u.reported_cost_usd, Some(0.05));
+    }
+
+    #[test]
+    fn the_anthropic_system_prompt_is_marked_for_caching() {
+        let turns = vec![
+            ChatTurn { role: ChatRole::User, content: "Review this.".into() },
+            ChatTurn { role: ChatRole::Assistant, content: "Reading a.rs.".into() },
+        ];
+        let body = anthropic_stream_body("claude-opus-5-5", "SYSTEM PROMPT", &turns);
+        assert_eq!(
+            body["system"],
+            serde_json::json!([{ "type": "text", "text": "SYSTEM PROMPT", "cache_control": { "type": "ephemeral" } }])
+        );
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2, "the system prompt isn't repeated in the turns");
+        assert_eq!(body["messages"][1]["role"], "assistant");
     }
 
     #[test]

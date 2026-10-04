@@ -16,6 +16,7 @@ use marrow_core::prompts::{
     has_inline_test_markers, is_test_path, risk_check_section, HighlightExtras,
 };
 use marrow_core::types::{FileClassification, HighlightResult, RequirementsCoverage, ReviewVerdict, RiskCheck, TopRisk};
+use marrow_core::usage::AiUsage;
 use std::collections::HashSet;
 use serde::Deserialize;
 use std::fs;
@@ -261,11 +262,23 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
 /// those whose classification failed, so per-model averages aren't skewed.
 /// Jev time (`--jev`) is excluded; its calls don't go through the AI
 /// backend, so the character counts never include them.
-fn work_entry(name: &str, start: (u64, u64), started: std::time::Instant, jev_time: std::time::Duration) -> serde_json::Value {
+fn work_entry(name: &str, start: (u64, u64), started: std::time::Instant, jev_time: std::time::Duration, u0: &AiUsage) -> serde_json::Value {
     let (sent, recv) = marrow_core::ai::traffic::totals();
+    let u = usage_now();
     serde_json::json!({
         "fixture": name, "chars_sent": sent - start.0, "chars_received": recv - start.1,
         "seconds": started.elapsed().saturating_sub(jev_time).as_secs_f64(),
+        // Provider-reported tokens for this fixture's calls (issue #236).
+        "calls": u.calls - u0.calls,
+        "input_tokens": u.input_tokens - u0.input_tokens,
+        "cache_read_tokens": u.cache_read_tokens - u0.cache_read_tokens,
+        "cache_write_tokens": u.cache_write_tokens - u0.cache_write_tokens,
+        "output_tokens": u.output_tokens - u0.output_tokens,
+        "reported_cost_usd": match (u.reported_cost_usd, u0.reported_cost_usd) {
+            (Some(now), Some(before)) => Some(now - before),
+            (Some(now), None) if u0.calls == 0 => Some(now),
+            _ => None,
+        },
     })
 }
 
@@ -288,6 +301,36 @@ fn label_for(h: &HighlightResult, labels: &FixtureLabels) -> &'static str {
 }
 
 pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model: Option<String>) -> Result<(), String> {
+    // Meter the whole run (issue #236): token usage, cache reads and cost,
+    // per fixture and in total — what a prompt-caching change is measured by.
+    let mut settings = load_settings();
+    if let Some(m) = &model {
+        settings.model = m.clone();
+    }
+    let connection = marrow_core::ai::provider_for_settings(&settings).label();
+    let (out, _) = marrow_core::usage::metered(connection, &settings.model, eval_metered(corpus, json, single_shot, jev, model)).await;
+    out
+}
+
+/// The current run's usage so far (a zeroed value outside a metered scope).
+fn usage_now() -> AiUsage {
+    marrow_core::usage::current().unwrap_or_default()
+}
+
+/// One line on what the run's AI calls used and cost.
+fn usage_line(u: &AiUsage) -> String {
+    let cost = match (u.reported_cost_usd, u.list_cost_usd) {
+        (Some(c), _) => format!("${c:.2} reported"),
+        (None, Some(c)) => format!("≈${c:.2} at list price"),
+        (None, None) => "cost not reported".to_string(),
+    };
+    format!(
+        "AI USAGE {} calls via {} · input {} · cache read {} · cache write {} · output {} · {cost}",
+        u.calls, u.connection, u.input_tokens, u.cache_read_tokens, u.cache_write_tokens, u.output_tokens
+    )
+}
+
+async fn eval_metered(corpus: &Path, json: bool, single_shot: bool, jev: bool, model: Option<String>) -> Result<(), String> {
     let version = fs::read_to_string(corpus.join("VERSION"))
         .map(|v| v.trim().to_string())
         .map_err(|_| format!("{} does not look like a corpus (no VERSION file)", corpus.display()))?;
@@ -355,6 +398,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
         // How much work this fixture took (model comparison): AI characters
         // exchanged and wall-clock time.
         let (sent0, recv0) = marrow_core::ai::traffic::totals();
+        let usage0 = usage_now();
         let started = std::time::Instant::now();
         // Time spent on --jev (its calls and their spacing) is left out of
         // the fixture's seconds, which measure the review model.
@@ -369,7 +413,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                     eprintln!("· {}: {e}", score.name);
                     score.failed = Some(e);
                     score.failed_pass = Some("classification");
-                    work.push(work_entry(&score.name, (sent0, recv0), started, jev_time));
+                    work.push(work_entry(&score.name, (sent0, recv0), started, jev_time, &usage0));
                     scores.push(score);
                     continue;
                 }
@@ -562,7 +606,7 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
                 }
             }
         }
-        work.push(work_entry(&score.name, (sent0, recv0), started, jev_time));
+        work.push(work_entry(&score.name, (sent0, recv0), started, jev_time, &usage0));
         scores.push(score);
     }
 
@@ -576,12 +620,14 @@ pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model
     if json {
         let mut out = render_json_report(&scores, &version, &settings.model, precision, recall);
         out["work"] = serde_json::json!(work);
+        out["usage"] = serde_json::to_value(usage_now()).unwrap_or_default();
         if let Some(s) = &jev_summary {
             out["jev"] = serde_json::json!({ "summary": s, "judged": judged, "relations": relations });
         }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         print!("{}", render_text_report(&scores, &version, precision, recall));
+        println!("{}", usage_line(&usage_now()));
         if let Some(s) = &jev_summary {
             print!("{}", jev_eval::render_text(s));
             println!("JEV RELATIONS stored ({} of {} candidate pairs; the rest judged different, or failed):", relations.len(), candidate_total);
@@ -1476,6 +1522,25 @@ mod tests {
         )
         .unwrap();
         assert!(validate_labels(&pr, &not_relevant, "f").unwrap_err().contains("not label-relevant"));
+    }
+
+    #[test]
+    fn the_usage_line_shows_cache_reads_and_the_best_cost_known() {
+        let u = AiUsage {
+            connection: "anthropic-api".into(),
+            calls: 4,
+            input_tokens: 1200,
+            cache_read_tokens: 90_000,
+            cache_write_tokens: 30_000,
+            output_tokens: 800,
+            list_cost_usd: Some(0.31),
+            ..Default::default()
+        };
+        assert_eq!(
+            usage_line(&u),
+            "AI USAGE 4 calls via anthropic-api · input 1200 · cache read 90000 · cache write 30000 · output 800 · ≈$0.31 at list price"
+        );
+        assert!(usage_line(&AiUsage { reported_cost_usd: Some(1.5), ..u }).ends_with("$1.50 reported"));
     }
 
     #[test]
