@@ -15,7 +15,7 @@ use marrow_core::prompts::{
     build_classification_prompt, build_highlight_prompt_with, build_requirements_coverage_prompt,
     has_inline_test_markers, is_test_path, risk_check_section, HighlightExtras,
 };
-use marrow_core::types::{FileClassification, HighlightResult, RequirementsCoverage, ReviewVerdict, RiskCheck, TopRisk};
+use marrow_core::types::{FileClassification, HighlightResult, RequirementsCoverage, ReviewVerdict, RiskCheck, Settings, TopRisk};
 use marrow_core::usage::AiUsage;
 use std::collections::HashSet;
 use serde::Deserialize;
@@ -264,22 +264,34 @@ fn load_snapshot(fixture_dir: &Path, pr_repo: &str) -> Result<SnapshotRepo, Stri
 /// backend, so the character counts never include them.
 fn work_entry(name: &str, start: (u64, u64), started: std::time::Instant, jev_time: std::time::Duration, u0: &AiUsage) -> serde_json::Value {
     let (sent, recv) = marrow_core::ai::traffic::totals();
-    let u = usage_now();
-    serde_json::json!({
+    let mut entry = serde_json::json!({
         "fixture": name, "chars_sent": sent - start.0, "chars_received": recv - start.1,
         "seconds": started.elapsed().saturating_sub(jev_time).as_secs_f64(),
-        // Provider-reported tokens for this fixture's calls (issue #236).
-        "calls": u.calls - u0.calls,
-        "input_tokens": u.input_tokens - u0.input_tokens,
-        "cache_read_tokens": u.cache_read_tokens - u0.cache_read_tokens,
-        "cache_write_tokens": u.cache_write_tokens - u0.cache_write_tokens,
-        "output_tokens": u.output_tokens - u0.output_tokens,
-        "reported_cost_usd": match (u.reported_cost_usd, u0.reported_cost_usd) {
-            (Some(now), Some(before)) => Some(now - before),
-            (Some(now), None) if u0.calls == 0 => Some(now),
-            _ => None,
-        },
-    })
+    });
+    for (k, v) in usage_delta(&usage_now(), u0) {
+        entry[k] = v;
+    }
+    entry
+}
+
+/// Provider-reported tokens (and cost) between two snapshots of the run's
+/// meter — one fixture's share (issue #236). The cost is only known when both
+/// snapshots carry one, or the earlier one is the empty start of the run.
+fn usage_delta(now: &AiUsage, before: &AiUsage) -> Vec<(&'static str, serde_json::Value)> {
+    let cost = match (now.reported_cost_usd, before.reported_cost_usd) {
+        (Some(n), Some(b)) => Some(n - b),
+        (Some(n), None) if before.calls == 0 => Some(n),
+        _ => None,
+    };
+    vec![
+        ("calls", now.calls.saturating_sub(before.calls).into()),
+        ("interrupted_calls", now.interrupted_calls.saturating_sub(before.interrupted_calls).into()),
+        ("input_tokens", now.input_tokens.saturating_sub(before.input_tokens).into()),
+        ("cache_read_tokens", now.cache_read_tokens.saturating_sub(before.cache_read_tokens).into()),
+        ("cache_write_tokens", now.cache_write_tokens.saturating_sub(before.cache_write_tokens).into()),
+        ("output_tokens", now.output_tokens.saturating_sub(before.output_tokens).into()),
+        ("reported_cost_usd", serde_json::json!(cost)),
+    ]
 }
 
 fn short(s: &str) -> String {
@@ -301,14 +313,16 @@ fn label_for(h: &HighlightResult, labels: &FixtureLabels) -> &'static str {
 }
 
 pub async fn eval(corpus: &Path, json: bool, single_shot: bool, jev: bool, model: Option<String>) -> Result<(), String> {
+    // A per-run model override (model comparison); the config file is untouched.
+    let mut settings = load_settings();
+    if let Some(m) = model {
+        settings.model = m;
+    }
     // Meter the whole run (issue #236): token usage, cache reads and cost,
     // per fixture and in total — what a prompt-caching change is measured by.
-    let mut settings = load_settings();
-    if let Some(m) = &model {
-        settings.model = m.clone();
-    }
     let connection = marrow_core::ai::provider_for_settings(&settings).label();
-    let (out, _) = marrow_core::usage::metered(connection, &settings.model, eval_metered(corpus, json, single_shot, jev, model)).await;
+    let model = settings.model.clone();
+    let (out, _) = marrow_core::usage::metered(connection, &model, eval_metered(corpus, json, single_shot, jev, settings)).await;
     out
 }
 
@@ -324,13 +338,19 @@ fn usage_line(u: &AiUsage) -> String {
         (None, Some(c)) => format!("≈${c:.2} at list price"),
         (None, None) => "cost not reported".to_string(),
     };
-    format!(
+    let mut line = format!(
         "AI USAGE {} calls via {} · input {} · cache read {} · cache write {} · output {} · {cost}",
         u.calls, u.connection, u.input_tokens, u.cache_read_tokens, u.cache_write_tokens, u.output_tokens
-    )
+    );
+    for (n, what) in [(u.failed_calls, "failed"), (u.interrupted_calls, "cut-short")] {
+        if n > 0 {
+            line.push_str(&format!(" · {n} {what} call(s) not included"));
+        }
+    }
+    line
 }
 
-async fn eval_metered(corpus: &Path, json: bool, single_shot: bool, jev: bool, model: Option<String>) -> Result<(), String> {
+async fn eval_metered(corpus: &Path, json: bool, single_shot: bool, jev: bool, settings: Settings) -> Result<(), String> {
     let version = fs::read_to_string(corpus.join("VERSION"))
         .map(|v| v.trim().to_string())
         .map_err(|_| format!("{} does not look like a corpus (no VERSION file)", corpus.display()))?;
@@ -363,11 +383,6 @@ async fn eval_metered(corpus: &Path, json: bool, single_shot: bool, jev: bool, m
         return Err("corpus has no RELEVANT labels — nothing to measure".to_string());
     }
 
-    let mut settings = load_settings();
-    // A per-run model override (model comparison); the config file is untouched.
-    if let Some(m) = model {
-        settings.model = m;
-    }
     // Fail before any spend when --jev can't run.
     let jev_key = if jev {
         Some(resolve_jev_api_key(&settings).ok_or(
@@ -1540,7 +1555,27 @@ mod tests {
             usage_line(&u),
             "AI USAGE 4 calls via anthropic-api · input 1200 · cache read 90000 · cache write 30000 · output 800 · ≈$0.31 at list price"
         );
-        assert!(usage_line(&AiUsage { reported_cost_usd: Some(1.5), ..u }).ends_with("$1.50 reported"));
+        assert!(usage_line(&AiUsage { reported_cost_usd: Some(1.5), ..u.clone() }).ends_with("$1.50 reported"));
+        assert!(usage_line(&AiUsage { interrupted_calls: 2, ..u }).ends_with("· 2 cut-short call(s) not included"));
+    }
+
+    #[test]
+    fn a_fixtures_usage_is_the_difference_between_snapshots() {
+        let before = AiUsage { calls: 3, input_tokens: 100, cache_read_tokens: 1000, reported_cost_usd: Some(0.5), ..Default::default() };
+        let now = AiUsage { calls: 7, interrupted_calls: 1, input_tokens: 150, cache_read_tokens: 91_000, output_tokens: 40, reported_cost_usd: Some(0.8), ..Default::default() };
+        let d: std::collections::HashMap<_, _> = usage_delta(&now, &before).into_iter().collect();
+        assert_eq!(d["calls"], 4);
+        assert_eq!(d["interrupted_calls"], 1);
+        assert_eq!(d["cache_read_tokens"], 90_000);
+        assert!((d["reported_cost_usd"].as_f64().unwrap() - 0.3).abs() < 1e-9);
+        // The run's first fixture starts from an empty meter.
+        let first: std::collections::HashMap<_, _> =
+            usage_delta(&AiUsage { calls: 2, reported_cost_usd: Some(0.2), ..Default::default() }, &AiUsage::default()).into_iter().collect();
+        assert_eq!(first["reported_cost_usd"], serde_json::json!(0.2));
+        // A cost that stopped being reported mid-run isn't invented.
+        let lost: std::collections::HashMap<_, _> =
+            usage_delta(&AiUsage { calls: 5, ..Default::default() }, &before).into_iter().collect();
+        assert!(lost["reported_cost_usd"].is_null());
     }
 
     #[test]

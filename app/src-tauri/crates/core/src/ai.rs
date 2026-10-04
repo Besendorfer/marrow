@@ -526,6 +526,11 @@ async fn stream_anthropic(
                 return json["delta"]["text"].as_str().map(str::to_string);
             }
             saw_usage |= anthropic_stream_usage(&json, &mut usage);
+            // Input and cache counts are known from the start: note them now,
+            // in case the agent cuts this stream short at a tool request.
+            if json["type"] == "message_start" && saw_usage {
+                crate::usage::note_partial_usage(usage.clone());
+            }
             None
         },
         on,
@@ -754,6 +759,7 @@ async fn stream_claude_cli(
                 Some(CliEvent::Usage(u)) => {
                     cli_usage = Some(u);
                 }
+                Some(CliEvent::StartUsage(u)) => crate::usage::note_partial_usage(u),
                 None => {}
             }
         }
@@ -820,6 +826,8 @@ enum CliEvent {
     Error(String),
     /// The run finished: its token usage and the cost the CLI reports (#253).
     Usage(crate::usage::CallUsage),
+    /// A message started: its input and cache counts so far (issue #236).
+    StartUsage(crate::usage::CallUsage),
 }
 
 /// Parse one NDJSON line into a [`CliEvent`], or None for lines we don't surface
@@ -838,6 +846,8 @@ fn cli_event(line: &str) -> Option<CliEvent> {
                 "content_block_delta" if event["delta"]["type"] == "text_delta" => {
                     Some(CliEvent::Text(event["delta"]["text"].as_str()?.to_string()))
                 }
+                // Input and cache counts, known before the reply (issue #236).
+                "message_start" => crate::usage::usage_from_json(&event["message"]["usage"], None).map(CliEvent::StartUsage),
                 _ => None,
             }
         }
@@ -1250,6 +1260,14 @@ mod tests {
     }
 
     #[test]
+    fn a_cli_message_start_carries_input_usage() {
+        let start = r#"{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":41000,"cache_creation_input_tokens":200,"output_tokens":1}}}}"#;
+        let Some(CliEvent::StartUsage(u)) = cli_event(start) else { panic!("expected start usage") };
+        assert_eq!((u.input_tokens, u.cache_read_tokens, u.cache_write_tokens), (3, 41000, 200));
+        assert_eq!(u.reported_cost_usd, None, "the CLI reports cost only at the end");
+    }
+
+    #[test]
     fn cli_event_surfaces_error_messages() {
         // The CLI puts the human-readable failure in `result` on an is_error event.
         let err_result = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":404,"result":"There's an issue with the selected model (foo)."}"#;
@@ -1299,7 +1317,7 @@ mod tests {
                         emitted_text = true;
                     }
                 }
-                CliEvent::ToolUse | CliEvent::Error(_) | CliEvent::Usage(_) => {}
+                CliEvent::ToolUse | CliEvent::Error(_) | CliEvent::Usage(_) | CliEvent::StartUsage(_) => {}
             }
         }
         assert_eq!(out, "first.\n\n[[thought:2]]\n\nsecond.");

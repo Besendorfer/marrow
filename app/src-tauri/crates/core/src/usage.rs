@@ -37,10 +37,16 @@ pub struct AiUsage {
     #[serde(default)]
     pub failed_calls: u32,
     /// Calls Marrow cut short (the agentic review stops a stream at each tool
-    /// request). Billed for what streamed, but no usage arrives; left out of
-    /// the costs like failed calls, and the UI says so.
+    /// request) before any usage arrived; left out of the costs like failed
+    /// calls, and the UI says so. A cut-short call that already reported its
+    /// input usage counts as an ordinary call instead (issue #236).
     #[serde(default)]
     pub interrupted_calls: u32,
+    /// The in-flight call's usage so far — input and cache counts arrive when
+    /// a stream starts, before Marrow may cut it short. Meter-internal: never
+    /// serialized, and only the meter sets it.
+    #[serde(skip)]
+    pub pending: Option<CallUsage>,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
@@ -226,6 +232,12 @@ pub struct CallGuard {
 
 impl CallGuard {
     pub fn start() -> CallGuard {
+        // A new call: whatever an earlier one noted can't be pinned on it.
+        let _ = METER.try_with(|m| {
+            if let Ok(mut u) = m.lock() {
+                u.pending = None;
+            }
+        });
         CallGuard { done: false }
     }
 
@@ -239,11 +251,31 @@ impl Drop for CallGuard {
         if !self.done {
             let _ = METER.try_with(|m| {
                 if let Ok(mut u) = m.lock() {
-                    u.interrupted_calls += 1;
+                    match u.pending.take() {
+                        // The stream reported its input before the cut, so
+                        // the call is counted with what it was billed for.
+                        // Output past the start isn't reported; on a tool
+                        // turn that's at most the tool block.
+                        Some(partial) => {
+                            u.calls += 1;
+                            u.add(&partial);
+                        }
+                        None => u.interrupted_calls += 1,
+                    }
                 }
             });
         }
     }
+}
+
+/// Note the in-flight call's usage so far (a stream's start event), so a
+/// call cut short afterwards still counts what it was billed for.
+pub fn note_partial_usage(call: CallUsage) {
+    let _ = METER.try_with(|m| {
+        if let Ok(mut u) = m.lock() {
+            u.pending = Some(call);
+        }
+    });
 }
 
 /// Count a failed call (no usage to record; see `AiUsage::failed_calls`).
@@ -251,6 +283,7 @@ pub fn record_failed_call() {
     let _ = METER.try_with(|m| {
         if let Ok(mut u) = m.lock() {
             u.failed_calls += 1;
+            u.pending = None;
         }
     });
 }
@@ -260,6 +293,7 @@ pub fn record_usage(call: CallUsage) {
     let _ = METER.try_with(|m| {
         if let Ok(mut u) = m.lock() {
             u.add(&call);
+            u.pending = None;
         }
     });
 }
@@ -350,6 +384,42 @@ mod tests {
         let u = add_to_recorded(Some(total), rerun).unwrap();
         assert_eq!(u.calls, 6);
         assert!((u.reported_cost_usd.unwrap() - 1.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_call_cut_short_after_reporting_its_input_is_counted() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (_, u) = rt.block_on(metered("anthropic-api", "claude-opus-5-5", async {
+            // A tool turn: the stream starts (input + cache read reported),
+            // then run_agent drops it at the tool fence.
+            tokio::select! {
+                biased;
+                _ = async {
+                    let _g = CallGuard::start();
+                    note_partial_usage(CallUsage { input_tokens: 20, cache_read_tokens: 90_000, output_tokens: 1, ..Default::default() });
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                } => unreachable!(),
+                _ = async {} => {}
+            }
+            // The final turn completes normally.
+            let g = CallGuard::start();
+            note_partial_usage(CallUsage { input_tokens: 30, ..Default::default() });
+            record_call(10, 5);
+            record_usage(CallUsage { input_tokens: 30, cache_read_tokens: 90_000, output_tokens: 400, ..Default::default() });
+            g.finish();
+            // A failed call's partial usage doesn't leak into the next cut.
+            note_partial_usage(CallUsage { input_tokens: 999, ..Default::default() });
+            record_failed_call();
+            drop(CallGuard::start());
+            // Nor does a finished call's that never sent its final usage.
+            let g = CallGuard::start();
+            note_partial_usage(CallUsage { input_tokens: 777, ..Default::default() });
+            record_call(1, 1);
+            g.finish();
+            drop(CallGuard::start());
+        }));
+        assert_eq!((u.calls, u.calls_with_usage, u.interrupted_calls, u.failed_calls), (3, 2, 2, 1));
+        assert_eq!((u.input_tokens, u.cache_read_tokens, u.output_tokens), (50, 180_000, 401));
     }
 
     #[test]
