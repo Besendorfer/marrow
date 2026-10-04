@@ -364,7 +364,7 @@ impl AiBackend {
     ) -> Result<String, String> {
         let sent = system.chars().count() + turns.iter().map(|t| t.content.chars().count()).sum::<usize>();
         let guard = crate::usage::CallGuard::start();
-        let out = self.invoke_chat_stream_inner(system, turns, on).await;
+        let out = guard.scope(self.invoke_chat_stream_inner(system, turns, on)).await;
         guard.finish();
         // A call that fails records its prompt as sent and nothing received,
         // even if part of a response had streamed.
@@ -1279,12 +1279,16 @@ mod tests {
             // What stream_anthropic does with each event, then run_agent
             // dropping the call at the tool fence.
             let guard = crate::usage::CallGuard::start();
-            let (mut usage, mut saw) = (crate::usage::CallUsage::default(), false);
-            let start = r#"{"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":88000,"cache_creation_input_tokens":0,"output_tokens":1}}}"#;
-            assert_eq!(anthropic_sse_event(start, &mut usage, &mut saw), None);
-            let text = r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"```marrow-tool"}}"#;
-            assert_eq!(anthropic_sse_event(text, &mut usage, &mut saw).as_deref(), Some("```marrow-tool"));
-            assert!(saw);
+            guard
+                .scope(async {
+                    let (mut usage, mut saw) = (crate::usage::CallUsage::default(), false);
+                    let start = r#"{"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":88000,"cache_creation_input_tokens":0,"output_tokens":1}}}"#;
+                    assert_eq!(anthropic_sse_event(start, &mut usage, &mut saw), None);
+                    let text = r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"```marrow-tool"}}"#;
+                    assert_eq!(anthropic_sse_event(text, &mut usage, &mut saw).as_deref(), Some("```marrow-tool"));
+                    assert!(saw);
+                })
+                .await;
             drop(guard);
         }));
         assert_eq!((u.calls, u.interrupted_calls), (0, 1));
